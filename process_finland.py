@@ -966,8 +966,16 @@ if __name__ == "__main__":
     move_pdfs_to_referens()
 
     codes = sys.argv[1:] if len(sys.argv) > 1 else sorted(RUNNERS)
+    skipped = []
     for code in codes:
-        if code in RUNNERS:
-            RUNNERS[code]()
-        else:
+        if code not in RUNNERS:
             print(f"Unknown company code: {code}")
+            continue
+        try:
+            RUNNERS[code]()
+        except FileNotFoundError as e:
+            skipped.append(code)
+            print(f"  SKIP {code}: source file not found — {e.filename}")
+
+    if skipped:
+        print(f"\nSkipped (already processed / files in Referens): {', '.join(skipped)}")
