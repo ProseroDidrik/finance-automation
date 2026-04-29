@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-process_denmark.py  –  Danish Saldobalance XLSX → INL.xlsx  |  SAF-T rename for Actas (190)
+process_denmark.py  –  Danish Saldobalance XLSX → INL.xlsx
 
 Kör från C:\\Users\\DidWac\\dev\\finance-automation\\ :
     py process_denmark.py               # kör alla bolag
@@ -12,22 +12,23 @@ Vad scriptet gör:
   2. Stoppar vid "Nulkontrol"-sektionen (IS-konton visas annars dubbelt)
   3. Hoppar över bold+underline summerings-rader (bolag 178)
   4. Skriver {kod}_{Namn}_{YYYYMM}_INL.xlsx till Denmark/output/
-  5. Döper om SAF-T XML för Actas (190) till standardformat
-  6. Flyttar källfiler till Denmark/Referens/
+  5. Flyttar källfiler till Denmark/Referens/
 
 Bolagsspecifika IS/BS-gränser (4-siffrig kontoprefixnivå):
   178: IS = 0–4999,  BS = 5000+   (hoppa över bold+underline summary-rader)
+  190: IS = 0–4999,  BS = 5000+
   216: IS = 0–9999   (enbart resultaträkning, inga BS-konton)
-  229: IS = 0–4999,  BS = 5000+
+  229: IS = 0–4999,  BS = 5000+   (BS från YTD-fil: FEB-saldo − MAR-saldo)
   242: IS = 0–799,   BS = 800+
-  190: SAF-T XML — döps om, ingen INL.xlsx
 """
 
 import argparse
 import re
 import shutil
 import sys
-import xml.etree.ElementTree as ET
+
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from datetime import date
 from pathlib import Path
 
@@ -53,11 +54,6 @@ OUTPUT_DIR   = DENMARK_DIR / "output"
 REFERENS_DIR = DENMARK_DIR / "Referens"
 DOTTERBOLAG  = _BASE / "_params" / "Dotterbolagslista.xlsx"
 
-# ── SAF-T constants (Actas 190) ────────────────────────────────────────────────
-ACTAS_CODE     = 190
-ACTAS_XML      = "190_260408 SAF-T_export.xml"
-ACTAS_REFERENS = ["190_03. Sikring Nord 0101-31032026.xlsx"]
-
 # ── Company definitions ────────────────────────────────────────────────────────
 # is_max : max 4-digit account prefix (inclusive) counted as IS/P&L
 # bs_min : min 4-digit account prefix (inclusive) counted as BS; None = no BS
@@ -65,16 +61,23 @@ COMPANY_DEFS: dict[str, dict] = {
     "178": dict(
         is_max=4999, bs_min=5000, skip_formatting=True,
         file="178_03 Marts 2026.xlsx",
+        exclude=[1999, 6140],
+        extra=[],
+    ),
+    "190": dict(
+        is_max=4999, bs_min=5000, skip_formatting=False,
+        file="190_03. Sikring Nord 0101-31032026.xlsx",
         extra=[],
     ),
     "216": dict(
         is_max=9999, bs_min=None, skip_formatting=False,
-        file="216_Balance pr. 310326 SIKOM Danmark (2).xlsx",
-        extra=["216_Balance pr. 310326 SIKOM Danmark.xlsx"],
+        file="216_Balance pr. 310326 SIKOM Danmark.xlsx",
+        extra=[],
     ),
     "229": dict(
         is_max=4999, bs_min=5000, skip_formatting=False,
         file="229_Saldobalance månedsopdelt - 01-03-2026 - 31-03-2026.xlsx",
+        ytd_file="229_Saldobalance månedsopdelt - 01-01-2026 - 31-03-2026.xlsx",
         extra=["229_Saldobalance månedsopdelt - 01-01-2026 - 31-03-2026.xlsx"],
     ),
     "242": dict(
@@ -83,9 +86,6 @@ COMPANY_DEFS: dict[str, dict] = {
         extra=["242_Saldobalance - 01-01-2026 - 31-03-2026.xlsx"],
     ),
 }
-
-SAFT_CODE = str(ACTAS_CODE)
-
 
 # ── Period helper ──────────────────────────────────────────────────────────────
 def prev_month_period() -> str:
@@ -149,14 +149,14 @@ def find_columns(ws) -> tuple[int | None, dict]:
     Returns (header_row_index, cols_dict).
     cols_dict keys: acc, name, debet, kredit, saldo (any may be absent).
     """
-    KEYWORDS = ("konto", "debet", "kredit", "saldo", "navn", "tekst", "beskrivelse")
+    KEYWORDS = ("konto", "debet", "kredit", "saldo", "navn", "tekst", "beskrivelse", "periode")
 
     for row_idx, row in enumerate(ws.iter_rows(max_row=20)):
         texts = [
             str(c.value).strip().lower() if c.value is not None else ""
             for c in row
         ]
-        if sum(1 for t in texts if any(kw in t for kw in KEYWORDS)) < 2:
+        if sum(1 for t in texts if any(kw in t for kw in KEYWORDS)) < 1:
             continue
 
         cols: dict = {}
@@ -169,10 +169,15 @@ def find_columns(ws) -> tuple[int | None, dict]:
                 cols["debet"] = j
             if "kredit" not in cols and "kredit" in t:
                 cols["kredit"] = j
-            if "saldo"  not in cols and "saldo" in t:
+            if "saldo"  not in cols and ("saldo" in t or "periode" in t):
                 cols["saldo"] = j
 
-        if "acc" in cols or ("debet" in cols and "kredit" in cols):
+        # Require saldo > 0 when it's the only useful column found, to avoid
+        # matching title rows like "Periode: 01-03-2026" at col 0 (which would
+        # clash with the default acc=0).
+        has_accs  = "acc" in cols or ("debet" in cols and "kredit" in cols)
+        has_saldo = "saldo" in cols and cols["saldo"] > 0
+        if has_accs or has_saldo:
             return row_idx, cols
 
     return None, {}
@@ -184,14 +189,20 @@ def read_saldobalance(
     is_max_4d: int,
     bs_min_4d: int | None,
     skip_formatting: bool = False,
+    exclude: list[int] | None = None,
 ) -> tuple[list, list]:
     """
     Returns (is_rows, bs_rows), each a list of (account_int, name_str, amount_float).
 
-    Stops at the first row containing "nulkontrol" to avoid double-counting IS accounts.
-    If skip_formatting=True, rows where any of the first 3 cells is bold+underline are skipped
-    (handles 178's summary/total rows).
-    Amount = Saldo column if present, otherwise Debet − Kredit.
+    Amounts use kredit-debet sign convention (income positive, costs negative).
+    Stops at a Nulkontrol ACCOUNT ROW (account present + "nulkontrol" in any cell).
+    Section-header rows (empty account) named "Nulkontrol" are skipped, not treated
+    as stop signals — this handles månedsopdelt files (e.g. 229) where the file has
+    a second IS+BS section under a "Nulkontrol" heading.
+    Duplicate account numbers are skipped to avoid double-counting from that second
+    section.
+    If skip_formatting=True, rows where any of the first 3 cells is bold+underline
+    are skipped (handles 178's summary/total rows).
     """
     wb = openpyxl.load_workbook(str(filepath), data_only=True)
     ws = wb.active
@@ -209,23 +220,43 @@ def read_saldobalance(
 
     is_rows: list = []
     bs_rows: list = []
+    seen_accs: set[int] = set()
+    in_nulkontrol = False  # True once we pass the Nulkontrol section header
 
     for row in ws.iter_rows(min_row=header_row_idx + 2):
-        # Stop at Nulkontrol section
-        if any(
-            "nulkontrol" in str(c.value).lower()
-            for c in row if c.value is not None
-        ):
-            break
-
         if col_acc >= len(row):
             continue
         acc_cell = row[col_acc]
-        if acc_cell.value is None:
+
+        # Detect the Nulkontrol section-header row (empty account containing
+        # "Nulkontrol"): e.g. row 132 in månedsopdelt files.  After this point
+        # IS accounts have YTD-cumulative values, not monthly movements.
+        if acc_cell.value is None or str(acc_cell.value).strip() == "":
+            if any("nulkontrol" in str(c.value).lower() for c in row if c.value is not None):
+                in_nulkontrol = True
             continue
+
         try:
             acc = int(float(str(acc_cell.value).strip()))
         except (ValueError, TypeError):
+            continue
+
+        # Stop on a numeric "Nulkontrol" account row (e.g. acc=9990 in 178).
+        if any("nulkontrol" in str(c.value).lower() for c in row if c.value is not None):
+            break
+
+        # Skip accounts already processed (månedsopdelt double-section files)
+        if acc in seen_accs:
+            continue
+        seen_accs.add(acc)
+
+        if exclude and acc in exclude:
+            continue
+
+        # In the Nulkontrol section, IS accounts carry YTD values — skip them.
+        # BS accounts (after the YTD-IS section) are still valid to collect.
+        acc4 = normalize4(acc)
+        if in_nulkontrol and acc4 <= is_max_4d:
             continue
 
         # Skip bold+underline summary rows (178)
@@ -243,15 +274,16 @@ def read_saldobalance(
         if col_name < len(row) and row[col_name].value is not None:
             name = str(row[col_name].value).strip()
 
-        # Amount: Saldo preferred, else Debet − Kredit
+        # Amount: sign convention = kredit − debet (income positive, costs negative).
+        # Saldo/Periode columns already store debet−kredit, so negate them.
         if col_saldo is not None and col_saldo < len(row):
-            amt = parse_amount(row[col_saldo].value)
+            amt = -parse_amount(row[col_saldo].value)
         elif col_debet is not None and col_kredit is not None:
             d = parse_amount(row[col_debet].value  if col_debet  < len(row) else None)
             k = parse_amount(row[col_kredit].value if col_kredit < len(row) else None)
-            amt = d - k
+            amt = k - d
         elif col_debet is not None and col_debet < len(row):
-            amt = parse_amount(row[col_debet].value)
+            amt = -parse_amount(row[col_debet].value)
         else:
             continue
 
@@ -259,7 +291,6 @@ def read_saldobalance(
         if amt == 0.0:
             continue
 
-        acc4 = normalize4(acc)
         if acc4 <= is_max_4d:
             is_rows.append((acc, name, amt))
         elif bs_min_4d is not None and acc4 >= bs_min_4d:
@@ -267,6 +298,90 @@ def read_saldobalance(
 
     wb.close()
     return is_rows, bs_rows
+
+
+# ── YTD BS reader (månedsopdelt) ───────────────────────────────────────────────
+def read_bs_from_ytd(filepath: Path, bs_min_4d: int) -> list:
+    """
+    Reads BS accounts from a YTD månedsopdelt file.
+    Finds the last two month columns (e.g. FEB 2026, MAR 2026) and returns
+    BS rows as (acc, name, prev_val − curr_val) in kredit-debet convention.
+    """
+    wb = openpyxl.load_workbook(str(filepath), data_only=True)
+    ws = wb.active
+
+    prev_col: int | None = None
+    curr_col: int | None = None
+    header_row_idx: int | None = None
+
+    for row_idx, row in enumerate(ws.iter_rows(max_row=20)):
+        month_cols = []
+        for j, cell in enumerate(row):
+            if cell.value is None:
+                continue
+            t = str(cell.value).strip().lower()
+            # Match "jan 2026", "feb2026", "mar 2026" etc.
+            if re.match(r"^[a-zæøå]{3}\s*\d{4}$", t):
+                month_cols.append(j)
+        if len(month_cols) >= 2:
+            prev_col = month_cols[-2]
+            curr_col = month_cols[-1]
+            header_row_idx = row_idx
+            break
+
+    if header_row_idx is None or prev_col is None or curr_col is None:
+        wb.close()
+        raise ValueError(f"Fann inga månadskolumner i {filepath.name}")
+
+    # Detect acc/name columns from same or neighbouring rows
+    col_acc, col_name = 0, 2
+    for row_idx2, row in enumerate(ws.iter_rows(max_row=header_row_idx + 1)):
+        texts = [str(c.value).strip().lower() if c.value is not None else "" for c in row]
+        for j, t in enumerate(texts):
+            if "konto" in t:
+                col_acc = j
+            if any(kw in t for kw in ("navn", "tekst", "beskrivelse")):
+                col_name = j
+
+    bs_rows: list = []
+    seen_accs: set[int] = set()
+
+    for row in ws.iter_rows(min_row=header_row_idx + 2):
+        if col_acc >= len(row):
+            continue
+        acc_cell = row[col_acc]
+        if acc_cell.value is None:
+            continue
+        try:
+            acc = int(float(str(acc_cell.value).strip()))
+        except (ValueError, TypeError):
+            continue
+
+        if any("nulkontrol" in str(c.value).lower() for c in row if c.value is not None):
+            break
+
+        if acc in seen_accs:
+            continue
+        seen_accs.add(acc)
+
+        acc4 = normalize4(acc)
+        if acc4 < bs_min_4d:
+            continue
+
+        name = ""
+        if col_name < len(row) and row[col_name].value is not None:
+            name = str(row[col_name].value).strip()
+
+        prev_val = parse_amount(row[prev_col].value if prev_col < len(row) else None)
+        curr_val = parse_amount(row[curr_col].value if curr_col < len(row) else None)
+        amt = round(prev_val - curr_val, 2)
+        if amt == 0.0:
+            continue
+
+        bs_rows.append((acc, name, amt))
+
+    wb.close()
+    return bs_rows
 
 
 # ── INL.xlsx output ────────────────────────────────────────────────────────────
@@ -310,6 +425,8 @@ def process_company(
     skip_formatting: bool,
     extra_referens: list[str],
     dry_run: bool,
+    exclude: list[int] | None = None,
+    ytd_filepath: Path | None = None,
 ) -> None:
     print(f"\n── {code} {'─' * 45}")
     print(f"  {friendly}  ({period})")
@@ -320,7 +437,12 @@ def process_company(
         return
 
     try:
-        is_rows, bs_rows = read_saldobalance(filepath, is_max_4d, bs_min_4d, skip_formatting)
+        is_rows, bs_rows = read_saldobalance(filepath, is_max_4d, bs_min_4d, skip_formatting, exclude)
+        if ytd_filepath is not None and bs_min_4d is not None:
+            if ytd_filepath.exists():
+                bs_rows = read_bs_from_ytd(ytd_filepath, bs_min_4d)
+            else:
+                print(f"  ⚠ YTD-fil saknas: {ytd_filepath.name}")
     except Exception as e:
         print(f"  ❌ Läsfel: {e}")
         return
@@ -340,124 +462,6 @@ def process_company(
         REFERENS_DIR.mkdir(exist_ok=True)
     move_to_referens(filepath.name, dry_run)
     for fname in extra_referens:
-        move_to_referens(fname, dry_run)
-
-
-# ── SAF-T software map ─────────────────────────────────────────────────────────
-_SW_MAP = [
-    ("visma global",   "VG"),
-    ("visma business", "VB"),
-    ("visma net",      "VN"),
-    ("24sevenoffice",  "247"),
-    ("uni micro",      "Uni"),
-    ("uni økonomi",    "Uni"),
-    ("unimicro",       "Uni"),
-    ("duett",          "Duett"),
-    ("poweroffice",    "PO"),
-    ("tripletex",      "TT"),
-    ("e-conomic",      "EC"),
-    ("economic",       "EC"),
-    ("dinero",         "DN"),
-    ("billy",          "BY"),
-]
-
-
-def _sw_abbr(software_id: str) -> str:
-    s = software_id.lower().strip()
-    for key, abbr in _SW_MAP:
-        if key in s:
-            return abbr
-    short = re.sub(r"[^A-Za-z0-9]", "", software_id)[:8]
-    return short or "UNK"
-
-
-def _strip_ns(tag: str) -> str:
-    return re.sub(r"\{[^}]+\}", "", tag)
-
-
-def _find_elem_text(root, local_name: str) -> str | None:
-    for elem in root.iter():
-        if _strip_ns(elem.tag) == local_name and elem.text and elem.text.strip():
-            return elem.text.strip()
-    return None
-
-
-def _find_registration(root) -> str:
-    for elem in root.iter():
-        if _strip_ns(elem.tag) == "Company":
-            for child in elem:
-                if _strip_ns(child.tag) == "RegistrationNumber":
-                    return re.sub(r"[^0-9]", "", child.text or "")
-            break
-    return ""
-
-
-def _parse_saft_header(xml_bytes: bytes) -> dict:
-    root = ET.fromstring(xml_bytes)
-    result = {
-        "software_id":         _find_elem_text(root, "SoftwareID") or "",
-        "registration_number": _find_registration(root),
-        "year":                None,
-        "period":              None,
-    }
-    psy = _find_elem_text(root, "PeriodStartYear")
-    pe  = _find_elem_text(root, "PeriodEnd")
-    if psy and pe:
-        result["year"]   = psy
-        result["period"] = str(int(pe))
-    if not result["year"]:
-        sd = _find_elem_text(root, "SelectionStartDate")
-        ed = _find_elem_text(root, "SelectionEndDate")
-        if sd and len(sd) >= 4:
-            result["year"] = sd[:4]
-        if ed and len(ed) >= 7:
-            result["period"] = str(int(ed[5:7]))
-    today = date.today()
-    if not result["year"]:
-        result["year"] = str(today.year)
-    if not result["period"]:
-        m = today.month - 1
-        result["period"] = str(m if m > 0 else 12)
-    return result
-
-
-# ── Process Actas (190) SAF-T ─────────────────────────────────────────────────
-def process_actas(friendly: str, dry_run: bool) -> None:
-    print(f"\n── {ACTAS_CODE} {'─' * 45}")
-    print(f"  {friendly}  (SAF-T)")
-
-    xml_path = DENMARK_DIR / ACTAS_XML
-    if not xml_path.exists():
-        print(f"  ⚠  SKIP: {ACTAS_XML} saknas (redan bearbetad?)")
-    else:
-        try:
-            parsed = _parse_saft_header(xml_path.read_bytes())
-        except ET.ParseError as e:
-            print(f"  ❌ XML-parse-fel: {e}")
-            parsed = None
-
-        if parsed:
-            sw       = _sw_abbr(parsed["software_id"])
-            year     = parsed["year"]
-            period   = parsed["period"]
-            safe     = re.sub(r'[\\/:*?"<>|]', "-", friendly).strip()
-            new_name = f"{ACTAS_CODE:03d}_{safe}_{sw}_SAF-T_{year}-{period}.xml"
-            dest     = DENMARK_DIR / new_name
-            print(f"  Software : {parsed['software_id']!r} → {sw}")
-            print(f"  Period   : {year}-{period}")
-            print(f"  Ny fil   : {new_name}")
-            if dry_run:
-                print(f"  [dry] Skulle döpa om")
-            else:
-                try:
-                    xml_path.rename(dest)
-                    print(f"  ✔ Omdöpt")
-                except OSError as e:
-                    print(f"  ❌ Rename misslyckades: {e}")
-
-    if not dry_run:
-        REFERENS_DIR.mkdir(exist_ok=True)
-    for fname in ACTAS_REFERENS:
         move_to_referens(fname, dry_run)
 
 
@@ -493,22 +497,19 @@ def main() -> None:
         OUTPUT_DIR.mkdir(exist_ok=True)
         REFERENS_DIR.mkdir(exist_ok=True)
 
-    all_codes = sorted(COMPANY_DEFS.keys()) + [SAFT_CODE]
+    all_codes = sorted(COMPANY_DEFS.keys())
     codes_to_run = args.codes if args.codes else all_codes
 
     for code in codes_to_run:
-        if code == SAFT_CODE:
-            friendly = friendlies.get(ACTAS_CODE, "Actas")
-            process_actas(friendly, args.dry_run)
-            continue
-
         if code not in COMPANY_DEFS:
             print(f"\n⚠  Okänd bolagskod: {code}")
             continue
 
-        cfg      = COMPANY_DEFS[code]
-        friendly = friendlies.get(int(code), f"Bolag{code}")
-        filepath = DENMARK_DIR / cfg["file"]
+        cfg         = COMPANY_DEFS[code]
+        friendly    = friendlies.get(int(code), f"Bolag{code}")
+        filepath    = DENMARK_DIR / cfg["file"]
+        ytd_file    = cfg.get("ytd_file")
+        ytd_filepath = DENMARK_DIR / ytd_file if ytd_file else None
 
         process_company(
             code=code,
@@ -520,6 +521,8 @@ def main() -> None:
             skip_formatting=cfg["skip_formatting"],
             extra_referens=cfg["extra"],
             dry_run=args.dry_run,
+            exclude=cfg.get("exclude"),
+            ytd_filepath=ytd_filepath,
         )
 
     print(f"\n{'═' * 55}")
