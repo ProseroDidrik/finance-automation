@@ -1,0 +1,21 @@
+Run extract files
+py C:\Users\DidWac\dev\finance-automation\extract.py
+
+
+Norge
+cd C:\Users\DidWac\dev\finance-automation
+py norway_saft.py --dry-run   # kontrollera först
+py norway_saft.py             # kör på riktigt
+py norway_saft.py --prefix 198 # Ett specifikt bolag
+
+
+Sverige
+cd C:\Users\DidWac\dev\finance-automation
+py process_sweden.py --dry-run   # förhandsgranska
+py process_sweden.py             # kör på riktigt
+
+Finland
+cd C:\Users\DidWac\dev\finance-automation
+py process_finland.py
+py process_finland.py 146        # Ett specifikt bolag
+py process_finland.py 134 196    # Flera specifika bolag
