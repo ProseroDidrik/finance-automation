@@ -63,6 +63,7 @@ class OverrideEditor(QDialog):
         self.subject_table = self._build_subject_tab(data.get("subject_overrides", {}))
         self.attachment_table = self._build_attachment_tab(data.get("attachment_overrides", []))
         self.country_table = self._build_country_tab(data.get("country_overrides", {}))
+        self.alias_table = self._build_alias_tab(data.get("aliases", {}))
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
@@ -116,6 +117,38 @@ class OverrideEditor(QDialog):
         v.addLayout(self._row_buttons(table, lambda: self._append_attachment_row(table, "", "", 0)))
         self.tabs.addTab(page, "Attachment")
         return table
+
+    def _build_alias_tab(self, data: dict[str, list[str]]) -> QTableWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.addWidget(QLabel(
+            "<b>Aliases</b> — alternativa namn/fraser som ger full poäng om de förekommer "
+            "i filnamn, ämne, bilaga, avsändare eller body. En rad per (bolag, fras). "
+            "Användbart när bolagets riktiga namn aldrig nämns i mailen "
+            "(t.ex. <code>GF Sich</code> för Goldfunk Sicherheitstechnik)."
+        ))
+        table = QTableWidget(0, 3, page)
+        table.setHorizontalHeaderLabels(["bolag_id", "alias", "bolag (info)"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        for bolag_id, phrases in sorted(data.items(), key=lambda kv: int(kv[0])):
+            for phrase in phrases:
+                self._append_alias_row(table, int(bolag_id), phrase)
+        table.itemChanged.connect(lambda _it, t=table: self._refresh_company_info(t, id_col=0, info_col=2))
+        v.addWidget(table, 1)
+        v.addLayout(self._row_buttons(table, lambda: self._append_alias_row(table, 0, "")))
+        self.tabs.addTab(page, "Aliases")
+        return table
+
+    def _append_alias_row(self, table: QTableWidget, bolag_id: int, phrase: str) -> None:
+        r = table.rowCount()
+        table.insertRow(r)
+        table.setItem(r, 0, QTableWidgetItem(str(bolag_id) if bolag_id else ""))
+        table.setItem(r, 1, QTableWidgetItem(phrase))
+        info = QTableWidgetItem(self._company_info(bolag_id))
+        info.setFlags(info.flags() & ~Qt.ItemIsEditable)
+        table.setItem(r, 2, info)
 
     def _build_country_tab(self, data: dict[str, str]) -> QTableWidget:
         page = QWidget()
@@ -271,11 +304,34 @@ class OverrideEditor(QDialog):
             out[str(bid)] = country
         return out, errors
 
+    def _collect_aliases(self) -> tuple[dict[str, list[str]], list[str]]:
+        out: dict[str, list[str]] = {}
+        errors: list[str] = []
+        for r in range(self.alias_table.rowCount()):
+            id_text = (self.alias_table.item(r, 0).text() if self.alias_table.item(r, 0) else "").strip()
+            phrase = (self.alias_table.item(r, 1).text() if self.alias_table.item(r, 1) else "").strip()
+            if not id_text and not phrase:
+                continue
+            if not id_text or not phrase:
+                errors.append(f"Aliases rad {r + 1}: båda fälten måste fyllas.")
+                continue
+            try:
+                bid = int(id_text)
+            except ValueError:
+                errors.append(f"Aliases rad {r + 1}: bolag_id ej heltal: '{id_text}'")
+                continue
+            if bid not in self._valid_ids:
+                errors.append(f"Aliases rad {r + 1}: bolag_id {bid} finns inte i Dotterbolagslistan.")
+                continue
+            out.setdefault(str(bid), []).append(phrase)
+        return out, errors
+
     def _on_save(self) -> None:
         subject, e1 = self._collect_subject()
         attachment, e2 = self._collect_attachment()
         country, e3 = self._collect_country()
-        errors = e1 + e2 + e3
+        aliases, e4 = self._collect_aliases()
+        errors = e1 + e2 + e3 + e4
         if errors:
             QMessageBox.warning(self, "Valideringsfel", "\n".join(errors))
             return
@@ -284,14 +340,17 @@ class OverrideEditor(QDialog):
             "subject_overrides": subject,
             "attachment_overrides": attachment,
             "country_overrides": country,
+            "aliases": aliases,
         })
         try:
             _atomic_write_json(OVERRIDES_PATH, existing)
         except OSError as e:
             QMessageBox.critical(self, "Skrivfel", f"Kunde inte spara: {e}")
             return
+        alias_count = sum(len(v) for v in aliases.values())
         QMessageBox.information(
             self, "Sparat",
-            f"Sparat {len(subject)} subject, {len(attachment)} attachment, {len(country)} country overrides.",
+            f"Sparat {len(subject)} subject, {len(attachment)} attachment, "
+            f"{len(country)} country, {alias_count} aliases.",
         )
         self.accept()

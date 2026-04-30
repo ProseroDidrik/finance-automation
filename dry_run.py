@@ -29,9 +29,22 @@ DOTTERBOLAGSLISTA = _BASE / "_params" / "Dotterbolagslista.xlsx"
 KNOWN_COUNTRIES = ("Sweden", "Norway", "Finland", "Denmark", "Germany")
 
 # Overrides läses från _params/overrides.json (delas med extract.py).
-OVERRIDES: dict[str, int] = {
-    k: int(v) for k, v in _load_overrides()["subject_overrides"].items()
-}
+_OV = _load_overrides()
+OVERRIDES: dict[str, int] = {k: int(v) for k, v in _OV["subject_overrides"].items()}
+
+
+def _build_alias_index(raw: dict) -> dict[int, list[str]]:
+    out: dict[int, list[str]] = {}
+    for k, phrases in raw.items():
+        try:
+            bid = int(k)
+        except (TypeError, ValueError):
+            continue
+        cleaned = [normalize(p) for p in phrases if p and p.strip()]
+        cleaned = [p for p in cleaned if p]
+        if cleaned:
+            out[bid] = cleaned
+    return out
 
 INLINE_IMAGE_RE = re.compile(
     r"^(image\d+\.(png|gif|jpg|jpeg|bmp)|img-[0-9a-f\-]{30,})$", re.I
@@ -96,10 +109,13 @@ def load_companies(path):
             "doman": doman,
             "country": country,
             "tokens": list({t for s in (namn_clean, friendly) for t in tokenize(s)}),
+            "aliases": ALIASES_BY_ID.get(bolag_id, []),
         })
     wb.close()
     return companies
 
+
+ALIASES_BY_ID: dict[int, list[str]] = _build_alias_index(_OV.get("aliases", {}))
 
 WEIGHTS = {"filename": 100, "subject": 80, "att_name": 60, "sender": 40, "body": 20}
 
@@ -107,15 +123,18 @@ WEIGHTS = {"filename": 100, "subject": 80, "att_name": 60, "sender": 40, "body":
 def score_company(company, haystacks):
     best = 0
     tokens = company["tokens"]
-    if not tokens:
+    aliases = company.get("aliases", [])
+    if not tokens and not aliases:
         return 0
     for source, weight in WEIGHTS.items():
         hay = normalize(haystacks.get(source, ""))
         if not hay:
             continue
-        if all(t in hay for t in tokens):
+        full_match = bool(tokens) and all(t in hay for t in tokens)
+        alias_match = any(a in hay for a in aliases)
+        if full_match or alias_match:
             best = max(best, weight)
-        else:
+        elif tokens:
             matched = sum(1 for t in tokens if t in hay)
             if matched:
                 best = max(best, int(weight * matched / len(tokens) * 0.6))

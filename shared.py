@@ -159,20 +159,26 @@ def load_dotterbolag_full(path: Path) -> dict[int, dict]:
 
 
 def load_overrides() -> dict:
-    """Load _params/overrides.json (subject/attachment/country overrides for extract).
+    """Load _params/overrides.json (subject/attachment/country/alias overrides for extract).
 
     Returns a dict with keys: subject_overrides (dict[str, int]),
     attachment_overrides (list of {msg_stem, attachment_substr, bolag_id}),
-    country_overrides (dict[str, str]). Empty defaults if file missing.
+    country_overrides (dict[str, str]),
+    aliases (dict[str, list[str]] — bolag_id → phrases that score full weight when
+    found as substring in any haystack source). Empty defaults if file missing.
     """
     p = _REPO_ROOT / "_params" / "overrides.json"
     if not p.exists():
-        return {"subject_overrides": {}, "attachment_overrides": [], "country_overrides": {}}
+        return {
+            "subject_overrides": {}, "attachment_overrides": [],
+            "country_overrides": {}, "aliases": {},
+        }
     with open(p, encoding="utf-8") as f:
         data = json.load(f)
     data.setdefault("subject_overrides", {})
     data.setdefault("attachment_overrides", [])
     data.setdefault("country_overrides", {})
+    data.setdefault("aliases", {})
     return data
 
 

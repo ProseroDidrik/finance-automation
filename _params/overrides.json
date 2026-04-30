@@ -2,7 +2,6 @@
   "_comment": "Mappar tvetydiga mail/bilagor till rätt BolagsID. Läses av extract.py och dry_run.py via shared.load_overrides(). Editeras via GUI:t (Redigera overrides) eller manuellt här.",
   "subject_overrides": {
     "Mars Säkerhetspartner i väst ": 239,
-    "VB_ GF Sich_ GmbH - Auswertungen 3_2026": 245,
     "VB_ Monthly Financial Report H+W mechatronik GmbH (4)": 246,
     "VB_ Monthly Financial Report H+W mechatronik GmbH": 246,
     "Månad mars _)": 33,
@@ -31,5 +30,9 @@
     "54": "Denmark",
     "145": "Finland",
     "187": "Germany"
+  },
+  "aliases": {
+    "220": ["Weckbacher"],
+    "245": ["GF Sich"]
   }
 }
