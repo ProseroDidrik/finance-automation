@@ -14,10 +14,14 @@ py run_all.py --dry-run  # preview all
 py run_all.py            # run all
 
 # Step 1: extract attachments from .msg emails → extracted/{Country}/
-py extract.py
+py extract.py                      # previous month (auto-detected)
+py extract.py --period 202604      # specific period
 
 # Step 1 (preview only):
-py dry_run.py
+py dry_run.py                      # previous month (auto-detected)
+py dry_run.py --period 202604      # specific period
+
+# Emails must be placed in: _inbox/{YYYYMM}/*.msg  (e.g. _inbox/202604/)
 
 # Step 2: process by country
 py process_norway.py --dry-run        # preview

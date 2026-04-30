@@ -4,27 +4,21 @@ Dry-run: match .msg files against Dotterbolagslista.xlsx and show proposed
 BolagsID prefix + country subfolder for every mail. Nothing is written to disk.
 """
 from __future__ import annotations
+import argparse
 import re
-from pathlib import Path
+import sys
 from collections import Counter
+from datetime import date
+from pathlib import Path
 import extract_msg
 import openpyxl
 
-_BASE = Path(__file__).resolve().parent
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-def _resolve_get_testfiles():
-    candidates = [
-        Path(r"C:\Users\DidWac\Prosero Dropbox\Didrik Wachtmeister\Phoenix Foundation\April alla filer\Get testfiles"),
-        Path("/sessions/nifty-loving-albattani/mnt/Get testfiles"),
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    # last-resort fallback so it still imports
-    return candidates[0]
+from shared import load_config as _load_config
 
-GET_TESTFILES = _resolve_get_testfiles()
-GET_TESTFILES_DIR = GET_TESTFILES / "_inbox"
+_BASE         = Path(__file__).resolve().parent
+GET_TESTFILES = Path(_load_config()["base_path"])
 DOTTERBOLAGSLISTA = _BASE / "_params" / "Dotterbolagslista.xlsx"
 
 KNOWN_COUNTRIES = ("Sweden", "Norway", "Finland", "Denmark", "Germany")
@@ -45,12 +39,18 @@ OVERRIDES = {
     "Låskomfort mars": 88,
     "Månadsavstämning 2026-03-31 (2)": 93,
     # OBS: "Nylunds och Norrskydd mars" hanteras via ATTACHMENT_OVERRIDES i extract.py
-    # (två bolag i samma mail — bilaganamn avgör vilket prefix)
 }
 
 INLINE_IMAGE_RE = re.compile(
     r"^(image\d+\.(png|gif|jpg|jpeg|bmp)|img-[0-9a-f\-]{30,})$", re.I
 )
+
+
+def _prev_month_period() -> str:
+    today = date.today()
+    if today.month == 1:
+        return f"{today.year - 1}12"
+    return f"{today.year}{today.month - 1:02d}"
 
 
 def normalize(s):
@@ -94,7 +94,6 @@ def load_companies(path):
         namn = str(row[0] or "").strip()
         namn_clean = re.sub(r"^\s*\d+\s*", "", namn)
         friendly = str(row[4] or "").strip()
-        avsandare = str(row[8] or "").strip() if len(row) > 8 else ""
         doman = str(row[9] or "").strip() if len(row) > 9 else ""
         market_raw = str(row[2] or "").strip()
         country = market_raw if market_raw in KNOWN_COUNTRIES else "Other"
@@ -102,7 +101,6 @@ def load_companies(path):
             "id": bolag_id,
             "namn": namn_clean,
             "friendly": friendly,
-            "avsandare": avsandare,
             "doman": doman,
             "country": country,
             "tokens": list({t for s in (namn_clean, friendly) for t in tokenize(s)}),
@@ -111,13 +109,7 @@ def load_companies(path):
     return companies
 
 
-WEIGHTS = {
-    "filename": 100,
-    "subject": 80,
-    "att_name": 60,
-    "sender": 40,
-    "body": 20,
-}
+WEIGHTS = {"filename": 100, "subject": 80, "att_name": 60, "sender": 40, "body": 20}
 
 
 def score_company(company, haystacks):
@@ -130,16 +122,12 @@ def score_company(company, haystacks):
         if not hay:
             continue
         if all(t in hay for t in tokens):
-            if weight > best:
-                best = weight
+            best = max(best, weight)
         else:
             matched = sum(1 for t in tokens if t in hay)
-            if matched > 0:
-                partial = int(weight * matched / len(tokens) * 0.6)
-                if partial > best:
-                    best = partial
-    doman = company["doman"]
-    if doman and doman in haystacks.get("sender", ""):
+            if matched:
+                best = max(best, int(weight * matched / len(tokens) * 0.6))
+    if company["doman"] and company["doman"] in haystacks.get("sender", ""):
         best = max(best, WEIGHTS["sender"])
     return best
 
@@ -148,11 +136,9 @@ def match_msg(msg_path, companies, id_index):
     if msg_path.stem in OVERRIDES:
         override_id = OVERRIDES[msg_path.stem]
         company = id_index.get(override_id, {
-            "id": override_id,
-            "namn": "ID {}".format(override_id),
-            "friendly": "ID {}".format(override_id),
-            "country": "Other",
-            "tokens": [],
+            "id": override_id, "namn": "ID {}".format(override_id),
+            "friendly": "ID {}".format(override_id), "country": "Other",
+            "tokens": [], "doman": "",
         })
         return company, 999, "manual"
 
@@ -162,18 +148,13 @@ def match_msg(msg_path, companies, id_index):
         return None, 0, "open error: {}".format(e)
 
     try:
-        subject = msg.subject or ""
-        sender = msg.sender or ""
-        body = (msg.body or "")[:1500]
-        att_names = " ".join(
-            att_name(a, i) for i, a in enumerate(msg.attachments) if not is_inline(a)
-        )
+        att_names = " ".join(att_name(a, i) for i, a in enumerate(msg.attachments) if not is_inline(a))
         haystacks = {
             "filename": msg_path.stem,
-            "subject": subject,
+            "subject": msg.subject or "",
             "att_name": att_names,
-            "sender": sender,
-            "body": body,
+            "sender": msg.sender or "",
+            "body": (msg.body or "")[:1500],
         }
         scores = [(c, score_company(c, haystacks)) for c in companies]
         scores.sort(key=lambda x: -x[1])
@@ -194,13 +175,30 @@ def fmt(val, width):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Dry-run: matcha .msg-filer mot Dotterbolagslista")
+    parser.add_argument(
+        "--period", "-p", metavar="YYYYMM", default=None,
+        help="Period att köra (t.ex. 202603). Standard: föregående månad.",
+    )
+    args = parser.parse_args()
+    period = args.period or _prev_month_period()
+    inbox_dir = GET_TESTFILES / "_inbox" / period
+
+    if not inbox_dir.exists():
+        sys.exit(
+            f"Inbox-mapp saknas: {inbox_dir}\n"
+            f"Skapa mappen och lägg .msg-filerna för period {period} där."
+        )
+
+    print("Period  : {}".format(period))
+    print("Inbox   : {}".format(inbox_dir))
     print("Loading Dotterbolagslista ... ", end="", flush=True)
     companies = load_companies(DOTTERBOLAGSLISTA)
     id_index = {c["id"]: c for c in companies}
     print("{} active companies loaded.\n".format(len(companies)))
 
     msg_files = sorted(
-        p for p in GET_TESTFILES_DIR.iterdir()
+        p for p in inbox_dir.iterdir()
         if p.is_file() and p.suffix.lower() == ".msg"
     )
     print("Found {} .msg files.\n".format(len(msg_files)))
@@ -231,8 +229,7 @@ def main():
             matched += 1
             country = company.get("country", "Other")
             country_counts[country] += 1
-            label = "{:03d} {}".format(
-                company["id"], (company["friendly"] or company["namn"]))
+            label = "{:03d} {}".format(company["id"], (company["friendly"] or company["namn"]))
             if score == 999:
                 flag = " [MANUAL]"
                 manual.append((msg_path.name, company))
@@ -269,7 +266,7 @@ def main():
         print("-- MANUAL OVERRIDES --")
         for name, c in manual:
             print("  -> {:03d}  {}  {}  {}".format(
-                c["id"], fmt(c.get("country","Other"), 11),
+                c["id"], fmt(c.get("country", "Other"), 11),
                 fmt(c["friendly"] or c["namn"], 30), name))
 
     if low_confidence:
@@ -277,18 +274,7 @@ def main():
         print("-- LOW CONFIDENCE --")
         for name, c, s in low_confidence:
             print("  score={:>3}  -> {:03d}  {}  {}  {}".format(
-                s, c["id"], fmt(c.get("country","Other"), 11),
-                fmt(c["friendly"] or c["namn"], 28), name))
-
-    print()
-    print("DRY RUN -- no files written.")
-
-
-if __name__ == "__main__":
-    main()
- low_confidence:
-            print("  score={:>3}  -> {:03d}  {}  {}  {}".format(
-                s, c["id"], fmt(c.get("country","Other"), 11),
+                s, c["id"], fmt(c.get("country", "Other"), 11),
                 fmt(c["friendly"] or c["namn"], 28), name))
 
     print()

@@ -4,18 +4,29 @@ Extract attachments from .msg files in _inbox/, organised into country subfolder
 Output: extracted/{Country}/{ID:03d}_{originalname}
 """
 from __future__ import annotations
+import argparse
 import re
+import sys
+from datetime import date
 from pathlib import Path
 import extract_msg
 import openpyxl
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from shared import load_config as _load_config
 
-_BASE          = Path(__file__).resolve().parent
-GET_TESTFILES  = Path(_load_config()["base_path"])
-INBOX_DIR      = GET_TESTFILES / "_inbox"
-OUT_DIR        = GET_TESTFILES / "extracted"
-DOTTERBOLAG    = _BASE / "_params" / "Dotterbolagslista.xlsx"
+_BASE         = Path(__file__).resolve().parent
+GET_TESTFILES = Path(_load_config()["base_path"])
+OUT_DIR       = GET_TESTFILES / "extracted"
+DOTTERBOLAG   = _BASE / "_params" / "Dotterbolagslista.xlsx"
+
+
+def _prev_month_period() -> str:
+    today = date.today()
+    if today.month == 1:
+        return f"{today.year - 1}12"
+    return f"{today.year}{today.month - 1:02d}"
 
 KNOWN_COUNTRIES = ("Sweden", "Norway", "Finland", "Denmark", "Germany")
 
@@ -192,13 +203,30 @@ def match_msg(msg_path, companies, id_index):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Extrahera bilagor från .msg-filer")
+    parser.add_argument(
+        "--period", "-p", metavar="YYYYMM", default=None,
+        help="Period att köra (t.ex. 202603). Standard: föregående månad.",
+    )
+    args = parser.parse_args()
+    period = args.period or _prev_month_period()
+    inbox_dir = GET_TESTFILES / "_inbox" / period
+
+    if not inbox_dir.exists():
+        sys.exit(
+            f"Inbox-mapp saknas: {inbox_dir}\n"
+            f"Skapa mappen och lägg .msg-filerna för period {period} där."
+        )
+
+    print("Period  : {}".format(period))
+    print("Inbox   : {}".format(inbox_dir))
     print("Loading Dotterbolagslista ... ", end="", flush=True)
     companies = load_companies(DOTTERBOLAG)
     id_index = {c["id"]: c for c in companies}
     print("{} companies.\n".format(len(companies)))
 
-    msg_files = sorted(p for p in INBOX_DIR.iterdir() if p.is_file() and p.suffix.lower() == ".msg")
-    print("Found {} .msg files in _inbox/\n".format(len(msg_files)))
+    msg_files = sorted(p for p in inbox_dir.iterdir() if p.is_file() and p.suffix.lower() == ".msg")
+    print("Found {} .msg files in _inbox/{}/\n".format(len(msg_files), period))
 
     # Create country subdirs
     for ctry in list(KNOWN_COUNTRIES) + ["Other"]:
