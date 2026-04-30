@@ -1,39 +1,75 @@
 {
   "_comment": "Mappar tvetydiga mail/bilagor till rätt BolagsID. Läses av extract.py och dry_run.py via shared.load_overrides(). Editeras via GUI:t (Redigera overrides) eller manuellt här.",
   "subject_overrides": {
-    "Mars Säkerhetspartner i väst ": 239,
-    "VB_ Monthly Financial Report H+W mechatronik GmbH (4)": 246,
-    "VB_ Monthly Financial Report H+W mechatronik GmbH": 246,
-    "Månad mars _)": 33,
-    "Q1 2026 rapportering i excel": 111,
-    "Untitled": 164,
-    "ST Hälytys reports": 196,
     "Doorway mars": 162,
+    "Låskomfort mars": 88,
+    "Mars Säkerhetspartner i väst": 239,
+    "Månad mars _)": 33,
+    "Månadsavstämning 2026-03-31 (2)": 93,
+    "Q1 2026 rapportering i excel": 111,
+    "Rapport mars (3)": 77,
     "SIE Montageservice": 94,
     "SIE-fil Dala Lås i Ludvika AB 2603": 73,
-    "Låskomfort mars": 88,
-    "Månadsavstämning 2026-03-31 (2)": 93,
+    "ST Hälytys reports": 196,
+    "Untitled": 164,
+    "VB_ Monthly Financial Report H+W mechatronik GmbH": 246,
+    "VB_ Monthly Financial Report H+W mechatronik GmbH (4)": 246,
     "VB_ Prosero Securty Oy": 145
   },
   "attachment_overrides": [
-    {"msg_stem": "Nylunds och Norrskydd mars", "attachment_substr": "norrskydd", "bolag_id": 76},
-    {"msg_stem": "Nylunds och Norrskydd mars", "attachment_substr": "nylunds", "bolag_id": 183}
+    {
+      "msg_stem": "Nylunds och Norrskydd mars",
+      "attachment_substr": "norrskydd",
+      "bolag_id": 76
+    },
+    {
+      "msg_stem": "Nylunds och Norrskydd mars",
+      "attachment_substr": "nylunds",
+      "bolag_id": 183
+    },
+    {
+      "msg_stem": "Regnskap pr 31-03-2026 for Buysec og Buytec",
+      "attachment_substr": "buysec",
+      "bolag_id": 176
+    },
+    {
+      "msg_stem": "Regnskap mars - NBV AS og DSN AS",
+      "attachment_substr": "dsn",
+      "bolag_id": 106
+    },
+    {
+      "msg_stem": "Regnskap mars - NBV AS og DSN AS",
+      "attachment_substr": "din sikkerhet",
+      "bolag_id": 106
+    }
   ],
   "country_overrides": {
     "49": "Sweden",
     "50": "Sweden",
     "51": "Sweden",
-    "53": "Sweden",
-    "60": "Sweden",
-    "162": "Sweden",
     "52": "Norway",
+    "53": "Sweden",
     "54": "Denmark",
+    "60": "Sweden",
     "145": "Finland",
+    "162": "Sweden",
     "187": "Germany"
   },
   "aliases": {
-    "220": ["Weckbacher"],
-    "245": ["GF Sich"]
+    "202": [
+      "AVN"
+    ],
+    "220": [
+      "Weckbacher"
+    ],
+    "245": [
+      "GF Sich"
+    ]
   },
-  "excluded": []
+  "excluded": [
+    108,
+    223,
+    224,
+    226
+  ]
 }
