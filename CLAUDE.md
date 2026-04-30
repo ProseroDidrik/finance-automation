@@ -104,11 +104,26 @@ INL.xlsx layout: empty row 1, then IS rows, then BS rows (col A=account, B=name,
 
 ### Paths
 
-All scripts resolve source files relative to a hardcoded Dropbox path:
+All scripts load the Dropbox root from `config.json` in the repo root (gitignored):
+```json
+{"base_path": "C:\\Users\\DidWac\\Prosero Dropbox\\...\\Get testfiles"}
 ```
-C:\Users\DidWac\Prosero Dropbox\Didrik Wachtmeister\Phoenix Foundation\April alla filer\Get testfiles
-```
+Create this file before first run. `shared.load_config()` reads it and raises a clear error if missing.
 `_params/` is relative to the repo root (`__file__`).
+
+### Terminal output format
+
+All process scripts emit structured log lines parseable by a future GUI:
+```
+[START]  process_denmark.py  period 202603  [DRY RUN]
+[OK]     229  Sparad: 229_Zipp Systems_202603_INL.xlsx
+[WARN]   134  Summa ≠ 0 (diff: 0.01)
+[SKIP]   178  Filen saknas (redan i Referens?)
+[INFO]   188  IS=72, BS=18  Summa=0.0000  OK
+[ERROR]  220  Läsfel: Sheet 'IS' hittades inte
+[DONE]   process_denmark.py  3 OK  1 WARN  1 SKIP  0 ERROR
+```
+Use `shared.log(status, label, msg)` for all status output. Status values: `START`, `OK`, `WARN`, `SKIP`, `INFO`, `ERROR`, `DONE`.
 
 ### Adding a new monthly period
 

@@ -12,22 +12,22 @@ Verify:  column C must sum to 0
 import csv
 import os
 import re
+import sys
 from pathlib import Path
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import pandas as pd
 import xlrd
 
-from shared import move_to_referens_safe, save_inl_xlsx
+from shared import move_to_referens_safe, save_inl_xlsx, load_config, log
 
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
-FINLAND_DIR = (
-    r"C:\Users\DidWac\Prosero Dropbox\Didrik Wachtmeister\Phoenix Foundation"
-    r"\April alla filer\Get testfiles\extracted\Finland"
-)
+FINLAND_DIR = os.path.join(load_config()["base_path"], "extracted", "Finland")
 OUTPUT_DIR = os.path.join(FINLAND_DIR, "output")
 REFERENS_DIR = os.path.join(FINLAND_DIR, "Referens")
 
@@ -230,7 +230,7 @@ def read_income_only_xlsx(filepath: str, sheet_name=0) -> list:
 #   Same layout but col values are CUMULATIVE balances → change = col_target - col_prev
 # ---------------------------------------------------------------------------
 
-def _find_period_col(df: pd.DataFrame, target_period: str, filepath: str) -> int:
+def _find_period_col_df(df: pd.DataFrame, target_period: str, filepath: str) -> int:
     for j, val in enumerate(df.iloc[0]):
         if pd.notna(val) and extract_period(str(val)) == target_period:
             return j
@@ -239,7 +239,7 @@ def _find_period_col(df: pd.DataFrame, target_period: str, filepath: str) -> int
 
 def read_period_xls(filepath: str, target_period: str = "202603") -> list:
     df = pd.read_excel(filepath, header=None, dtype=str)
-    period_col = _find_period_col(df, target_period, filepath)
+    period_col = _find_period_col_df(df, target_period, filepath)
     rows = []
     for _, row in df.iterrows():
         cell = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
@@ -257,7 +257,7 @@ def read_period_xls(filepath: str, target_period: str = "202603") -> list:
 def read_period_xls_diff(filepath: str, target_period: str = "202603") -> list:
     """166-style BS: values are period-end balances → compute col_target - col_prev."""
     df = pd.read_excel(filepath, header=None, dtype=str)
-    period_col = _find_period_col(df, target_period, filepath)
+    period_col = _find_period_col_df(df, target_period, filepath)
     prev_col = period_col - 1   # previous month column
     rows = []
     for _, row in df.iterrows():
@@ -648,29 +648,27 @@ def process_company(
     bs_rows_raw: list,
     is_rows_raw: list,
     extra_files_to_referens: list = None,
-):
-    print(f"\n{'='*60}")
-    print(f"Processing {code}  –  {friendly_name}  ({period})")
-
+) -> str:
     bs_rows = post_process(bs_rows_raw, flip=True)
     is_rows = post_process(is_rows_raw, flip=False)
 
     total = verify_sum(is_rows, bs_rows)
-    check = "OK (~0)" if abs(total) < 0.11 else f"WARNING: {total:.2f}"
-    print(f"  Rows IS={len(is_rows)}, BS={len(bs_rows)}   Sum={total:.4f}  {check}")
+    is_warn = abs(total) > 0.11
+    check = "OK (~0)" if not is_warn else f"WARN: {total:.2f}"
+    log("INFO", code, f"IS={len(is_rows)}, BS={len(bs_rows)}  Sum={total:.4f}  {check}")
 
     filename = f"{code}_{friendly_name}_{period}_INL.xlsx"
     if _DRY_RUN:
-        print(f"  [dry] Skulle spara: {filename}  ({len(is_rows)} IS + {len(bs_rows)} BS rader)")
+        log("OK", code, f"[DRY] Skulle spara: {filename}")
     else:
         save_inl_xlsx(is_rows, bs_rows, os.path.join(OUTPUT_DIR, filename))
-        print(f"  Saved: {filename}")
+        log("WARN" if is_warn else "OK", code, f"Sparad: {filename}")
 
     if extra_files_to_referens:
         for f in extra_files_to_referens:
             move_to_referens(f)
 
-    return filename
+    return "warn" if is_warn else "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -981,20 +979,24 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     _DRY_RUN = args.dry_run
+    dry_label = "  [DRY RUN]" if _DRY_RUN else ""
+    log("START", "process_finland.py", f"period per bolag{dry_label}")
 
     move_pdfs_to_referens()
 
     codes = args.codes if args.codes else sorted(RUNNERS)
-    skipped = []
+    stats: dict[str, int] = {"ok": 0, "warn": 0, "skip": 0, "error": 0}
     for code in codes:
         if code not in RUNNERS:
-            print(f"Unknown company code: {code}")
+            log("ERROR", code, "Okänd bolagskod")
+            stats["error"] += 1
             continue
         try:
-            RUNNERS[code]()
+            status = RUNNERS[code]()
+            stats[status] = stats.get(status, 0) + 1
         except FileNotFoundError as e:
-            skipped.append(code)
-            print(f"  SKIP {code}: source file not found — {e.filename}")
+            log("SKIP", code, f"Källfil saknas: {Path(e.filename).name}")
+            stats["skip"] += 1
 
-    if skipped:
-        print(f"\nSkipped (already processed / files in Referens): {', '.join(skipped)}")
+    log("DONE", "process_finland.py",
+        f"{stats['ok']} OK  {stats['warn']} WARN  {stats['skip']} SKIP  {stats['error']} ERROR")

@@ -49,15 +49,12 @@ try:
 except ImportError:
     sys.exit("Saknar openpyxl — kör:  py -m pip install openpyxl")
 
-from shared import load_dotterbolag, move_to_referens_safe, save_inl_xlsx
+from shared import load_dotterbolag, move_to_referens_safe, save_inl_xlsx, load_config, log
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent
 
-GET_TESTFILES = Path(
-    r"C:\Users\DidWac\Prosero Dropbox\Didrik Wachtmeister"
-    r"\Phoenix Foundation\April alla filer\Get testfiles"
-)
+GET_TESTFILES = Path(load_config()["base_path"])
 GERMANY_DIR  = GET_TESTFILES / "extracted" / "Germany"
 OUTPUT_DIR   = GERMANY_DIR / "output"
 REFERENS_DIR = GERMANY_DIR / "Referens"
@@ -455,24 +452,23 @@ def process_company(
     period: str,
     cfg: dict,
     dry_run: bool,
-) -> None:
-    print(f"\n── {code} {'─' * 45}")
-    print(f"  {friendly}  ({period})")
+) -> str:
+    log("INFO", code, f"{friendly}")
 
     if cfg["reader"] == "skip":
-        print("  ⚠  SKIP: Krypterade filer (.p7m) kan inte bearbetas automatiskt")
+        log("SKIP", code, "Krypterade filer (.p7m) kan inte bearbetas automatiskt")
         if not dry_run:
             REFERENS_DIR.mkdir(exist_ok=True)
         for fname in cfg.get("extra", []):
             move_to_referens(fname, dry_run)
-        return
+        return "skip"
 
     filepath = GERMANY_DIR / cfg["file"]
-    print(f"  Fil: {filepath.name}")
+    log("INFO", code, f"Fil: {filepath.name}")
 
     if not filepath.exists():
-        print("  ⚠  SKIP: Filen saknas (redan i Referens?)")
-        return
+        log("SKIP", code, "Filen saknas (redan i Referens?)")
+        return "skip"
 
     try:
         reader = cfg["reader"]
@@ -485,28 +481,32 @@ def process_company(
         elif reader == "susa_csv":
             is_rows, bs_rows = read_susa_csv(filepath)
         else:
-            print(f"  ❌ Okänd reader: {reader}")
-            return
+            log("ERROR", code, f"Okänd reader: {reader}")
+            return "error"
     except Exception as e:
-        print(f"  ❌ Läsfel: {e}")
-        return
+        log("ERROR", code, f"Läsfel: {e}")
+        return "error"
 
     total = sum(r[2] for r in is_rows + bs_rows)
-    check = "OK" if abs(total) < 1.0 else f"⚠ KONTROLLERA ({total:.2f})"
-    print(f"  Rader IS={len(is_rows)}, BS={len(bs_rows)}   Summa={total:.4f}  {check}")
+    is_warn = abs(total) >= 1.0
+    check = "OK" if not is_warn else f"KONTROLLERA ({total:.2f})"
+    log("INFO", code, f"IS={len(is_rows)}, BS={len(bs_rows)}  Summa={total:.4f}  {check}")
 
     out_name = f"{code}_{friendly}_{period}_INL.xlsx"
     out_path = OUTPUT_DIR / out_name
 
     if not dry_run:
         save_inl_xlsx(is_rows, bs_rows, out_path)
-    print(f"  {'[dry] ' if dry_run else ''}✔ Sparad: {out_name}")
+    dry_prefix = "[DRY] " if dry_run else ""
+    log("WARN" if is_warn else "OK", code, f"{dry_prefix}Sparad: {out_name}")
 
     if not dry_run:
         REFERENS_DIR.mkdir(exist_ok=True)
     move_to_referens(cfg["file"], dry_run)
     for fname in cfg.get("extra", []):
         move_to_referens(fname, dry_run)
+
+    return "warn" if is_warn else "ok"
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -525,15 +525,13 @@ def main() -> None:
     args = parser.parse_args()
 
     period = prev_month_period()
-    label  = "[DRY RUN] " if args.dry_run else ""
-    print(f"{label}process_germany.py — {date.today()}  Period: {period}")
-    print(f"  Germany-mapp : {GERMANY_DIR}")
-    print(f"  Dotterbolag  : {DOTTERBOLAG}")
+    dry_label = "  [DRY RUN]" if args.dry_run else ""
+    log("START", "process_germany.py", f"period {period}{dry_label}")
 
     if not GERMANY_DIR.exists():
-        sys.exit(f"❌  Germany-mappen saknas: {GERMANY_DIR}")
+        sys.exit(f"[ERROR]  Germany-mappen saknas: {GERMANY_DIR}")
     if not DOTTERBOLAG.exists():
-        sys.exit(f"❌  Dotterbolagslistan saknas: {DOTTERBOLAG}")
+        sys.exit(f"[ERROR]  Dotterbolagslistan saknas: {DOTTERBOLAG}")
 
     friendlies = load_dotterbolag(DOTTERBOLAG)
 
@@ -543,19 +541,20 @@ def main() -> None:
 
     all_codes  = sorted(COMPANY_DEFS.keys())
     codes_to_run = args.codes if args.codes else all_codes
+    stats: dict[str, int] = {"ok": 0, "warn": 0, "skip": 0, "error": 0}
 
     for code in codes_to_run:
         if code not in COMPANY_DEFS:
-            print(f"\n⚠  Okänd bolagskod: {code}")
+            log("ERROR", code, "Okänd bolagskod")
+            stats["error"] += 1
             continue
         cfg      = COMPANY_DEFS[code]
         friendly = friendlies.get(int(code), f"Bolag{code}")
-        process_company(code, friendly, period, cfg, args.dry_run)
+        status = process_company(code, friendly, period, cfg, args.dry_run)
+        stats[status] = stats.get(status, 0) + 1
 
-    print(f"\n{'═' * 55}")
-    print("Klart!")
-    if args.dry_run:
-        print("(DRY RUN — inga filer ändrades)")
+    log("DONE", "process_germany.py",
+        f"{stats['ok']} OK  {stats['warn']} WARN  {stats['skip']} SKIP  {stats['error']} ERROR")
 
 
 if __name__ == "__main__":

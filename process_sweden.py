@@ -31,20 +31,19 @@ from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 try:
     import openpyxl
 except ImportError:
     sys.exit("Saknar openpyxl — kör:  py -m pip install openpyxl")
 
-from shared import safe_dest
+from shared import safe_dest, load_config, log
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent  # = finance-automation\
 
-GET_TESTFILES = Path(
-    r"C:\Users\DidWac\Prosero Dropbox\Didrik Wachtmeister"
-    r"\Phoenix Foundation\April alla filer\Get testfiles"
-)
+GET_TESTFILES = Path(load_config()["base_path"])
 DOTTERBOLAG  = _BASE / "_params" / "Dotterbolagslista.xlsx"
 SWEDEN_DIR   = GET_TESTFILES / "extracted" / "Sweden"
 REFERENS_DIR = SWEDEN_DIR / "Referens"
@@ -216,16 +215,13 @@ def corrected_ref_filename(filename: str, old_prefix: int, new_prefix: int) -> s
 # ── Huvud ──────────────────────────────────────────────────────────────────────
 
 def process_sweden(dry_run: bool = False) -> None:
-    label = "[DRY RUN] " if dry_run else ""
-    print(f"{label}process_sweden.py — {date.today()}")
-    print(f"  Sweden-mapp : {SWEDEN_DIR}")
-    print(f"  Dotterbolag : {DOTTERBOLAG}")
-    print()
+    dry_label = "  [DRY RUN]" if dry_run else ""
+    log("START", "process_sweden.py", f"{date.today()}{dry_label}")
 
     if not SWEDEN_DIR.exists():
-        sys.exit(f"❌  Sweden-mappen saknas: {SWEDEN_DIR}")
+        sys.exit(f"[ERROR]  Sweden-mappen saknas: {SWEDEN_DIR}")
     if not DOTTERBOLAG.exists():
-        sys.exit(f"❌  Dotterbolagslistan saknas: {DOTTERBOLAG}")
+        sys.exit(f"[ERROR]  Dotterbolagslistan saknas: {DOTTERBOLAG}")
 
     if not dry_run:
         REFERENS_DIR.mkdir(exist_ok=True)
@@ -257,7 +253,7 @@ def process_sweden(dry_run: bool = False) -> None:
         sie_files   = [f for f in files if f.suffix.lower() in SIE_EXTENSIONS]
         other_files = [f for f in files if f.suffix.lower() not in SIE_EXTENSIONS]
 
-        print(f"── {prefix:03d} {'─' * 45}")
+        log("INFO", f"{prefix:03d}", "")
 
         # ── STEG 1: Parsa SIE-filer för att bestämma korrekt BolagsID ────────
         # Måste göras INNAN referensfiler flyttas, så vi kan korrigera prefix.
@@ -304,7 +300,7 @@ def process_sweden(dry_run: bool = False) -> None:
             moved_count += 1
 
         if not sie_files:
-            print(f"  ⚠  FLAGGA : Ingen SIE-fil hittad för prefix {prefix:03d}")
+            log("WARN", f"{prefix:03d}", "Ingen SIE-fil hittad")
             flag_count += 1
             continue
 
@@ -324,8 +320,7 @@ def process_sweden(dry_run: bool = False) -> None:
             parsed   = parse_cache[sie_path]
 
             if "error" in parsed:
-                print(f"  ⚠  FLAGGA : {sie_path.name}")
-                print(f"     ❌ Läsfel: {parsed['error']}")
+                log("ERROR", f"{prefix:03d}", f"Läsfel i {sie_path.name}: {parsed['error']}")
                 flag_count += 1
                 continue
 
@@ -382,8 +377,7 @@ def process_sweden(dry_run: bool = False) -> None:
             )
 
             # ── Utskrift ──────────────────────────────────────────────────────
-            status = "✅ OK    " if not flags else "⚠  FLAGGA"
-            print(f"  {status} : {sie_path.name}")
+            log("WARN" if flags else "OK", f"{effective_id:03d}", sie_path.name)
             print(f"    OrgNr   : {orgnr_raw or '—'}")
             if id_from_list is not None:
                 prefix_note = f"  (var {prefix:03d} i filnamnet)" if id_from_list != prefix else ""
@@ -393,7 +387,7 @@ def process_sweden(dry_run: bool = False) -> None:
                 arrow = "→" if new_name != sie_path.name else "="
                 print(f"    Namn    : {arrow} {new_name}")
             for flag in flags:
-                print(f"    ❌ {flag}")
+                print(f"    ! {flag}")
 
             # ── Rename ────────────────────────────────────────────────────────
             if new_name:
@@ -406,7 +400,7 @@ def process_sweden(dry_run: bool = False) -> None:
                             print(f"    ❌ Rename misslyckades: {e}")
                             flag_count += 1
                             continue
-                    print(f"    {'[DRY] ' if dry_run else ''}✔ Döpt om")
+                    print(f"    {'[DRY] ' if dry_run else ''}Döpt om")
 
             if flags:
                 flag_count += 1
@@ -420,15 +414,8 @@ def process_sweden(dry_run: bool = False) -> None:
             print(f"  {f.name}")
 
     # ── Sammanfattning ────────────────────────────────────────────────────────
-    print()
-    print("═" * 55)
-    print(
-        f"Klart!  ✅ OK: {ok_count}  "
-        f"⚠ Flaggor: {flag_count}  "
-        f"→ Referens: {moved_count}"
-    )
-    if dry_run:
-        print("(DRY RUN — inga filer ändrades)")
+    log("DONE", "process_sweden.py",
+        f"{ok_count} OK  {flag_count} WARN  {moved_count} → Referens")
 
 
 if __name__ == "__main__":

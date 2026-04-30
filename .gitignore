@@ -2,6 +2,7 @@ _params/
 __pycache__/
 *.pyc
 .claude/
+config.json
 *.xlsx
 *.csv
 *.xml

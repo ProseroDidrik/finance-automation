@@ -28,14 +28,13 @@ from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
-from shared import safe_dest
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+from shared import safe_dest, load_config, log
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent
-GET_TESTFILES = Path(
-    r"C:\Users\DidWac\Prosero Dropbox\Didrik Wachtmeister"
-    r"\Phoenix Foundation\April alla filer\Get testfiles"
-)
+GET_TESTFILES = Path(load_config()["base_path"])
 NORWAY_DIR  = GET_TESTFILES / "extracted" / "Norway"
 DOTTERBOLAG = _BASE / "_params" / "Dotterbolagslista.xlsx"
 
@@ -271,11 +270,8 @@ def hr():
 
 # ── SAF-T-bearbetning ──────────────────────────────────────────────────────────
 def process_norway(prefix_filter, dry_run: bool):
-    print()
-    print("norway_saft.py - SAF-T namngivning for Norge")
-    if dry_run:
-        print("  *** DRY-RUN: inga filer skrivs eller dops om ***")
-    hr()
+    dry_label = "  [DRY RUN]" if dry_run else ""
+    log("START", "process_norway.py", f"SAF-T namngivning{dry_label}")
 
     orgnr_lookup, id_lookup = load_dotterbolag()
     all_files = collect_saft_files(prefix_filter)
@@ -292,7 +288,7 @@ def process_norway(prefix_filter, dry_run: bool):
         files      = all_files[prefix_str]
         friendly_default = id_lookup.get(prefix_int, f"ID{prefix_int}")
 
-        print(f"\n[{prefix_str}] {friendly_default}")
+        log("INFO", prefix_str, friendly_default)
 
         entries = []
 
@@ -301,7 +297,7 @@ def process_norway(prefix_filter, dry_run: bool):
             if xml_bytes is None:
                 msg = f"{src_path.name}: {inner_or_err}"
                 issues.append((prefix_str, msg))
-                print(f"  !  {msg}")
+                log("ERROR", prefix_str, msg)
                 continue
 
             try:
@@ -309,7 +305,7 @@ def process_norway(prefix_filter, dry_run: bool):
             except ET.ParseError as e:
                 msg = f"{src_path.name}: XML-parse-fel: {e}"
                 issues.append((prefix_str, msg))
-                print(f"  !  {msg}")
+                log("ERROR", prefix_str, msg)
                 continue
 
             # Verifiera RegistrationNumber mot Dotterbolagslista
@@ -320,21 +316,21 @@ def process_norway(prefix_filter, dry_run: bool):
                     if matched_id != prefix_int:
                         msg = (
                             f"{src_path.name}: OrgNr {reg_no} -> BolagsID {matched_id} "
-                            f"({matched_friendly}) - stammer INTE med filprefixet {prefix_str}!"
+                            f"({matched_friendly}) - stämmer INTE med filprefixet {prefix_str}!"
                         )
                         issues.append((prefix_str, msg))
-                        print(f"  !  {msg}")
+                        log("WARN", prefix_str, msg)
                 else:
                     msg = (
                         f"{src_path.name}: OrgNr {reg_no} saknas i "
                         f"Dotterbolagslista kol F - kan inte verifiera BolagsID"
                     )
                     issues.append((prefix_str, msg))
-                    print(f"  i  {msg}")
+                    log("WARN", prefix_str, msg)
             else:
                 msg = f"{src_path.name}: Inget RegistrationNumber hittades i XML:en"
                 issues.append((prefix_str, msg))
-                print(f"  i  {msg}")
+                log("INFO", prefix_str, msg)
 
             entries.append((src_path, parsed))
 
@@ -356,19 +352,18 @@ def process_norway(prefix_filter, dry_run: bool):
             target_path = NORWAY_DIR / target_name
 
             sw_display = f"{parsed['software_id']!r} -> {sw_abbr}"
-            print(f"  Kalla  : {src_path.name}")
-            print(f"  Mal    : {target_name}")
-            print(f"  Period : {year}-{period}  |  Software: {sw_display}")
+            print(f"       {src_path.name}")
+            print(f"    →  {target_name}  [{year}-{period} | {sw_display}]")
 
             if dry_run:
-                print(f"  -> (dry-run, hoppar over)")
+                log("SKIP", prefix_str, f"[DRY] {src_path.name} → {target_name}")
                 renames.append((src_path.name, target_name))
                 continue
 
             if src_path.suffix.lower() == ".zip":
                 xml_bytes, _ = read_xml_bytes(src_path)
                 if xml_bytes is None:
-                    print(f"  X  Kunde inte lasa XML ur ZIP")
+                    log("ERROR", prefix_str, "Kunde inte läsa XML ur ZIP")
                     continue
                 tmp_path = target_path.with_suffix(".tmp")
                 tmp_path.write_bytes(xml_bytes)
@@ -376,28 +371,19 @@ def process_norway(prefix_filter, dry_run: bool):
                     tmp_path.rename(target_path)
                 except OSError:
                     os.rename(tmp_path, target_path)
-                print(f"  OK  Extraherad + omdopt")
+                log("OK", prefix_str, f"Extraherad + omdöpt: {target_name}")
             else:
                 try:
                     src_path.rename(target_path)
                 except OSError:
                     os.rename(src_path, target_path)
-                print(f"  OK  Omdopt")
+                log("OK", prefix_str, f"Omdöpt: {target_name}")
 
             renames.append((src_path.name, target_name))
 
-        hr()
-
-    print()
-    print(f"Klart. {len(renames)} fil(er) bearbetade.")
-
-    if issues:
-        print(f"\n{'=' * 70}")
-        print(f"!  {len(issues)} problem att granska:")
-        for prefix_str, msg in issues:
-            print(f"  [{prefix_str}] {msg}")
-    else:
-        print("Inga avvikelser hittades.")
+    n_ok   = sum(1 for _, tgt in renames if not dry_run or True)
+    n_warn = len(issues)
+    log("DONE", "process_norway.py", f"{len(renames)} fil(er)  {n_warn} varningar")
 
 
 # ── Flytta icke-SAF-T-filer till Referens/ ────────────────────────────────────

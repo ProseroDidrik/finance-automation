@@ -30,7 +30,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from datetime import date
 from pathlib import Path
 
-from shared import load_dotterbolag, move_to_referens_safe, save_inl_xlsx
+from shared import load_dotterbolag, move_to_referens_safe, save_inl_xlsx, load_config, log
 
 try:
     import openpyxl
@@ -40,10 +40,7 @@ except ImportError:
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent
 
-GET_TESTFILES = Path(
-    r"C:\Users\DidWac\Prosero Dropbox\Didrik Wachtmeister"
-    r"\Phoenix Foundation\April alla filer\Get testfiles"
-)
+GET_TESTFILES = Path(load_config()["base_path"])
 DENMARK_DIR  = GET_TESTFILES / "extracted" / "Denmark"
 OUTPUT_DIR   = DENMARK_DIR / "output"
 REFERENS_DIR = DENMARK_DIR / "Referens"
@@ -374,8 +371,7 @@ def archive_by_prefix(prefix: str, dry_run: bool) -> None:
     files = sorted(f for f in DENMARK_DIR.glob(f"{prefix}_*") if f.is_file())
     if not files:
         return
-    print(f"\n── {prefix} {'─' * 45}")
-    print(f"  Arkiverar {len(files)} fil(er) → Referens/")
+    log("INFO", prefix, f"Arkiverar {len(files)} fil(er) → Referens/")
     for f in files:
         move_to_referens(f.name, dry_run)
 
@@ -393,14 +389,12 @@ def process_company(
     dry_run: bool,
     exclude: list[int] | None = None,
     ytd_filepath: Path | None = None,
-) -> None:
-    print(f"\n── {code} {'─' * 45}")
-    print(f"  {friendly}  ({period})")
-    print(f"  Fil: {filepath.name}")
+) -> str:
+    log("INFO", code, f"{friendly}  Fil: {filepath.name}")
 
     if not filepath.exists():
-        print(f"  ⚠  SKIP: Filen saknas (redan i Referens?)")
-        return
+        log("SKIP", code, "Filen saknas (redan i Referens?)")
+        return "skip"
 
     try:
         is_rows, bs_rows = read_saldobalance(filepath, is_max_4d, bs_min_4d, skip_formatting, exclude)
@@ -408,27 +402,31 @@ def process_company(
             if ytd_filepath.exists():
                 bs_rows = read_bs_from_ytd(ytd_filepath, bs_min_4d)
             else:
-                print(f"  ⚠ YTD-fil saknas: {ytd_filepath.name}")
+                log("WARN", code, f"YTD-fil saknas: {ytd_filepath.name}")
     except Exception as e:
-        print(f"  ❌ Läsfel: {e}")
-        return
+        log("ERROR", code, f"Läsfel: {e}")
+        return "error"
 
     total = sum(r[2] for r in is_rows + bs_rows)
-    check = "OK" if abs(total) < 1.0 else f"⚠ KONTROLLERA ({total:.2f})"
-    print(f"  Rader IS={len(is_rows)}, BS={len(bs_rows)}   Summa={total:.4f}  {check}")
+    is_warn = abs(total) >= 1.0
+    check = "OK" if not is_warn else f"KONTROLLERA ({total:.2f})"
+    log("INFO", code, f"IS={len(is_rows)}, BS={len(bs_rows)}  Summa={total:.4f}  {check}")
 
     out_name = f"{code}_{friendly}_{period}_INL.xlsx"
     out_path = OUTPUT_DIR / out_name
 
     if not dry_run:
         save_inl_xlsx(is_rows, bs_rows, out_path)
-    print(f"  {'[dry] ' if dry_run else ''}✔ Sparad: {out_name}")
+    dry_prefix = "[DRY] " if dry_run else ""
+    log("WARN" if is_warn else "OK", code, f"{dry_prefix}Sparad: {out_name}")
 
     if not dry_run:
         REFERENS_DIR.mkdir(exist_ok=True)
     move_to_referens(filepath.name, dry_run)
     for fname in extra_referens:
         move_to_referens(fname, dry_run)
+
+    return "warn" if is_warn else "ok"
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -447,15 +445,13 @@ def main() -> None:
     args = parser.parse_args()
 
     period = prev_month_period()
-    label  = "[DRY RUN] " if args.dry_run else ""
-    print(f"{label}process_denmark.py — {date.today()}  Period: {period}")
-    print(f"  Denmark-mapp : {DENMARK_DIR}")
-    print(f"  Dotterbolag  : {DOTTERBOLAG}")
+    dry_label = "  [DRY RUN]" if args.dry_run else ""
+    log("START", "process_denmark.py", f"period {period}{dry_label}")
 
     if not DENMARK_DIR.exists():
-        sys.exit(f"❌  Denmark-mappen saknas: {DENMARK_DIR}")
+        sys.exit(f"[ERROR]  Denmark-mappen saknas: {DENMARK_DIR}")
     if not DOTTERBOLAG.exists():
-        sys.exit(f"❌  Dotterbolagslistan saknas: {DOTTERBOLAG}")
+        sys.exit(f"[ERROR]  Dotterbolagslistan saknas: {DOTTERBOLAG}")
 
     friendlies = load_dotterbolag(DOTTERBOLAG)
 
@@ -465,10 +461,12 @@ def main() -> None:
 
     all_codes = sorted(COMPANY_DEFS.keys())
     codes_to_run = args.codes if args.codes else all_codes
+    stats: dict[str, int] = {"ok": 0, "warn": 0, "skip": 0, "error": 0}
 
     for code in codes_to_run:
         if code not in COMPANY_DEFS:
-            print(f"\n⚠  Okänd bolagskod: {code}")
+            log("ERROR", code, "Okänd bolagskod")
+            stats["error"] += 1
             continue
 
         cfg         = COMPANY_DEFS[code]
@@ -477,7 +475,7 @@ def main() -> None:
         ytd_file    = cfg.get("ytd_file")
         ytd_filepath = DENMARK_DIR / ytd_file if ytd_file else None
 
-        process_company(
+        status = process_company(
             code=code,
             friendly=friendly,
             period=period,
@@ -490,14 +488,13 @@ def main() -> None:
             exclude=cfg.get("exclude"),
             ytd_filepath=ytd_filepath,
         )
+        stats[status] = stats.get(status, 0) + 1
 
     if not args.codes or "54" in args.codes:
         archive_by_prefix("054", args.dry_run)
 
-    print(f"\n{'═' * 55}")
-    print("Klart!")
-    if args.dry_run:
-        print("(DRY RUN — inga filer ändrades)")
+    log("DONE", "process_denmark.py",
+        f"{stats['ok']} OK  {stats['warn']} WARN  {stats['skip']} SKIP  {stats['error']} ERROR")
 
 
 if __name__ == "__main__":

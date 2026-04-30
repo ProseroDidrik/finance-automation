@@ -1,4 +1,5 @@
 """Shared utilities for finance-automation country processing scripts."""
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -12,6 +13,27 @@ try:
     import pandas as pd
 except ImportError:
     sys.exit("Saknar pandas — kör:  py -m pip install pandas openpyxl")
+
+
+def load_config() -> dict:
+    """Load base_path (and other settings) from config.json in the repo root."""
+    config_path = Path(__file__).parent / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(
+            "config.json saknas. Skapa den i repo-roten med innehållet:\n"
+            '  {"base_path": "C:\\\\...\\\\Get testfiles"}'
+        )
+    with open(config_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def log(status: str, label, msg: str = "") -> None:
+    """Print a structured log line: [STATUS]  label  msg"""
+    tag = f"[{status}]"
+    line = f"{tag:<8} {label}"
+    if msg:
+        line += f"  {msg}"
+    print(line)
 
 
 def load_dotterbolag(path: Path) -> dict[int, str]:

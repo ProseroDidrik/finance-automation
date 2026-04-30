@@ -9,8 +9,10 @@ from pathlib import Path
 import extract_msg
 import openpyxl
 
+from shared import load_config as _load_config
+
 _BASE          = Path(__file__).resolve().parent
-GET_TESTFILES  = Path(r"C:\Users\DidWac\Prosero Dropbox\Didrik Wachtmeister\Phoenix Foundation\April alla filer\Get testfiles")
+GET_TESTFILES  = Path(_load_config()["base_path"])
 INBOX_DIR      = GET_TESTFILES / "_inbox"
 OUT_DIR        = GET_TESTFILES / "extracted"
 DOTTERBOLAG    = _BASE / "_params" / "Dotterbolagslista.xlsx"
