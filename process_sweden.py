@@ -36,6 +36,8 @@ try:
 except ImportError:
     sys.exit("Saknar openpyxl — kör:  py -m pip install openpyxl")
 
+from shared import safe_dest
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent  # = finance-automation\
 
@@ -203,18 +205,6 @@ def build_new_name(bolag_id: int, friendly: str, rar_start: str, rar_end: str, e
     safe = re.sub(r'[\\/:*?"<>|]', "", friendly).strip()
     return f"{bolag_id:03d}_{safe}_SIE_{start_year}-{end_yyyymm}{ext.upper()}"
 
-
-def safe_dest(dest: Path) -> Path:
-    """Returnerar en unik sökväg om målfilen redan finns (lägger till _2, _3 ...)."""
-    if not dest.exists():
-        return dest
-    stem, suffix = dest.stem, dest.suffix
-    i = 2
-    while True:
-        candidate = dest.parent / f"{stem}_{i}{suffix}"
-        if not candidate.exists():
-            return candidate
-        i += 1
 
 
 def corrected_ref_filename(filename: str, old_prefix: int, new_prefix: int) -> str:

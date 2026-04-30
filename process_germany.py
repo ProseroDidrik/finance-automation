@@ -38,7 +38,6 @@ BS-konton:
 
 import argparse
 import re
-import shutil
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -50,10 +49,7 @@ try:
 except ImportError:
     sys.exit("Saknar openpyxl — kör:  py -m pip install openpyxl")
 
-try:
-    import pandas as pd
-except ImportError:
-    sys.exit("Saknar pandas — kör:  py -m pip install pandas openpyxl")
+from shared import load_dotterbolag, move_to_referens_safe, save_inl_xlsx
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent
@@ -204,23 +200,6 @@ def parse_account(val) -> int | None:
         return None
 
 
-# ── Dotterbolagslistan ─────────────────────────────────────────────────────────
-def load_friendly_names() -> dict[int, str]:
-    wb = openpyxl.load_workbook(str(DOTTERBOLAG), read_only=True, data_only=True)
-    ws = wb["Data For Company Find"]
-    result: dict[int, str] = {}
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or len(row) < 5:
-            continue
-        bolag_id = row[1]
-        friendly  = row[4]
-        kind      = row[7] if len(row) > 7 else None
-        if str(kind).strip().lower() == "consolidated":
-            continue
-        if bolag_id and friendly:
-            result[int(bolag_id)] = str(friendly).strip()
-    wb.close()
-    return result
 
 
 # ── BS/IS classification ───────────────────────────────────────────────────────
@@ -452,34 +431,12 @@ def read_susa_csv(filepath: Path) -> tuple[list, list]:
     return is_rows, bs_rows
 
 
-# ── INL.xlsx output ────────────────────────────────────────────────────────────
-def save_xlsx(is_rows: list, bs_rows: list, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    records = [{"A": None, "B": None, "C": None}]
-    for acc, name, amt in is_rows + bs_rows:
-        records.append({"A": acc, "B": name, "C": amt})
-    df = pd.DataFrame(records)
-    with pd.ExcelWriter(str(output_path), engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, header=False, sheet_name="Sheet1")
-
-
 # ── Referens move ──────────────────────────────────────────────────────────────
 def move_to_referens(filename: str, dry_run: bool) -> None:
     src = GERMANY_DIR / filename
     if not src.exists():
         return
-    dst = REFERENS_DIR / filename
-    if dst.exists():
-        stem, ext = src.stem, src.suffix
-        i = 1
-        while dst.exists():
-            dst = REFERENS_DIR / f"{stem}_{i}{ext}"
-            i += 1
-    if dry_run:
-        print(f"    [dry] → Referens/{dst.name}")
-    else:
-        shutil.move(str(src), str(dst))
-        print(f"    → Referens/{dst.name}")
+    move_to_referens_safe(src, REFERENS_DIR, dry_run)
 
 
 # ── Process one company ────────────────────────────────────────────────────────
@@ -533,7 +490,7 @@ def process_company(
     out_path = OUTPUT_DIR / out_name
 
     if not dry_run:
-        save_xlsx(is_rows, bs_rows, out_path)
+        save_inl_xlsx(is_rows, bs_rows, out_path)
     print(f"  {'[dry] ' if dry_run else ''}✔ Sparad: {out_name}")
 
     if not dry_run:
@@ -569,7 +526,7 @@ def main() -> None:
     if not DOTTERBOLAG.exists():
         sys.exit(f"❌  Dotterbolagslistan saknas: {DOTTERBOLAG}")
 
-    friendlies = load_friendly_names()
+    friendlies = load_dotterbolag(DOTTERBOLAG)
 
     if not args.dry_run:
         OUTPUT_DIR.mkdir(exist_ok=True)

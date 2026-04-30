@@ -12,10 +12,12 @@ Verify:  column C must sum to 0
 import csv
 import os
 import re
-import shutil
+from pathlib import Path
 
 import pandas as pd
 import xlrd
+
+from shared import move_to_referens_safe, save_inl_xlsx
 
 
 # ---------------------------------------------------------------------------
@@ -127,26 +129,14 @@ def _find_period_col(rows: list, target_period: str) -> int | None:
     return None
 
 
-def save_xlsx(is_rows: list, bs_rows: list, output_path: str):
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    records = [{"A": None, "B": None, "C": None}]
-    for acc, name, amt in is_rows + bs_rows:
-        records.append({"A": acc, "B": name, "C": amt})
-    df = pd.DataFrame(records)
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, header=False, sheet_name="Sheet1")
-
-
 def verify_sum(is_rows, bs_rows) -> float:
     return sum(r[2] for r in is_rows + bs_rows)
 
 
 def move_to_referens(filename: str):
-    src = os.path.join(FINLAND_DIR, filename)
-    dst = os.path.join(REFERENS_DIR, filename)
-    if os.path.exists(src) and not os.path.exists(dst):
-        shutil.move(src, dst)
-        print(f"  Moved to Referens: {filename}")
+    src = Path(FINLAND_DIR) / filename
+    if src.exists():
+        move_to_referens_safe(src, Path(REFERENS_DIR), dry_run=False)
 
 
 def move_pdfs_to_referens():
@@ -668,7 +658,7 @@ def process_company(
     print(f"  Rows IS={len(is_rows)}, BS={len(bs_rows)}   Sum={total:.4f}  {check}")
 
     filename = f"{code}_{friendly_name}_{period}_INL.xlsx"
-    save_xlsx(is_rows, bs_rows, os.path.join(OUTPUT_DIR, filename))
+    save_inl_xlsx(is_rows, bs_rows, os.path.join(OUTPUT_DIR, filename))
     print(f"  Saved: {filename}")
 
     if extra_files_to_referens:

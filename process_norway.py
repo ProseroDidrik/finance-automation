@@ -28,6 +28,8 @@ from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
+from shared import safe_dest
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent
 GET_TESTFILES = Path(
@@ -433,15 +435,7 @@ def move_to_referens(dry_run: bool):
     moved = 0
     moved = 0
     for f in to_move:
-        dest = referens_dir / f.name
-        # Undvik kollision: lagg till suffix om filen redan finns i Referens
-        if dest.exists():
-            stem, ext = f.stem, f.suffix
-            counter = 1
-            while dest.exists():
-                dest = referens_dir / f"{stem}_{counter}{ext}"
-                counter += 1
-
+        dest = safe_dest(referens_dir / f.name)
         prefix = "(dry) " if dry_run else ""
         print(f"  {prefix}-> Referens/{dest.name}")
 
