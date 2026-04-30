@@ -64,6 +64,7 @@ class OverrideEditor(QDialog):
         self.attachment_table = self._build_attachment_tab(data.get("attachment_overrides", []))
         self.country_table = self._build_country_tab(data.get("country_overrides", {}))
         self.alias_table = self._build_alias_tab(data.get("aliases", {}))
+        self.excluded_table = self._build_excluded_tab(data.get("excluded", []))
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
@@ -140,6 +141,34 @@ class OverrideEditor(QDialog):
         v.addLayout(self._row_buttons(table, lambda: self._append_alias_row(table, 0, "")))
         self.tabs.addTab(page, "Aliases")
         return table
+
+    def _build_excluded_tab(self, data: list) -> QTableWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.addWidget(QLabel(
+            "<b>Excluded</b> — bolag som GUI:t gömmer i tabellen som default. "
+            "Påverkar <i>inte</i> matchning eller pipeline; endast visuellt. "
+            "Tipp: högerklicka på en rad i tabellen för att toggla."
+        ))
+        table = QTableWidget(0, 2, page)
+        table.setHorizontalHeaderLabels(["bolag_id", "bolag (info)"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        for bid in sorted({int(i) for i in data if str(i).strip().lstrip("-").isdigit()}):
+            self._append_excluded_row(table, bid)
+        table.itemChanged.connect(lambda _it, t=table: self._refresh_company_info(t, id_col=0, info_col=1))
+        v.addWidget(table, 1)
+        v.addLayout(self._row_buttons(table, lambda: self._append_excluded_row(table, 0)))
+        self.tabs.addTab(page, "Excluded")
+        return table
+
+    def _append_excluded_row(self, table: QTableWidget, bolag_id: int) -> None:
+        r = table.rowCount()
+        table.insertRow(r)
+        table.setItem(r, 0, QTableWidgetItem(str(bolag_id) if bolag_id else ""))
+        info = QTableWidgetItem(self._company_info(bolag_id))
+        info.setFlags(info.flags() & ~Qt.ItemIsEditable)
+        table.setItem(r, 1, info)
 
     def _append_alias_row(self, table: QTableWidget, bolag_id: int, phrase: str) -> None:
         r = table.rowCount()
@@ -326,12 +355,31 @@ class OverrideEditor(QDialog):
             out.setdefault(str(bid), []).append(phrase)
         return out, errors
 
+    def _collect_excluded(self) -> tuple[list[int], list[str]]:
+        out: set[int] = set()
+        errors: list[str] = []
+        for r in range(self.excluded_table.rowCount()):
+            id_text = (self.excluded_table.item(r, 0).text() if self.excluded_table.item(r, 0) else "").strip()
+            if not id_text:
+                continue
+            try:
+                bid = int(id_text)
+            except ValueError:
+                errors.append(f"Excluded rad {r + 1}: bolag_id ej heltal: '{id_text}'")
+                continue
+            if bid not in self._valid_ids:
+                errors.append(f"Excluded rad {r + 1}: bolag_id {bid} finns inte i Dotterbolagslistan.")
+                continue
+            out.add(bid)
+        return sorted(out), errors
+
     def _on_save(self) -> None:
         subject, e1 = self._collect_subject()
         attachment, e2 = self._collect_attachment()
         country, e3 = self._collect_country()
         aliases, e4 = self._collect_aliases()
-        errors = e1 + e2 + e3 + e4
+        excluded, e5 = self._collect_excluded()
+        errors = e1 + e2 + e3 + e4 + e5
         if errors:
             QMessageBox.warning(self, "Valideringsfel", "\n".join(errors))
             return
@@ -341,6 +389,7 @@ class OverrideEditor(QDialog):
             "attachment_overrides": attachment,
             "country_overrides": country,
             "aliases": aliases,
+            "excluded": excluded,
         })
         try:
             _atomic_write_json(OVERRIDES_PATH, existing)
@@ -351,6 +400,6 @@ class OverrideEditor(QDialog):
         QMessageBox.information(
             self, "Sparat",
             f"Sparat {len(subject)} subject, {len(attachment)} attachment, "
-            f"{len(country)} country, {alias_count} aliases.",
+            f"{len(country)} country, {alias_count} aliases, {len(excluded)} excluded.",
         )
         self.accept()

@@ -171,13 +171,15 @@ def load_overrides() -> dict:
     attachment_overrides (list of {msg_stem, attachment_substr, bolag_id}),
     country_overrides (dict[str, str]),
     aliases (dict[str, list[str]] — bolag_id → phrases that score full weight when
-    found as substring in any haystack source). Empty defaults if file missing.
+    found as substring in any haystack source),
+    excluded (list[int] — bolag_id som GUI:t gömmer i tabellen; påverkar inte
+    matchning eller pipeline). Empty defaults if file missing.
     """
     p = _REPO_ROOT / "_params" / "overrides.json"
     if not p.exists():
         return {
             "subject_overrides": {}, "attachment_overrides": [],
-            "country_overrides": {}, "aliases": {},
+            "country_overrides": {}, "aliases": {}, "excluded": [],
         }
     with open(p, encoding="utf-8") as f:
         data = json.load(f)
@@ -185,7 +187,28 @@ def load_overrides() -> dict:
     data.setdefault("attachment_overrides", [])
     data.setdefault("country_overrides", {})
     data.setdefault("aliases", {})
+    data.setdefault("excluded", [])
     return data
+
+
+def save_overrides(data: dict) -> None:
+    """Atomic-write _params/overrides.json. Used by GUI when toggling exclusions etc."""
+    import os
+    import tempfile
+    p = _REPO_ROOT / "_params" / "overrides.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".overrides_", suffix=".tmp", dir=str(p.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def safe_dest(dest: Path) -> Path:

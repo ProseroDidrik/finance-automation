@@ -26,6 +26,7 @@ class CompanyRow:
     extracted: bool = False
     dry_run_matched: bool = False
     processed: bool = False
+    excluded: bool = False
     output_files: list[str] = field(default_factory=list)
     extracted_files: list[str] = field(default_factory=list)
     referens_files: list[str] = field(default_factory=list)
@@ -124,6 +125,9 @@ def compute_company_status(period: str) -> list[CompanyRow]:
     full = load_dotterbolag_full(DOTTERBOLAG_PATH)
     ov = load_overrides()
     country_overrides = {int(k): v for k, v in ov.get("country_overrides", {}).items()}
+    excluded_ids: set[int] = {
+        int(i) for i in ov.get("excluded", []) if str(i).strip().lstrip("-").isdigit()
+    }
 
     events = _read_jsonl_events(period)
     events_by_label: dict[str, list[dict]] = {}
@@ -164,6 +168,7 @@ def compute_company_status(period: str) -> list[CompanyRow]:
             extracted=bool(extracted_files) or bool(referens_files),
             dry_run_matched=bolag_id in dry_run_matched,
             processed=bool(referens_files) or bool(output_files),
+            excluded=bolag_id in excluded_ids,
             output_files=output_files,
             extracted_files=extracted_files,
             referens_files=referens_files,

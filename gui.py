@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
     QPlainTextEdit, QSplitter, QHeaderView, QMessageBox, QGroupBox,
-    QStatusBar, QAbstractItemView, QDialog,
+    QStatusBar, QAbstractItemView, QDialog, QCheckBox, QMenu,
 )
 
 import shared
@@ -23,6 +23,9 @@ from gui_overrides import OverrideEditor
 
 REPO_ROOT = Path(__file__).resolve().parent
 LOGS_DIR = REPO_ROOT / "_logs"
+
+EXCLUDED_FG = QColor(150, 150, 150)
+EXCLUDED_BG = QColor(245, 245, 245)
 
 STATUS_COLORS = {
     "OK":    QColor(200, 230, 200),
@@ -84,6 +87,12 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.country_combo)
 
         toolbar.addSpacing(20)
+        self.show_excluded_cb = QCheckBox("Visa exkluderade")
+        self.show_excluded_cb.setChecked(False)
+        self.show_excluded_cb.toggled.connect(lambda _: self._refresh_table())
+        toolbar.addWidget(self.show_excluded_cb)
+
+        toolbar.addSpacing(20)
         refresh_btn = QPushButton("Uppdatera")
         refresh_btn.clicked.connect(self._refresh_table)
         toolbar.addWidget(refresh_btn)
@@ -119,6 +128,8 @@ class MainWindow(QMainWindow):
         h.setSectionResizeMode(6, QHeaderView.ResizeToContents)
         h.setSectionResizeMode(7, QHeaderView.Stretch)
         self.table.cellDoubleClicked.connect(self._on_row_double_clicked)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_table_context_menu)
         left.addWidget(self.table)
 
         log_box = QGroupBox("Live-logg")
@@ -238,6 +249,11 @@ class MainWindow(QMainWindow):
         if country_filter != COUNTRY_FILTER_ALL:
             rows = [r for r in rows if r.country == country_filter]
 
+        show_excluded = self.show_excluded_cb.isChecked()
+        excluded_total = sum(1 for r in rows if r.excluded)
+        if not show_excluded:
+            rows = [r for r in rows if not r.excluded]
+
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         ok = warn = err = extracted = dry_only = processed = 0
@@ -269,6 +285,15 @@ class MainWindow(QMainWindow):
                         item.setBackground(color)
             self.table.setItem(i, 6, status_item)
             self.table.setItem(i, 7, QTableWidgetItem(r.last_msg))
+            if r.excluded:
+                for c in range(self.table.columnCount()):
+                    item = self.table.item(i, c)
+                    if item:
+                        item.setForeground(EXCLUDED_FG)
+                        item.setBackground(EXCLUDED_BG)
+                name_item = self.table.item(i, 2)
+                if name_item:
+                    name_item.setText(f"{r.name}  (exkluderad)")
             if r.last_status == "OK":
                 ok += 1
             elif r.last_status == "WARN":
@@ -283,6 +308,11 @@ class MainWindow(QMainWindow):
                 processed += 1
         self.table.setSortingEnabled(True)
 
+        excl_part = (
+            f" &nbsp;|&nbsp; <span style='color:#888'>Exkluderade dolda: "
+            f"{excluded_total}</span>"
+            if excluded_total and not show_excluded else ""
+        )
         self.summary_label.setText(
             f"<b>{len(rows)}</b> bolag &nbsp;|&nbsp; "
             f"Extr: {extracted} &nbsp;|&nbsp; "
@@ -291,6 +321,7 @@ class MainWindow(QMainWindow):
             f"<span style='color:#080'>OK: {ok}</span> &nbsp;"
             f"<span style='color:#a80'>WARN: {warn}</span> &nbsp;"
             f"<span style='color:#a00'>ERROR: {err}</span>"
+            f"{excl_part}"
         )
         self._setup_watcher()
 
@@ -343,6 +374,44 @@ class MainWindow(QMainWindow):
     def _set_buttons_enabled(self, enabled: bool) -> None:
         for b in self.action_buttons:
             b.setEnabled(enabled)
+
+    # --- exkludering ---
+
+    def _on_table_context_menu(self, pos) -> None:
+        index = self.table.indexAt(pos)
+        if not index.isValid():
+            return
+        id_item = self.table.item(index.row(), 0)
+        if not id_item:
+            return
+        company_row: gui_status.CompanyRow = id_item.data(Qt.UserRole)
+        if not company_row:
+            return
+        menu = QMenu(self.table)
+        if company_row.excluded:
+            act = menu.addAction(f"Återställ bolag {company_row.bolag_id} ({company_row.name})")
+            act.triggered.connect(lambda: self._toggle_excluded(company_row.bolag_id, exclude=False))
+        else:
+            act = menu.addAction(f"Exkludera bolag {company_row.bolag_id} ({company_row.name})")
+            act.triggered.connect(lambda: self._toggle_excluded(company_row.bolag_id, exclude=True))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _toggle_excluded(self, bolag_id: int, exclude: bool) -> None:
+        ov = shared.load_overrides()
+        excluded = {int(i) for i in ov.get("excluded", []) if str(i).strip().lstrip("-").isdigit()}
+        if exclude:
+            excluded.add(bolag_id)
+        else:
+            excluded.discard(bolag_id)
+        ov["excluded"] = sorted(excluded)
+        try:
+            shared.save_overrides(ov)
+        except OSError as e:
+            QMessageBox.critical(self, "Skrivfel", f"Kunde inte spara overrides: {e}")
+            return
+        verb = "exkluderad" if exclude else "återställd"
+        self._append_log(f"[GUI] Bolag {bolag_id} {verb}.")
+        self._refresh_table()
 
     # --- row drilldown ---
 
