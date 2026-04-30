@@ -3,8 +3,11 @@
 reset.py  –  Återställ alla processhanterade filer för ny körning.
 
 Vad scriptet gör:
-  1. Flyttar tillbaka filer från extracted/{period}/{Country}/Referens/ till extracted/{period}/{Country}/
-  2. Raderar filer i extracted/{period}/{Country}/output/
+  1. Raderar filer i extracted/{period}/{Country}/Referens/
+  2. Raderar filer direkt i extracted/{period}/{Country}/  (de extraherade filerna)
+  3. Raderar filer i extracted/{period}/{Country}/output/
+
+Undermappar som Facit/, TESTED/ och TMP/ lämnas orörda.
 
 Kör från C:\\Users\\DidWac\\dev\\finance-automation\\ :
     py reset.py --period 202604      # återställ en specifik period
@@ -14,10 +17,9 @@ Kör från C:\\Users\\DidWac\\dev\\finance-automation\\ :
 
 import argparse
 import re
-import shutil
 from pathlib import Path
 
-from shared import load_config, safe_dest
+from shared import load_config
 
 GET_TESTFILES = Path(load_config()["base_path"])
 EXTRACTED = GET_TESTFILES / "extracted"
@@ -26,32 +28,26 @@ PERIOD_RE = re.compile(r"^\d{6}$")
 COUNTRIES = ["Sweden", "Norway", "Finland", "Denmark", "Germany"]
 
 
-def reset_country(country_dir: Path, dry_run: bool) -> tuple[int, int]:
-    referens = country_dir / "Referens"
-    output = country_dir / "output"
-    moved = 0
+def reset_country(country_dir: Path, dry_run: bool) -> int:
     deleted = 0
 
-    if referens.exists():
-        for src in sorted(f for f in referens.iterdir() if f.is_file()):
-            dest = safe_dest(country_dir / src.name)
+    for subdir, label in [
+        (country_dir / "Referens", "Referens/"),
+        (country_dir, ""),
+        (country_dir / "output", "output/"),
+    ]:
+        if not subdir.exists():
+            continue
+        for f in sorted(f for f in subdir.iterdir() if f.is_file()):
+            tag = f"{label}{f.name}"
             if dry_run:
-                print(f"  [dry] FLYTTA  Referens/{src.name} -> {dest.name}")
-            else:
-                shutil.move(str(src), str(dest))
-                print(f"  FLYTTA  Referens/{src.name} -> {dest.name}")
-            moved += 1
-
-    if output.exists():
-        for f in sorted(f for f in output.iterdir() if f.is_file()):
-            if dry_run:
-                print(f"  [dry] RADERA  output/{f.name}")
+                print(f"  [dry] RADERA  {tag}")
             else:
                 f.unlink()
-                print(f"  RADERA  output/{f.name}")
+                print(f"  RADERA  {tag}")
             deleted += 1
 
-    return moved, deleted
+    return deleted
 
 
 def reset_period(period: str, dry_run: bool) -> None:
@@ -60,21 +56,20 @@ def reset_period(period: str, dry_run: bool) -> None:
         print(f"  (mapp saknas: {period_dir})")
         return
 
-    total_moved = total_deleted = 0
+    total_deleted = 0
     for country in COUNTRIES:
         country_dir = period_dir / country
         if not country_dir.exists():
             continue
         print(f"  --- {country} ---")
-        moved, deleted = reset_country(country_dir, dry_run)
-        if moved == 0 and deleted == 0:
+        deleted = reset_country(country_dir, dry_run)
+        if deleted == 0:
             print("    (inget att återställa)")
         else:
-            print(f"    {moved} filer återställda, {deleted} output-filer raderade")
-        total_moved += moved
+            print(f"    {deleted} filer raderade")
         total_deleted += deleted
 
-    print(f"  Totalt: {total_moved} filer återställda, {total_deleted} output-filer raderade")
+    print(f"  Totalt: {total_deleted} filer raderade")
 
 
 def main() -> None:

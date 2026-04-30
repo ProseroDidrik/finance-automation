@@ -15,7 +15,12 @@ import openpyxl
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from shared import load_config as _load_config
+from shared import (
+    load_config as _load_config,
+    begin_run as _begin_run,
+    load_overrides as _load_overrides,
+    country_constraint_from_haystacks as _country_constraint,
+)
 
 _BASE         = Path(__file__).resolve().parent
 GET_TESTFILES = Path(_load_config()["base_path"])
@@ -23,22 +28,9 @@ DOTTERBOLAGSLISTA = _BASE / "_params" / "Dotterbolagslista.xlsx"
 
 KNOWN_COUNTRIES = ("Sweden", "Norway", "Finland", "Denmark", "Germany")
 
-OVERRIDES = {
-    "Mars Säkerhetspartner i väst ": 239,
-    "VB_ GF Sich_ GmbH - Auswertungen 3_2026": 245,
-    "VB_ Monthly Financial Report H+W mechatronik GmbH (4)": 246,
-    "VB_ Monthly Financial Report H+W mechatronik GmbH": 246,
-    "Månad mars _)": 33,
-    "Q1 2026 rapportering i excel": 111,
-    "Untitled": 164,
-    "ST Hälytys reports": 196,
-    # April 2026 — manuella korrigeringar
-    "Doorway mars": 162,
-    "SIE Montageservice": 94,
-    "SIE-fil Dala Lås i Ludvika AB 2603": 73,
-    "Låskomfort mars": 88,
-    "Månadsavstämning 2026-03-31 (2)": 93,
-    # OBS: "Nylunds och Norrskydd mars" hanteras via ATTACHMENT_OVERRIDES i extract.py
+# Overrides läses från _params/overrides.json (delas med extract.py).
+OVERRIDES: dict[str, int] = {
+    k: int(v) for k, v in _load_overrides()["subject_overrides"].items()
 }
 
 INLINE_IMAGE_RE = re.compile(
@@ -156,11 +148,18 @@ def match_msg(msg_path, companies, id_index):
             "sender": msg.sender or "",
             "body": (msg.body or "")[:1500],
         }
-        scores = [(c, score_company(c, haystacks)) for c in companies]
+        allowed = _country_constraint(haystacks)
+        eligible = (
+            [c for c in companies if c["country"] in allowed]
+            if allowed else companies
+        )
+        if not eligible:
+            return None, 0, "no eligible (country constraint: {})".format("/".join(allowed))
+        scores = [(c, score_company(c, haystacks)) for c in eligible]
         scores.sort(key=lambda x: -x[1])
         best_company, best_score = scores[0]
         if best_score == 0:
-            return None, 0, "no match"
+            return None, 0, "no match (country constraint: {})".format("/".join(allowed) if allowed else "none")
         return best_company, best_score, ""
     finally:
         try:
@@ -182,6 +181,7 @@ def main():
     )
     args = parser.parse_args()
     period = args.period or _prev_month_period()
+    _begin_run("dry_run", period)
     inbox_dir = GET_TESTFILES / "_inbox" / period
 
     if not inbox_dir.exists():

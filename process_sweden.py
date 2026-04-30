@@ -38,7 +38,7 @@ try:
 except ImportError:
     sys.exit("Saknar openpyxl — kör:  py -m pip install openpyxl")
 
-from shared import safe_dest, load_config, log
+from shared import safe_dest, load_config, log, begin_run, prev_month_period
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent  # = finance-automation\
@@ -220,6 +220,7 @@ def process_sweden(dry_run: bool = False, period: str | None = None) -> None:
         SWEDEN_DIR   = GET_TESTFILES / "extracted" / period / "Sweden"
         REFERENS_DIR = SWEDEN_DIR / "Referens"
 
+    begin_run("process_sweden", period or prev_month_period())
     dry_label = "  [DRY RUN]" if dry_run else ""
     period_label = f"  period {period}" if period else ""
     log("START", "process_sweden.py", f"{date.today()}{period_label}{dry_label}")

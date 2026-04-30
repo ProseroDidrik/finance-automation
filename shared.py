@@ -1,11 +1,79 @@
 """Shared utilities for finance-automation country processing scripts."""
 import json
 import re
+from datetime import date, datetime
 from pathlib import Path
 import shutil
 import sys
 
 DUPE_RE = re.compile(r"\s\(([2-9]|\d{2,})\)\.\w+$")
+
+# Filformats-baserade landsbegränsningar för mail-matchning.
+# SIE-filer är ett svenskt redovisningsformat → kan endast gälla svenska bolag.
+# SAF-T används i denna pipeline för norska och danska bolag.
+_SIE_RE  = re.compile(r"\.sie\b|\bsie[- ]?fil|\bsiefil", re.IGNORECASE)
+_SAFT_RE = re.compile(r"\bsaf[- ]?t\b", re.IGNORECASE)
+
+
+def country_constraint_from_haystacks(haystacks: dict) -> tuple[str, ...] | None:
+    """Returnera tillåtna länder baserat på filformatssignal i mailet.
+
+    Inspekterar filename + subject + att_name (inte body/sender — för noisy).
+    SIE-signal → ('Sweden',). SAF-T-signal → ('Norway', 'Denmark'). Annars None.
+    """
+    text = " ".join((
+        haystacks.get("filename", ""),
+        haystacks.get("subject", ""),
+        haystacks.get("att_name", ""),
+    ))
+    if _SIE_RE.search(text):
+        return ("Sweden",)
+    if _SAFT_RE.search(text):
+        return ("Norway", "Denmark")
+    return None
+
+_REPO_ROOT = Path(__file__).resolve().parent
+_run_ctx: dict = {"script": None, "period": None, "log_path": None}
+
+
+def prev_month_period() -> str:
+    """Return YYYYMM for the previous calendar month (handles January wrap)."""
+    today = date.today()
+    if today.month == 1:
+        return f"{today.year - 1}12"
+    return f"{today.year}{today.month - 1:02d}"
+
+
+def begin_run(script_name: str, period: str) -> None:
+    """Activate JSONL persistence for subsequent log() calls in this process.
+
+    Writes to _logs/{period}/{script_name}.jsonl. Idempotent within a process.
+    Terminal output via log() is unaffected; only adds a side-effect write.
+    """
+    log_dir = _REPO_ROOT / "_logs" / period
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _run_ctx["script"] = script_name
+    _run_ctx["period"] = period
+    _run_ctx["log_path"] = log_dir / f"{script_name}.jsonl"
+    _append_event("START", script_name, f"period {period}")
+
+
+def _append_event(status: str, label, msg: str) -> None:
+    if not _run_ctx["log_path"]:
+        return
+    rec = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "script": _run_ctx["script"],
+        "period": _run_ctx["period"],
+        "status": status,
+        "label": str(label),
+        "msg": msg,
+    }
+    try:
+        with open(_run_ctx["log_path"], "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 try:
     import openpyxl
@@ -31,12 +99,17 @@ def load_config() -> dict:
 
 
 def log(status: str, label, msg: str = "") -> None:
-    """Print a structured log line: [STATUS]  label  msg"""
+    """Print a structured log line: [STATUS]  label  msg
+
+    If begin_run() has been called in this process, also append a JSONL event
+    to _logs/{period}/{script}.jsonl so a GUI can read run history later.
+    """
     tag = f"[{status}]"
     line = f"{tag:<8} {label}"
     if msg:
         line += f"  {msg}"
     print(line)
+    _append_event(status, label, msg)
 
 
 def load_dotterbolag(path: Path) -> dict[int, str]:
@@ -56,6 +129,51 @@ def load_dotterbolag(path: Path) -> dict[int, str]:
             result[int(bolag_id)] = str(friendly).strip()
     wb.close()
     return result
+
+
+def load_dotterbolag_full(path: Path) -> dict[int, dict]:
+    """bolagsid → {name, country, orgnr, domain, kind} from Dotterbolagslistan.
+
+    Includes 'consolidated' rows (caller filters if needed). Used by the GUI
+    where Country (col C) is needed in addition to friendly name.
+    """
+    wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    ws = wb["Data For Company Find"]
+    result: dict[int, dict] = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row or len(row) < 2 or row[1] is None:
+            continue
+        try:
+            bolag_id = int(row[1])
+        except (TypeError, ValueError):
+            continue
+        result[bolag_id] = {
+            "name": str(row[4]).strip() if len(row) > 4 and row[4] else "",
+            "country": str(row[2]).strip() if len(row) > 2 and row[2] else "",
+            "orgnr": str(row[5]).strip() if len(row) > 5 and row[5] else "",
+            "kind": str(row[7]).strip() if len(row) > 7 and row[7] else "",
+            "domain": str(row[9]).strip() if len(row) > 9 and row[9] else "",
+        }
+    wb.close()
+    return result
+
+
+def load_overrides() -> dict:
+    """Load _params/overrides.json (subject/attachment/country overrides for extract).
+
+    Returns a dict with keys: subject_overrides (dict[str, int]),
+    attachment_overrides (list of {msg_stem, attachment_substr, bolag_id}),
+    country_overrides (dict[str, str]). Empty defaults if file missing.
+    """
+    p = _REPO_ROOT / "_params" / "overrides.json"
+    if not p.exists():
+        return {"subject_overrides": {}, "attachment_overrides": [], "country_overrides": {}}
+    with open(p, encoding="utf-8") as f:
+        data = json.load(f)
+    data.setdefault("subject_overrides", {})
+    data.setdefault("attachment_overrides", [])
+    data.setdefault("country_overrides", {})
+    return data
 
 
 def safe_dest(dest: Path) -> Path:

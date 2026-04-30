@@ -32,7 +32,7 @@ from pathlib import Path
 
 from shared import (
     load_dotterbolag, move_to_referens_safe, save_inl_xlsx,
-    load_config, log, DUPE_RE, glob_one,
+    load_config, log, DUPE_RE, glob_one, begin_run,
 )
 
 try:
@@ -70,7 +70,7 @@ COMPANY_DEFS: dict[str, dict] = {
     ),
     "229": dict(
         is_max=4999, bs_min=5000, skip_formatting=False,
-        file_glob="229_*.xlsx", ytd_indicator="01-01", use_ytd_bs=True,
+        file_glob="229_Saldobalance*.xlsx", ytd_indicator="01-01", use_ytd_bs=True,
     ),
     "242": dict(
         is_max=799, bs_min=800, skip_formatting=False,
@@ -478,6 +478,7 @@ def main() -> None:
         REFERENS_DIR = DENMARK_DIR / "Referens"
 
     period = args.period or prev_month_period()
+    begin_run("process_denmark", period)
     dry_label = "  [DRY RUN]" if args.dry_run else ""
     log("START", "process_denmark.py", f"period {period}{dry_label}")
 

@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from shared import safe_dest, load_config, log
+from shared import safe_dest, load_config, log, begin_run, prev_month_period
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent
@@ -468,6 +468,7 @@ def main():
         global NORWAY_DIR
         NORWAY_DIR = GET_TESTFILES / "extracted" / args.period / "Norway"
 
+    begin_run("process_norway", args.period or prev_month_period())
     process_norway(prefix_filter=args.prefix, dry_run=args.dry_run)
 
     if not args.no_referens:

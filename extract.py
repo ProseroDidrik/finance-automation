@@ -14,7 +14,12 @@ import openpyxl
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from shared import load_config as _load_config
+from shared import (
+    load_config as _load_config,
+    begin_run as _begin_run,
+    load_overrides as _load_overrides,
+    country_constraint_from_haystacks as _country_constraint,
+)
 
 _BASE         = Path(__file__).resolve().parent
 GET_TESTFILES = Path(_load_config()["base_path"])
@@ -30,44 +35,17 @@ def _prev_month_period() -> str:
 
 KNOWN_COUNTRIES = ("Sweden", "Norway", "Finland", "Denmark", "Germany")
 
-OVERRIDES = {
-    "Mars Säkerhetspartner i väst ": 239,
-    "VB_ GF Sich_ GmbH - Auswertungen 3_2026": 245,
-    "VB_ Monthly Financial Report H+W mechatronik GmbH (4)": 246,
-    "VB_ Monthly Financial Report H+W mechatronik GmbH": 246,
-    "Månad mars _)": 33,
-    "Q1 2026 rapportering i excel": 111,
-    "Untitled": 164,
-    "ST Hälytys reports": 196,
-    # April 2026 — manuella korrigeringar
-    "Doorway mars": 162,               # subject "Doorway mars", matchade fel mot 004 Prosero
-    "SIE Montageservice": 94,          # subject "SIE Montageservice", matchade fel mot 012 (samma open-up.se-grupp)
-    "SIE-fil Dala Lås i Ludvika AB 2603": 73,  # filnamn säger Ludvika, matchade fel mot 072 (samma dalalås.se-grupp)
-    "Låskomfort mars": 88,             # filnamn "LÅSKOMFO", matchade fel mot 087 (samma sicklalasteknik.se-grupp)
-    "Månadsavstämning 2026-03-31 (2)": 93,     # bilaga Hässleholm, matchade fel mot 097 (samma hlmlassmed.se-grupp)
-    "VB_ Prosero Securty Oy": 145,             # stavfel "Securty" i originalfilnamnet; annars matchad till 052
+# Overrides läses från _params/overrides.json (editerbar via GUI:t).
+# OVERRIDES: msg_path.stem → bolag_id (subject-level)
+# ATTACHMENT_OVERRIDES: (msg_stem, lowercase-delsträng i bilagans filnamn) → bolag_id
+# COUNTRY_OVERRIDES: bolag_id → land (för interna bolag vars Market-kolumn inte matchar)
+_OV = _load_overrides()
+OVERRIDES: dict[str, int] = {k: int(v) for k, v in _OV["subject_overrides"].items()}
+ATTACHMENT_OVERRIDES: dict[tuple[str, str], int] = {
+    (item["msg_stem"], item["attachment_substr"]): int(item["bolag_id"])
+    for item in _OV["attachment_overrides"]
 }
-
-# Per-bilaga-overrides: (msg_stem, lowercase-delsträng i bilagans filnamn) -> bolag_id
-# Används när ett och samma mail innehåller bilagor för flera bolag (t.ex. samma redovisningsbyrå).
-ATTACHMENT_OVERRIDES = {
-    ("Nylunds och Norrskydd mars", "norrskydd"): 76,   # AB Norrskydd
-    ("Nylunds och Norrskydd mars", "nylunds"):   183,  # Nylunds Lås & Larm
-}
-
-# Interna bolag vars Market-kolumn (C) i Dotterbolagslista inte matchar något KNOWN_COUNTRIES-värde.
-COUNTRY_OVERRIDES: dict[int, str] = {
-    49:  "Sweden",
-    50:  "Sweden",
-    51:  "Sweden",
-    53:  "Sweden",
-    60:  "Sweden",
-    162: "Sweden",
-    52:  "Norway",
-    54:  "Denmark",
-    145: "Finland",
-    187: "Germany",
-}
+COUNTRY_OVERRIDES: dict[int, str] = {int(k): v for k, v in _OV["country_overrides"].items()}
 
 INLINE_IMAGE_RE = re.compile(
     r"^(image\d+\.(png|gif|jpg|jpeg|bmp)|img-[0-9a-f\-]{30,})$", re.I
@@ -191,7 +169,14 @@ def match_msg(msg_path, companies, id_index):
             "sender": msg.sender or "",
             "body": (msg.body or "")[:1500],
         }
-        scores = [(c, score_company(c, haystacks)) for c in companies]
+        allowed = _country_constraint(haystacks)
+        eligible = (
+            [c for c in companies if c["country"] in allowed]
+            if allowed else companies
+        )
+        if not eligible:
+            return (None, 0)
+        scores = [(c, score_company(c, haystacks)) for c in eligible]
         scores.sort(key=lambda x: -x[1])
         best_c, best_s = scores[0]
         return (best_c, best_s) if best_s > 0 else (None, 0)
@@ -210,6 +195,7 @@ def main():
     )
     args = parser.parse_args()
     period = args.period or _prev_month_period()
+    _begin_run("extract", period)
     inbox_dir = GET_TESTFILES / "_inbox" / period
 
     if not inbox_dir.exists():

@@ -21,7 +21,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import pandas as pd
 import xlrd
 
-from shared import move_to_referens_safe, save_inl_xlsx, load_config, log, glob_one, DUPE_RE
+from shared import move_to_referens_safe, save_inl_xlsx, load_config, log, glob_one, DUPE_RE, begin_run
 
 
 # ---------------------------------------------------------------------------
@@ -941,6 +941,7 @@ if __name__ == "__main__":
             else f"{today.year}{today.month - 1:02d}"
         )
 
+    begin_run("process_finland", PERIOD)
     dry_label = "  [DRY RUN]" if _DRY_RUN else ""
     log("START", "process_finland.py", f"period {PERIOD}{dry_label}")
 

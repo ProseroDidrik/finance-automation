@@ -1,0 +1,35 @@
+{
+  "_comment": "Mappar tvetydiga mail/bilagor till rätt BolagsID. Läses av extract.py och dry_run.py via shared.load_overrides(). Editeras via GUI:t (Redigera overrides) eller manuellt här.",
+  "subject_overrides": {
+    "Mars Säkerhetspartner i väst ": 239,
+    "VB_ GF Sich_ GmbH - Auswertungen 3_2026": 245,
+    "VB_ Monthly Financial Report H+W mechatronik GmbH (4)": 246,
+    "VB_ Monthly Financial Report H+W mechatronik GmbH": 246,
+    "Månad mars _)": 33,
+    "Q1 2026 rapportering i excel": 111,
+    "Untitled": 164,
+    "ST Hälytys reports": 196,
+    "Doorway mars": 162,
+    "SIE Montageservice": 94,
+    "SIE-fil Dala Lås i Ludvika AB 2603": 73,
+    "Låskomfort mars": 88,
+    "Månadsavstämning 2026-03-31 (2)": 93,
+    "VB_ Prosero Securty Oy": 145
+  },
+  "attachment_overrides": [
+    {"msg_stem": "Nylunds och Norrskydd mars", "attachment_substr": "norrskydd", "bolag_id": 76},
+    {"msg_stem": "Nylunds och Norrskydd mars", "attachment_substr": "nylunds", "bolag_id": 183}
+  ],
+  "country_overrides": {
+    "49": "Sweden",
+    "50": "Sweden",
+    "51": "Sweden",
+    "53": "Sweden",
+    "60": "Sweden",
+    "162": "Sweden",
+    "52": "Norway",
+    "54": "Denmark",
+    "145": "Finland",
+    "187": "Germany"
+  }
+}

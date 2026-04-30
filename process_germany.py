@@ -50,7 +50,7 @@ try:
 except ImportError:
     sys.exit("Saknar openpyxl — kör:  py -m pip install openpyxl")
 
-from shared import load_dotterbolag, move_to_referens_safe, save_inl_xlsx, load_config, log, glob_one
+from shared import load_dotterbolag, move_to_referens_safe, save_inl_xlsx, load_config, log, glob_one, begin_run
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent
@@ -470,6 +470,7 @@ def main() -> None:
         REFERENS_DIR = GERMANY_DIR / "Referens"
 
     period = args.period or prev_month_period()
+    begin_run("process_germany", period)
     dry_label = "  [DRY RUN]" if args.dry_run else ""
     log("START", "process_germany.py", f"period {period}{dry_label}")
 
