@@ -26,6 +26,10 @@ py process_finland.py 134 196      # multiple companies
 py process_denmark.py              # all companies
 py process_denmark.py 229 242      # specific companies
 py process_denmark.py --dry-run
+
+py process_germany.py              # all companies
+py process_germany.py 231 245      # specific companies
+py process_germany.py --dry-run
 ```
 
 Use `py` (not `python`) on this Windows machine.
@@ -77,7 +81,7 @@ Score < 40 = low confidence (flagged `[LOW]`). Score 999 = manual override.
 |---------|--------|
 | Sweden | `{ID:03d}_{FriendlyName}_SIE_{StartYear}-{EndYYYYMM}.SE` |
 | Norway | `{ID:03d}_{FriendlyName}_{SoftwareAbbr}_SAF-T_{Year}-{Period}.xml` |
-| Denmark / Finland | `{code}_{FriendlyName}_{YYYYMM}_INL.xlsx` |
+| Denmark / Finland / Germany | `{code}_{FriendlyName}_{YYYYMM}_INL.xlsx` |
 
 INL.xlsx layout: empty row 1, then IS rows, then BS rows (col A=account, B=name, C=amount). Column C must sum to ~0.
 
@@ -87,6 +91,7 @@ INL.xlsx layout: empty row 1, then IS rows, then BS rows (col A=account, B=name,
 - **Norway** (`process_norway.py`): handles both raw `.xml` and zipped `.zip` SAF-T; extracts from zip to renamed `.xml`. Uses `SOFTWARE_MAP` to abbreviate `SoftwareID` XML field.
 - **Denmark** (`process_denmark.py`): `COMPANY_DEFS` dict configures each company's IS/BS account boundary (`is_max`, `bs_min` as 4-digit prefixes), filename, and extra files to move. Company 216 is IS-only (no BS). Company 178 skips bold+underline summary rows. Company 190 (Actas) is SAF-T-only, not INL.xlsx.
 - **Finland** (`process_finland.py`): each company has its own `run_NNN()` function registered in `RUNNERS` dict. Multiple reader formats (A–L) handle the variety of Finnish accounting software exports (Fennoa CSV, Muutos CSV/XLSX, period XLS, etc.). BS accounts 1–1999 (4-digit prefix) have sign flipped. Accounts `237X` (årets resultat) are excluded to avoid double-counting.
+- **Germany** (`process_germany.py`): `COMPANY_DEFS` dict with three readers: `monthly_value` (188 Bofferding — English-DATEV XLSX, negate all amounts), `susa_pro_monat` (231/245 — Haben−Soll at cols 8–9), `susa_jahresuebersicht` (246 — dynamic month column with S/H indicators), `susa_csv` (220 Weckbacher — cp1252 semicolon CSV, amount=−(Soll+Haben)). All exclude accounts ≥9000 (sub-ledger/statistical). Period detected dynamically via `prev_month_period()`.
 
 ### Paths
 
@@ -100,5 +105,6 @@ C:\Users\DidWac\Prosero Dropbox\Didrik Wachtmeister\Phoenix Foundation\April all
 
 - **Finland**: update `period="YYYYMM"` and filenames in each `run_NNN()` function.
 - **Denmark**: update `file` and `extra` filenames in `COMPANY_DEFS`.
+- **Germany**: update `file` and `extra` filenames in `COMPANY_DEFS`; period detected automatically.
 - **Sweden / Norway**: scripts detect period dynamically from file content (SIE `#RAR 0` / SAF-T XML headers).
 - **extract.py**: update `OVERRIDES` / `ATTACHMENT_OVERRIDES` for any new ambiguous mails.
