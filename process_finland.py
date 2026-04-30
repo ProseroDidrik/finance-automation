@@ -9,6 +9,7 @@ Skip:    237X accounts (årets resultat), zero amounts, summary rows, bold rows 
 Verify:  column C must sum to 0
 """
 
+import argparse
 import csv
 import os
 import re
@@ -20,18 +21,34 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import pandas as pd
 import xlrd
 
-from shared import move_to_referens_safe, save_inl_xlsx, load_config, log
+from shared import move_to_referens_safe, save_inl_xlsx, load_config, log, glob_one, DUPE_RE
 
 
 # ---------------------------------------------------------------------------
-# Paths
+# Paths  (reassigned in main() when --period is given)
 # ---------------------------------------------------------------------------
 
-FINLAND_DIR = os.path.join(load_config()["base_path"], "extracted", "Finland")
-OUTPUT_DIR = os.path.join(FINLAND_DIR, "output")
-REFERENS_DIR = os.path.join(FINLAND_DIR, "Referens")
+FINLAND_DIR  = Path(load_config()["base_path"]) / "extracted" / "Finland"
+OUTPUT_DIR   = FINLAND_DIR / "output"
+REFERENS_DIR = FINLAND_DIR / "Referens"
 
 _DRY_RUN = False
+PERIOD   = ""   # set in main()
+
+
+# ---------------------------------------------------------------------------
+# Sheet-name discovery (used by 177 Lukkoluket)
+# ---------------------------------------------------------------------------
+
+def _find_sheet(filepath: str | Path, pattern: str) -> str:
+    from openpyxl import load_workbook as _load
+    wb = _load(str(filepath), read_only=True)
+    for name in wb.sheetnames:
+        if re.search(pattern, name, re.IGNORECASE):
+            wb.close()
+            return name
+    wb.close()
+    raise ValueError(f"No sheet matching '{pattern}' in {Path(filepath).name}")
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +58,7 @@ _DRY_RUN = False
 def parse_amount(val) -> float:
     if val is None or (isinstance(val, float) and val != val):
         return 0.0
-    s = str(val).strip().replace("\xa0", "").replace(" ", "")
+    s = str(val).strip().replace("\xa0", "").replace(" ", "")
     s = s.replace(" ", "").replace(",", ".")          # Finnish thousands/decimal
     if s in ("", "nan", "0.00", "0"):
         return 0.0
@@ -122,8 +139,7 @@ def extract_period(text: str) -> str:
 
 
 def _find_period_col(rows: list, target_period: str) -> int | None:
-    """Scan the first rows for a cell whose extract_period() matches target_period.
-    Works for both list-of-lists (CSV) and list-of-tuples (XLSX)."""
+    """Scan the first rows for a cell whose extract_period() matches target_period."""
     for row in rows[:10]:
         for i, cell in enumerate(row):
             if extract_period(str(cell).strip() if cell is not None else "") == target_period:
@@ -136,25 +152,49 @@ def verify_sum(is_rows, bs_rows) -> float:
 
 
 def move_to_referens(filename: str):
-    src = Path(FINLAND_DIR) / filename
+    src = FINLAND_DIR / filename
     if src.exists():
-        move_to_referens_safe(src, Path(REFERENS_DIR), dry_run=_DRY_RUN)
+        move_to_referens_safe(src, REFERENS_DIR, dry_run=_DRY_RUN)
 
 
 def move_pdfs_to_referens():
-    for f in os.listdir(FINLAND_DIR):
-        if f.lower().endswith(".pdf"):
-            move_to_referens(f)
+    for f in FINLAND_DIR.iterdir():
+        if f.is_file() and f.suffix.lower() == ".pdf":
+            move_to_referens(f.name)
+
+
+def _detect_csv_enc(filepath: str) -> str:
+    """UTF-16-LE if null bytes in first 4 bytes (no-BOM variant), else latin-1."""
+    with open(filepath, "rb") as fh:
+        header = fh.read(4)
+    if header[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return "utf-16"
+    if b"\x00" in header:
+        return "utf-16-le"
+    return "latin-1"
+
+
+def _try_glob(d: Path, *patterns: str) -> Path:
+    """Try patterns in order; return best non-dupe match. Raises FileNotFoundError if none match."""
+    for pat in patterns:
+        matches = sorted(d.glob(pat))
+        if matches:
+            non_dupes = [f for f in matches if not DUPE_RE.search(f.name)]
+            return non_dupes[0] if non_dupes else matches[0]
+    raise FileNotFoundError(d / patterns[0])
 
 
 # ---------------------------------------------------------------------------
-# Format A  –  "Fennoa CSV" (146)
+# Format A  –  "Fennoa CSV" (146, 161-IS, 170, 181-IS, 182-IS)
 #   col 0 = "XXXX Name",  col 1 = latest month amount
-#   encoding latin-1, separator ;
+#   encoding auto-detected (latin-1 or utf-16-le), separator ;
 # ---------------------------------------------------------------------------
 
 def read_fennoa_csv(filepath: str) -> list:
-    df = pd.read_csv(filepath, header=None, encoding="latin-1", sep=";", dtype=str)
+    enc = _detect_csv_enc(filepath)
+    if enc in ("utf-16-le", "utf-16"):
+        return read_csv_col_enc(filepath, col=1, encoding=enc)
+    df = pd.read_csv(filepath, header=None, encoding=enc, sep=";", dtype=str)
     rows = []
     for _, row in df.iterrows():
         cell = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
@@ -170,7 +210,7 @@ def read_fennoa_csv(filepath: str) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Format B  –  "Muutos CSV/XLSX"  (161, 181, 173-BS)
+# Format B  –  "Muutos CSV/XLSX"  (161-BS, 173-BS, 181-BS, 182-BS, 185-BS, 145-BS)
 #   col 0 = "XXXX Name",  col 2 = Muutos (change)
 #   encoding latin-1, separator ; (CSV) or default (XLSX)
 # ---------------------------------------------------------------------------
@@ -191,7 +231,10 @@ def _collect_muutos(df: pd.DataFrame) -> list:
 
 
 def read_muutos_csv(filepath: str) -> list:
-    df = pd.read_csv(filepath, header=None, encoding="latin-1", sep=";", dtype=str)
+    enc = _detect_csv_enc(filepath)
+    if enc in ("utf-16-le", "utf-16"):
+        return read_muutos_csv_enc(filepath, enc)
+    df = pd.read_csv(filepath, header=None, encoding=enc, sep=";", dtype=str)
     return _collect_muutos(df)
 
 
@@ -201,7 +244,7 @@ def read_muutos_xlsx(filepath: str, sheet_name=0) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Format C  –  "Income-only XLSX"  (173-IS)
+# Format C  –  "Income-only XLSX"  (173-IS, 145-IS)
 #   col 0 = "XXXX Name",  col 1 = amount
 # ---------------------------------------------------------------------------
 
@@ -224,7 +267,7 @@ def read_income_only_xlsx(filepath: str, sheet_name=0) -> list:
 # ---------------------------------------------------------------------------
 # Format D  –  "Period XLS"  (166 IS)
 #   row 0 = period labels (202601, 202602, 202603)
-#   col 0 = "XXXX  Name",  find col with 202603 → monthly IS amount
+#   col 0 = "XXXX  Name",  find col with target_period → monthly IS amount
 #
 # Format D2 – "Period XLS diff" (166 BS)
 #   Same layout but col values are CUMULATIVE balances → change = col_target - col_prev
@@ -237,7 +280,7 @@ def _find_period_col_df(df: pd.DataFrame, target_period: str, filepath: str) -> 
     raise ValueError(f"Period column {target_period} not found in {filepath}")
 
 
-def read_period_xls(filepath: str, target_period: str = "202603") -> list:
+def read_period_xls(filepath: str, target_period: str) -> list:
     df = pd.read_excel(filepath, header=None, dtype=str)
     period_col = _find_period_col_df(df, target_period, filepath)
     rows = []
@@ -254,7 +297,7 @@ def read_period_xls(filepath: str, target_period: str = "202603") -> list:
     return rows
 
 
-def read_period_xls_diff(filepath: str, target_period: str = "202603") -> list:
+def read_period_xls_diff(filepath: str, target_period: str) -> list:
     """166-style BS: values are period-end balances → compute col_target - col_prev."""
     df = pd.read_excel(filepath, header=None, dtype=str)
     period_col = _find_period_col_df(df, target_period, filepath)
@@ -277,11 +320,10 @@ def read_period_xls_diff(filepath: str, target_period: str = "202603") -> list:
 
 # ---------------------------------------------------------------------------
 # Format E  –  "Turvatalo XLSX"  (153)
-#   row 5 = period headers ("3/2026", ...)
-#   col 0 = "XXXX, Name",  col 1 = 3/2026 amount
+#   col 0 = "XXXX, Name",  col 1 = monthly amount (single data column)
 # ---------------------------------------------------------------------------
 
-def read_turvatalo_xlsx(filepath: str, target_period: str = "202603") -> list:
+def read_turvatalo_xlsx(filepath: str) -> list:
     df = pd.read_excel(filepath, header=None, dtype=str)
     rows = []
     for _, row in df.iterrows():
@@ -299,7 +341,7 @@ def read_turvatalo_xlsx(filepath: str, target_period: str = "202603") -> list:
 
 # ---------------------------------------------------------------------------
 # Format F  –  "Ajan Lukko XLSX"  (179)
-#   Wide format, account in col 3 ("XXXX   Name"),  period col found via "3 (3)" header
+#   Wide format, account in col 3 ("XXXX   Name"),  period col found via "N (N)" header
 # ---------------------------------------------------------------------------
 
 def _find_col_by_pattern(df: pd.DataFrame, header_row: int, pattern: str) -> int:
@@ -309,9 +351,11 @@ def _find_col_by_pattern(df: pd.DataFrame, header_row: int, pattern: str) -> int
     raise ValueError(f"Column matching '{pattern}' not found in row {header_row}")
 
 
-def read_ajan_lukko_xlsx(filepath: str) -> list:
+def read_ajan_lukko_xlsx(filepath: str, period: str) -> list:
+    month = int(period[4:])
+    pattern = rf"{month}\s*\({month}\)"
     df = pd.read_excel(filepath, header=None, dtype=str)
-    period_col = _find_col_by_pattern(df, header_row=5, pattern=r"3\s*\(3\)")
+    period_col = _find_col_by_pattern(df, header_row=5, pattern=pattern)
     rows = []
     for _, row in df.iterrows():
         cell = str(row.iloc[3]) if pd.notna(row.iloc[3]) else ""
@@ -452,8 +496,6 @@ def read_avaava_csv(filepath: str, amount_col: int) -> list:
 # ---------------------------------------------------------------------------
 
 def _read_csv_rows(filepath: str, encoding: str) -> list[list[str]]:
-    """Read a semicolon-separated CSV as a list of string lists.
-    Uses csv.reader via StringIO so UTF-16-LE quoted files parse correctly."""
     import io as _io, csv as _csv
     with open(filepath, encoding=encoding) as fh:
         content = fh.read()
@@ -647,7 +689,6 @@ def process_company(
     period: str,
     bs_rows_raw: list,
     is_rows_raw: list,
-    extra_files_to_referens: list = None,
 ) -> str:
     bs_rows = post_process(bs_rows_raw, flip=True)
     is_rows = post_process(is_rows_raw, flip=False)
@@ -661,285 +702,190 @@ def process_company(
     if _DRY_RUN:
         log("OK", code, f"[DRY] Skulle spara: {filename}")
     else:
-        save_inl_xlsx(is_rows, bs_rows, os.path.join(OUTPUT_DIR, filename))
+        save_inl_xlsx(is_rows, bs_rows, OUTPUT_DIR / filename)
         log("WARN" if is_warn else "OK", code, f"Sparad: {filename}")
-
-    if extra_files_to_referens:
-        for f in extra_files_to_referens:
-            move_to_referens(f)
 
     return "warn" if is_warn else "ok"
 
 
 # ---------------------------------------------------------------------------
-# Individual company definitions
+# Individual company definitions  (each takes d: Path = FINLAND_DIR)
 # ---------------------------------------------------------------------------
 
-def p(name):
-    """Full path in Finland dir."""
-    return os.path.join(FINLAND_DIR, name)
-
-
-def run_146():
+def run_146(d: Path):
     return process_company(
-        code="146", friendly_name="Avain-Asema", period="202603",
-        bs_rows_raw=read_fennoa_csv(p("146_Balansräkning 31032026.csv")),
-        is_rows_raw=read_fennoa_csv(p("146_Resultaträkning 32026.csv")),
-        extra_files_to_referens=[
-            "146_Balansräkning 31032026.csv",
-            "146_Resultaträkning 32026.csv",
-        ],
+        code="146", friendly_name="Avain-Asema", period=PERIOD,
+        bs_rows_raw=read_fennoa_csv(str(glob_one(d, "146_*Balansr*.csv"))),
+        is_rows_raw=read_fennoa_csv(str(glob_one(d, "146_*Resultatr*.csv"))),
     )
 
 
-def run_134():
+def run_134(d: Path):
     return process_company(
-        code="134", friendly_name="Arvolukko", period="202603",
-        bs_rows_raw=read_kausi_xls(p("134_Arvolukko Oy 032026 tase.xls"), skip_bold=True),
-        is_rows_raw=read_kausi_xls(p("134_Arvolukko Oy 032026 tuloslaskelma.xls"), skip_bold=True),
-        extra_files_to_referens=[
-            "134_Arvolukko Oy 032026 tase.xls",
-            "134_Arvolukko Oy 032026 tuloslaskelma.xls",
-            "134_Arvolukko Oy 032026 konsernianalyysi .xls",
-        ],
+        code="134", friendly_name="Arvolukko", period=PERIOD,
+        bs_rows_raw=read_kausi_xls(str(glob_one(d, "134_*tase*.xls")), skip_bold=True),
+        is_rows_raw=read_kausi_xls(str(glob_one(d, "134_*tuloslaskelma*.xls")), skip_bold=True),
     )
 
 
-def run_153():
+def run_153(d: Path):
     return process_company(
-        code="153", friendly_name="Turvatalo", period="202603",
-        bs_rows_raw=read_turvatalo_xlsx(p("153_Balans 03-2026.xlsx")),
-        is_rows_raw=read_turvatalo_xlsx(p("153_Income statement 03-2026.xlsx")),
-        extra_files_to_referens=[
-            "153_Balans 03-2026.xlsx",
-            "153_Income statement 03-2026.xlsx",
-        ],
+        code="153", friendly_name="Turvatalo", period=PERIOD,
+        bs_rows_raw=read_turvatalo_xlsx(str(glob_one(d, "153_*[Bb]alans*.xlsx"))),
+        is_rows_raw=read_turvatalo_xlsx(str(glob_one(d, "153_*[Ii]ncome*.xlsx"))),
     )
 
 
-def run_161():
+def run_161(d: Path):
+    bs_f = _try_glob(d, "161_*[Tt]ase*.xlsx", "161_*[Tt]ase*.csv")
+    is_f = _try_glob(d, "161_*[Tt]uloslaskelma*.xlsx", "161_*[Tt]uloslaskelma*.csv")
+    bs_raw = (read_muutos_xlsx if bs_f.suffix.lower() == ".xlsx" else read_muutos_csv)(str(bs_f))
+    is_raw = (read_income_only_xlsx if is_f.suffix.lower() == ".xlsx" else read_fennoa_csv)(str(is_f))
     return process_company(
-        code="161", friendly_name="Lukitustekniikka-STY", period="202603",
-        bs_rows_raw=read_muutos_csv(p("161_Tase_Lukitustekniikka-STY_Oy_(01.03.2026-31.03.2026) (2).csv")),
-        is_rows_raw=read_fennoa_csv(p("161_Tuloslaskelma_Lukitustekniikka-STY_Oy_(01.03.2026-31.03.2026).csv")),
-        extra_files_to_referens=[
-            "161_Tase_Lukitustekniikka-STY_Oy_(01.03.2026-31.03.2026) (2).csv",
-            "161_Tuloslaskelma_Lukitustekniikka-STY_Oy_(01.03.2026-31.03.2026).csv",
-        ],
+        code="161", friendly_name="Lukitustekniikka-STY", period=PERIOD,
+        bs_rows_raw=bs_raw, is_rows_raw=is_raw,
     )
 
 
-def run_166():
+def run_166(d: Path):
     return process_company(
-        code="166", friendly_name="Lukkoassa", period="202603",
-        bs_rows_raw=read_period_xls_diff(p("166_Tase 31032026 kk.xls")),
-        is_rows_raw=read_period_xls(p("166_Tuloslaskelma 31032026 kk sve.xls")),
-        extra_files_to_referens=[
-            "166_Tase 31032026 kk.xls",
-            "166_Tuloslaskelma 31032026 kk sve.xls",
-        ],
+        code="166", friendly_name="Lukkoassa", period=PERIOD,
+        bs_rows_raw=read_period_xls_diff(str(glob_one(d, "166_*[Tt]ase*kk*.xls")), PERIOD),
+        is_rows_raw=read_period_xls(str(glob_one(d, "166_*[Tt]uloslaskelma*kk*.xls")), PERIOD),
     )
 
 
-def run_173():
+def run_173(d: Path):
     return process_company(
-        code="173", friendly_name="Avainahjo", period="202603",
-        bs_rows_raw=read_muutos_xlsx(p("173_AvainahjoBalance0326.xlsx")),
-        is_rows_raw=read_income_only_xlsx(p("173_AvainahjoIncome0326.xlsx")),
-        extra_files_to_referens=[
-            "173_AvainahjoBalance0326.xlsx",
-            "173_AvainahjoIncome0326.xlsx",
-        ],
+        code="173", friendly_name="Avainahjo", period=PERIOD,
+        bs_rows_raw=read_muutos_xlsx(str(glob_one(d, "173_*[Bb]alance*.xlsx"))),
+        is_rows_raw=read_income_only_xlsx(str(glob_one(d, "173_*[Ii]ncome*.xlsx"))),
     )
 
 
-def run_179():
+def run_179(d: Path):
     return process_company(
-        code="179", friendly_name="Ajan-Lukko", period="202603",
-        bs_rows_raw=read_ajan_lukko_xlsx(p("179_3.2026 balance sheet.xlsx")),
-        is_rows_raw=read_ajan_lukko_xlsx(p("179_3.2026 income statement.xlsx")),
-        extra_files_to_referens=[
-            "179_3.2026 balance sheet.xlsx",
-            "179_3.2026 income statement.xlsx",
-        ],
+        code="179", friendly_name="Ajan-Lukko", period=PERIOD,
+        bs_rows_raw=read_ajan_lukko_xlsx(str(glob_one(d, "179_*balance*sheet*.xlsx")), PERIOD),
+        is_rows_raw=read_ajan_lukko_xlsx(str(glob_one(d, "179_*income*statement*.xlsx")), PERIOD),
     )
 
 
-def run_181():
+def run_181(d: Path):
     return process_company(
-        code="181", friendly_name="Tele-Projekti", period="202603",
-        bs_rows_raw=read_muutos_csv(p("181_Tase_Tele-Projekti_Oy_(01.03.2026-31.03.2026).csv")),
-        is_rows_raw=read_fennoa_csv(p("181_Tuloslaskelma_Tele-Projekti_Oy_(01.03.2026-31.03.2026).csv")),
-        extra_files_to_referens=[
-            "181_Tase_Tele-Projekti_Oy_(01.03.2026-31.03.2026).csv",
-            "181_Tuloslaskelma_Tele-Projekti_Oy_(01.03.2026-31.03.2026).csv",
-        ],
+        code="181", friendly_name="Tele-Projekti", period=PERIOD,
+        bs_rows_raw=read_muutos_csv(str(glob_one(d, "181_*[Tt]ase*.csv"))),
+        is_rows_raw=read_fennoa_csv(str(glob_one(d, "181_*[Tt]uloslaskelma*.csv"))),
     )
 
 
-def run_196():
+def run_196(d: Path):
     return process_company(
-        code="196", friendly_name="ST-Halytys", period="202603",
-        bs_rows_raw=read_kausi_xls(p("196_ST Hälytys Oy, tase 31.3.2026.pdf.xlsm"), skip_bold=True),
-        is_rows_raw=read_kausi_xls(p("196_ST Hälytys Oy, profit & loss statement 3.2026.xlsm"), skip_bold=True),
-        extra_files_to_referens=[
-            "196_ST Hälytys Oy, tase 31.3.2026.pdf.xlsm",
-            "196_ST Hälytys Oy, profit & loss statement 3.2026.xlsm",
-        ],
+        code="196", friendly_name="ST-Halytys", period=PERIOD,
+        bs_rows_raw=read_kausi_xls(str(glob_one(d, "196_*tase*.xlsm")), skip_bold=True),
+        is_rows_raw=read_kausi_xls(str(glob_one(d, "196_*profit*loss*.xlsm")), skip_bold=True),
     )
 
 
-def run_199():
+def run_199(d: Path):
     return process_company(
-        code="199", friendly_name="Etela-Halytintekniikka", period="202603",
-        bs_rows_raw=read_avaava_csv(p("199_Tase 3_26.csv"), amount_col=2),
-        is_rows_raw=read_avaava_csv(p("199_Tulos 3_26.csv"), amount_col=1),
-        extra_files_to_referens=[
-            "199_Tase 3_26.csv",
-            "199_Tulos 3_26.csv",
-        ],
+        code="199", friendly_name="Etela-Halytintekniikka", period=PERIOD,
+        bs_rows_raw=read_avaava_csv(str(glob_one(d, "199_*[Tt]ase*.csv")), amount_col=2),
+        is_rows_raw=read_avaava_csv(str(glob_one(d, "199_*[Tt]ulos*.csv")), amount_col=1),
     )
 
 
-def run_170():
+def run_170(d: Path):
     return process_company(
-        code="170", friendly_name="PAP", period="202603",
-        bs_rows_raw=read_fennoa_csv(p("170_tase 3.2026.csv")),
-        is_rows_raw=read_fennoa_csv(p("170_tulos 3.2026.csv")),
-        extra_files_to_referens=[
-            "170_tase 3.2026.csv",
-            "170_tulos 3.2026.csv",
-            "170_tase 3.2026.pdf",
-            "170_tulos 3.2026.pdf",
-            "170_tase-erittelyt 3.2026.pdf",
-        ],
+        code="170", friendly_name="PAP", period=PERIOD,
+        bs_rows_raw=read_fennoa_csv(str(glob_one(d, "170_*tase*.csv"))),
+        is_rows_raw=read_fennoa_csv(str(glob_one(d, "170_*tulos*.csv"))),
     )
 
 
-def run_177():
-    f = p("177_LL Balance and income statement MARCH 2026.xlsx")
+def run_177(d: Path):
+    f = str(glob_one(d, "177_*.xlsx"))
+    bs_sheet = _find_sheet(f, r"LL Balance Sheet")
+    is_sheet = _find_sheet(f, r"LL Income Statement")
     return process_company(
-        code="177", friendly_name="Lukkoluket", period="202603",
-        bs_rows_raw=read_muutos_xlsx(f, sheet_name="LL Balance Sheet MAR 2026"),
-        is_rows_raw=read_income_only_xlsx(f, sheet_name="LL Income Statement MAR 2026"),
-        extra_files_to_referens=["177_LL Balance and income statement MARCH 2026.xlsx"],
+        code="177", friendly_name="Lukkoluket", period=PERIOD,
+        bs_rows_raw=read_muutos_xlsx(f, sheet_name=bs_sheet),
+        is_rows_raw=read_income_only_xlsx(f, sheet_name=is_sheet),
     )
 
 
-def run_182():
+def run_182(d: Path):
     return process_company(
-        code="182", friendly_name="THV", period="202603",
-        bs_rows_raw=read_muutos_csv(p("182_Tase_THV_Tele-_ja_Hälytysvalvonta_Oy_(01.03.2026-31.03.2026).csv")),
-        is_rows_raw=read_fennoa_csv(p("182_Tuloslaskelma_THV_Tele-_ja_Hälytysvalvonta_Oy_(01.03.2026-31.03.2026).csv")),
-        extra_files_to_referens=[
-            "182_Tase_THV_Tele-_ja_Hälytysvalvonta_Oy_(01.03.2026-31.03.2026).csv",
-            "182_Tuloslaskelma_THV_Tele-_ja_Hälytysvalvonta_Oy_(01.03.2026-31.03.2026).csv",
-            "182_Alv 03 2026.pdf",
-            "182_Tase 03 2026.pdf",
-            "182_Tulos 03 2026.pdf",
-        ],
+        code="182", friendly_name="THV", period=PERIOD,
+        bs_rows_raw=read_muutos_csv(str(glob_one(d, "182_*[Tt]ase*.csv"))),
+        is_rows_raw=read_fennoa_csv(str(glob_one(d, "182_*[Tt]uloslaskelma*.csv"))),
     )
 
 
-def run_185():
+def run_185(d: Path):
     return process_company(
-        code="185", friendly_name="Suomen-Turvalukko", period="202603",
-        bs_rows_raw=read_muutos_csv(p("185_Balance_sheet_Suomen_Turvalukko_Oy_(01.03.2026-31.03.2026) (1).csv")),
-        is_rows_raw=read_fennoa_csv(p("185_Income_statement_Suomen_Turvalukko_Oy_(01.03.2026-31.03.2026).csv")),
-        extra_files_to_referens=[
-            "185_Balance_sheet_Suomen_Turvalukko_Oy_(01.03.2026-31.03.2026) (1).csv",
-            "185_Income_statement_Suomen_Turvalukko_Oy_(01.03.2026-31.03.2026).csv",
-        ],
+        code="185", friendly_name="Suomen-Turvalukko", period=PERIOD,
+        bs_rows_raw=read_muutos_csv(str(glob_one(d, "185_*[Bb]alance*sheet*.csv"))),
+        is_rows_raw=read_fennoa_csv(str(glob_one(d, "185_*[Ii]ncome*statement*.csv"))),
     )
 
 
-def run_193():
+def run_193(d: Path):
     return process_company(
-        code="193", friendly_name="Suomen-Turvakonsultit", period="202603",
+        code="193", friendly_name="Suomen-Turvakonsultit", period=PERIOD,
         bs_rows_raw=read_muutos_csv_enc(
-            p("193_Balance_sheet_Suomen_Turvakonsultit_Oy_(01.03.2026-31.03.2026).csv"),
-            encoding="utf-16-le",
+            str(glob_one(d, "193_*[Bb]alance*sheet*.csv")), encoding="utf-16-le",
         ),
         is_rows_raw=read_csv_col_enc(
-            p("193_Profit_and_loss_statement,_monthly_Suomen_Turvakonsultit_Oy_(01.01.2026-31.03.2026).csv"),
-            col=3,
-            encoding="utf-16-le",
-            target_period="202603",
+            str(glob_one(d, "193_*[Pp]rofit*loss*.csv")),
+            col=3, encoding="utf-16-le", target_period=PERIOD,
         ),
-        extra_files_to_referens=[
-            "193_Balance_sheet_Suomen_Turvakonsultit_Oy_(01.03.2026-31.03.2026).csv",
-            "193_Profit_and_loss_statement,_monthly_Suomen_Turvakonsultit_Oy_(01.01.2026-31.03.2026).csv",
-        ],
     )
 
 
-def run_195():
+def run_195(d: Path):
     return process_company(
-        code="195", friendly_name="Meri-Lapin", period="202603",
+        code="195", friendly_name="Meri-Lapin", period=PERIOD,
         bs_rows_raw=read_muutos_csv_enc(
-            p("195_Tase_Meri-Lapin_Lukituspalvelu_Oy_(01.03.2026-31.03.2026).csv"),
-            encoding="utf-16-le",
+            str(glob_one(d, "195_*[Tt]ase*.csv")), encoding="utf-16-le",
         ),
         is_rows_raw=read_csv_col_enc(
-            p("195_Tuloslaskelma_Meri-Lapin_Lukituspalvelu_Oy_(01.03.2026-31.03.2026).csv"),
-            col=1,
-            encoding="utf-16-le",
+            str(glob_one(d, "195_Tuloslaskelma_*.csv")),
+            col=1, encoding="utf-16-le",
         ),
-        extra_files_to_referens=[
-            "195_Tase_Meri-Lapin_Lukituspalvelu_Oy_(01.03.2026-31.03.2026).csv",
-            "195_Tuloslaskelma_Meri-Lapin_Lukituspalvelu_Oy_(01.03.2026-31.03.2026).csv",
-            "195_Tuloslaskelma,_kuukausittain_Meri-Lapin_Lukituspalvelu_Oy_(01.01.2026-31.03.2026).csv",
-        ],
     )
 
 
-def run_215():
+def run_215(d: Path):
     return process_company(
-        code="215", friendly_name="Emsec", period="202603",
-        bs_rows_raw=read_emsec_bs_xlsx(p("215_Emsec Oy BS 01.03.-31.3.2026.xlsx")),
-        is_rows_raw=read_emsec_pl_xlsx(p("215_Emsec Oy PL 01.03.-31.3.2026.xlsx")),
-        extra_files_to_referens=[
-            "215_Emsec Oy BS 01.03.-31.3.2026.xlsx",
-            "215_Emsec Oy PL 01.03.-31.3.2026.xlsx",
-        ],
+        code="215", friendly_name="Emsec", period=PERIOD,
+        bs_rows_raw=read_emsec_bs_xlsx(str(glob_one(d, "215_*BS*.xlsx"))),
+        is_rows_raw=read_emsec_pl_xlsx(str(glob_one(d, "215_*PL*.xlsx"))),
     )
 
 
-def run_221():
-    f = p("221_maaliskuu 2026.xlsx")
+def run_221(d: Path):
+    f = str(glob_one(d, "221_*.xlsx"))
     return process_company(
-        code="221", friendly_name="JM-Lukko", period="202603",
+        code="221", friendly_name="JM-Lukko", period=PERIOD,
         bs_rows_raw=read_combined_xlsx_col2(f, acc_min_4d=1000, acc_max_4d=2999),
         is_rows_raw=read_combined_xlsx_col2(f, acc_min_4d=3000, acc_max_4d=9999),
-        extra_files_to_referens=["221_maaliskuu 2026.xlsx"],
     )
 
 
-def run_238():
+def run_238(d: Path):
     return process_company(
-        code="238", friendly_name="ANV", period="202603",
-        bs_rows_raw=read_period_csv_diff(p("238_tase-kk_1004090426.csv"), target_period="202603"),
-        is_rows_raw=read_period_csv_col(p("238_tuloslaskelma-kk_1004090426.csv"), target_period="202603"),
-        extra_files_to_referens=[
-            "238_tase-kk_1004090426.csv",
-            "238_tuloslaskelma-kk_1004090426.csv",
-        ],
+        code="238", friendly_name="ANV", period=PERIOD,
+        bs_rows_raw=read_period_csv_diff(str(glob_one(d, "238_tase-kk_*.csv")), PERIOD),
+        is_rows_raw=read_period_csv_col(str(glob_one(d, "238_tuloslaskelma-kk_*.csv")), PERIOD),
     )
 
 
-def run_145():
+def run_145(d: Path):
     return process_company(
-        code="145", friendly_name="Prosero Security Oy", period="202603",
-        bs_rows_raw=read_muutos_xlsx(
-            p("145_Tase_Prosero_Security_Oy_(01.03.2026-31.03.2026).xls")
-        ),
-        is_rows_raw=read_income_only_xlsx(
-            p("145_Tuloslaskelma_Prosero_Security_Oy_(01.03.2026-31.03.2026).xls")
-        ),
-        extra_files_to_referens=[
-            "145_Tase_Prosero_Security_Oy_(01.03.2026-31.03.2026).xls",
-            "145_Tuloslaskelma_Prosero_Security_Oy_(01.03.2026-31.03.2026).xls",
-        ],
+        code="145", friendly_name="Prosero Security Oy", period=PERIOD,
+        bs_rows_raw=read_muutos_xlsx(str(glob_one(d, "145_*[Tt]ase*.xls*"))),
+        is_rows_raw=read_income_only_xlsx(str(glob_one(d, "145_*[Tt]uloslaskelma*.xls*"))),
     )
 
 
@@ -949,6 +895,7 @@ def run_145():
 
 RUNNERS = {
     "134": run_134,
+    "145": run_145,
     "146": run_146,
     "153": run_153,
     "161": run_161,
@@ -965,38 +912,71 @@ RUNNERS = {
     "196": run_196,
     "199": run_199,
     "215": run_215,
-    "145": run_145,
     "221": run_221,
     "238": run_238,
 }
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser(description="Processera finska bolag → INL.xlsx")
     parser.add_argument("--dry-run", "-n", action="store_true", help="Visa utan att skriva")
+    parser.add_argument(
+        "--period", "-p", metavar="YYYYMM", default=None,
+        help="Period att köra (t.ex. 202604). Standard: föregående månad.",
+    )
     parser.add_argument("codes", nargs="*", help="Bolagskoder (lämna tomt för alla)")
     args = parser.parse_args()
 
     _DRY_RUN = args.dry_run
+
+    if args.period:
+        PERIOD = args.period
+        FINLAND_DIR  = Path(load_config()["base_path"]) / "extracted" / args.period / "Finland"
+        OUTPUT_DIR   = FINLAND_DIR / "output"
+        REFERENS_DIR = FINLAND_DIR / "Referens"
+    else:
+        from datetime import date as _date
+        today = _date.today()
+        PERIOD = (
+            f"{today.year - 1}12" if today.month == 1
+            else f"{today.year}{today.month - 1:02d}"
+        )
+
     dry_label = "  [DRY RUN]" if _DRY_RUN else ""
-    log("START", "process_finland.py", f"period per bolag{dry_label}")
+    log("START", "process_finland.py", f"period {PERIOD}{dry_label}")
+
+    if not FINLAND_DIR.exists():
+        import sys as _sys
+        _sys.exit(f"[ERROR]  Finland-mappen saknas: {FINLAND_DIR}")
+
+    if not _DRY_RUN:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        REFERENS_DIR.mkdir(parents=True, exist_ok=True)
 
     move_pdfs_to_referens()
 
     codes = args.codes if args.codes else sorted(RUNNERS)
     stats: dict[str, int] = {"ok": 0, "warn": 0, "skip": 0, "error": 0}
+
     for code in codes:
         if code not in RUNNERS:
             log("ERROR", code, "Okänd bolagskod")
             stats["error"] += 1
             continue
         try:
-            status = RUNNERS[code]()
+            status = RUNNERS[code](FINLAND_DIR)
             stats[status] = stats.get(status, 0) + 1
         except FileNotFoundError as e:
-            log("SKIP", code, f"Källfil saknas: {Path(e.filename).name}")
+            fname = Path(str(e)).name if e.args else "okänd fil"
+            log("SKIP", code, f"Källfil saknas: {fname}")
             stats["skip"] += 1
+        except Exception as e:
+            log("ERROR", code, f"Fel: {e}")
+            stats["error"] += 1
+        finally:
+            # Move all {code}_* source files to Referens regardless of outcome
+            for f in sorted(FINLAND_DIR.glob(f"{code}_*")):
+                if f.is_file():
+                    move_to_referens(f.name)
 
     log("DONE", "process_finland.py",
         f"{stats['ok']} OK  {stats['warn']} WARN  {stats['skip']} SKIP  {stats['error']} ERROR")

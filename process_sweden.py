@@ -214,9 +214,15 @@ def corrected_ref_filename(filename: str, old_prefix: int, new_prefix: int) -> s
 
 # ── Huvud ──────────────────────────────────────────────────────────────────────
 
-def process_sweden(dry_run: bool = False) -> None:
+def process_sweden(dry_run: bool = False, period: str | None = None) -> None:
+    global SWEDEN_DIR, REFERENS_DIR
+    if period:
+        SWEDEN_DIR   = GET_TESTFILES / "extracted" / period / "Sweden"
+        REFERENS_DIR = SWEDEN_DIR / "Referens"
+
     dry_label = "  [DRY RUN]" if dry_run else ""
-    log("START", "process_sweden.py", f"{date.today()}{dry_label}")
+    period_label = f"  period {period}" if period else ""
+    log("START", "process_sweden.py", f"{date.today()}{period_label}{dry_label}")
 
     if not SWEDEN_DIR.exists():
         sys.exit(f"[ERROR]  Sweden-mappen saknas: {SWEDEN_DIR}")
@@ -427,5 +433,9 @@ if __name__ == "__main__":
         action="store_true",
         help="Visa vad som skulle hända utan att ändra några filer",
     )
+    parser.add_argument(
+        "--period", "-p", metavar="YYYYMM", default=None,
+        help="Period att köra (t.ex. 202604). Standard: extracted/Sweden/",
+    )
     args = parser.parse_args()
-    process_sweden(dry_run=args.dry_run)
+    process_sweden(dry_run=args.dry_run, period=args.period)

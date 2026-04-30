@@ -1,8 +1,11 @@
 """Shared utilities for finance-automation country processing scripts."""
 import json
+import re
 from pathlib import Path
 import shutil
 import sys
+
+DUPE_RE = re.compile(r"\s\(([2-9]|\d{2,})\)\.\w+$")
 
 try:
     import openpyxl
@@ -78,6 +81,17 @@ def move_to_referens_safe(src: Path, referens_dir: Path, dry_run: bool) -> Path:
         shutil.move(str(src), str(dst))
         print(f"    → Referens/{dst.name}")
     return dst
+
+
+def glob_one(directory: Path, pattern: str) -> Path:
+    """Return the best-matching file for pattern in directory.
+    Prefers non-duplicate files (unique_path-created copies have ` (2)+` suffix);
+    falls back to first match if all matches look like dupes."""
+    matches = sorted(directory.glob(pattern))
+    if not matches:
+        raise FileNotFoundError(directory / pattern)
+    non_dupes = [f for f in matches if not DUPE_RE.search(f.name)]
+    return non_dupes[0] if non_dupes else matches[0]
 
 
 def save_inl_xlsx(is_rows: list, bs_rows: list, output_path: Path) -> None:

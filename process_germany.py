@@ -14,6 +14,7 @@ Vad scriptet gör:
   4. Flyttar källfiler till Germany/Referens/
 
 Bolagsspecifika konfigurationer:
+  187 (Prosero GmbH):  Monthly-Value XLSX, konton 0–89999, negera alla belopp
   188 (Bofferding):    Monthly-Value XLSX, konton 0–89999, negera alla belopp
   220 (Weckbacher):    SuSa CSV (cp1252, semikolon), amount=-(Soll+Haben), konton 0–8999
   231 (Mittermeier):   SuSa pro Monat, konton 0–8999, Haben−Soll per Mrz-kolumn
@@ -24,15 +25,15 @@ Teckensättning SuSa (231/245/246):
   amount = Haben − Soll  →  intäkter +, kostnader −, tillgångsökning −, skuld­ökning +
   (summan av alla konton 0–8999 = 0 per dubbel bokföring)
 
-Teckensättning Monthly-Value (188):
+Teckensättning Monthly-Value (187/188):
   filen lagrar debet-positivt (intäkter negativa, kostnader positiva)
   → negera alla belopp för att nå kredit-debet-konvention
 
 IS-konton:
-  188: 20 000–89 999  (engelskspråkigt DATEV-system)
+  187/188: 20 000–89 999  (engelskspråkigt DATEV-system)
   231/245/246: 4 000–8 999  (DATEV SKR03/04)
 BS-konton:
-  188: 0–19 999
+  187/188: 0–19 999
   231/245/246: 0–3 999
 """
 
@@ -49,7 +50,7 @@ try:
 except ImportError:
     sys.exit("Saknar openpyxl — kör:  py -m pip install openpyxl")
 
-from shared import load_dotterbolag, move_to_referens_safe, save_inl_xlsx, load_config, log
+from shared import load_dotterbolag, move_to_referens_safe, save_inl_xlsx, load_config, log, glob_one
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent
@@ -61,72 +62,15 @@ REFERENS_DIR = GERMANY_DIR / "Referens"
 DOTTERBOLAG  = _BASE / "_params" / "Dotterbolagslista.xlsx"
 
 # ── Company definitions ────────────────────────────────────────────────────────
-# reader: "monthly_value" | "susa_pro_monat" | "susa_jahresuebersicht" | "skip"
+# reader    : "monthly_value" | "susa_pro_monat" | "susa_jahresuebersicht" | "susa_csv" | "skip"
+# file_glob : glob pattern to discover the main file; supports {period} placeholder
 COMPANY_DEFS: dict[str, dict] = {
-    "187": dict(
-        reader="monthly_value",
-        file="187_Prosero Security GmbH monthly value 2026_03.xlsx",
-        extra=[
-            "187_Prosero Security GmbH Balance sheet 2026_03.xlsx",
-            "187_Prosero Security GmbH profit loss 2026_03.xlsx",
-            "187_Prosero Security GmbH reporting 2026_03.xlsx",
-        ],
-    ),
-    "188": dict(
-        reader="monthly_value",
-        file="188_Bofferding GmbH monthly value 2026_03.xlsx",
-        extra=[
-            "188_Bofferding GmbH balance sheet 2026_03.xlsx",
-            "188_Bofferding GmbH balance sheet 2026_03 (2).xlsx",
-            "188_Bofferding GmbH monthly value 2026_03 (2).xlsx",
-            "188_Bofferding GmbH profit loss 2026_03.xlsx",
-            "188_Bofferding GmbH profit loss 2026_03 (2).xlsx",
-            "188_Bofferding GmbH reporting 2026_03.xlsx",
-            "188_Bofferding GmbH reporting 2026_03 (2).xlsx",
-        ],
-    ),
-    "220": dict(
-        reader="susa_csv",
-        file="220_Susa_03_2026.csv",
-        extra=[
-            "220_BAB aktueller Monat KST-Übersicht Umlage 3_2026.pdf",
-            "220_BAB aktueller Monat KST-Übersicht Umlage 2_2026.pdf",
-            "220_Kurzfristige Erfolgsrechnung der Fa. Weckbacher GmbH_03_2026.pdf",
-        ],
-    ),
-    "231": dict(
-        reader="susa_pro_monat",
-        file="231_Susa 03.2026.xlsx",
-        extra=[
-            "231_BWA 03.2026.xlsx",
-            "231_BWA 03.2026 (2).xlsx",
-            "231_Susa 03.2026 (2).xlsx",
-        ],
-    ),
-    "245": dict(
-        reader="susa_pro_monat",
-        file="245_GF Sich - SuSa 3.2026.xlsx",
-        extra=[
-            "245_GF Sich - BWA 3.2026.xlsx",
-            "245_GF Sich - BWA 3.2026 (2).xlsx",
-            "245_GF Sich - BWA JÜ 3.2026.xlsx",
-            "245_GF Sich - BWA JÜ 3.2026 (2).xlsx",
-            "245_GF Sich - SuSa 3.2026 (2).xlsx",
-            "245_GF Sich.- BWA 3.2026.pdf",
-            "245_GF Sich.- BWA 3.2026 (2).pdf",
-        ],
-    ),
-    "246": dict(
-        reader="susa_jahresuebersicht",
-        file="246_SUSA_20260331.xlsx",
-        extra=[
-            "246_Kurzfristige BWA_20260331.xlsx",
-            "246_Kurzfristige BWA_20260331 (2).xlsx",
-            "246_SUSA_20260228.xlsx",
-            "246_SUSA_20260228 (2).xlsx",
-            "246_SUSA_20260331 (2).xlsx",
-        ],
-    ),
+    "187": dict(reader="monthly_value",        file_glob="187_*monthly*value*.xlsx"),
+    "188": dict(reader="monthly_value",        file_glob="188_*monthly*value*.xlsx"),
+    "220": dict(reader="susa_csv",             file_glob="220_Susa_*.csv"),
+    "231": dict(reader="susa_pro_monat",       file_glob="231_Susa*.xlsx"),
+    "245": dict(reader="susa_pro_monat",       file_glob="245_*SuSa*.xlsx"),
+    "246": dict(reader="susa_jahresuebersicht", file_glob="246_SUSA_{period}*.xlsx"),
 }
 
 # ── Period helpers ─────────────────────────────────────────────────────────────
@@ -227,12 +171,12 @@ def classify_susa(acc: int) -> str | None:
     return "BS"
 
 
-# ── Reader: Monthly-Value XLSX (188) ──────────────────────────────────────────
+# ── Reader: Monthly-Value XLSX (187, 188) ─────────────────────────────────────
 def read_monthly_value(
     filepath: Path, period: str
 ) -> tuple[list, list]:
     """
-    Reads 188-style 'monthly value' file.
+    Reads 187/188-style 'monthly value' file.
 
     Finds the column header matching *period* (e.g. 'Mar/2026' for 202603).
     Negates amounts to convert from debit-positive to kredit-debet convention.
@@ -450,6 +394,7 @@ def process_company(
     code: str,
     friendly: str,
     period: str,
+    filepath: Path,
     cfg: dict,
     dry_run: bool,
 ) -> str:
@@ -457,13 +402,8 @@ def process_company(
 
     if cfg["reader"] == "skip":
         log("SKIP", code, "Krypterade filer (.p7m) kan inte bearbetas automatiskt")
-        if not dry_run:
-            REFERENS_DIR.mkdir(exist_ok=True)
-        for fname in cfg.get("extra", []):
-            move_to_referens(fname, dry_run)
         return "skip"
 
-    filepath = GERMANY_DIR / cfg["file"]
     log("INFO", code, f"Fil: {filepath.name}")
 
     if not filepath.exists():
@@ -500,17 +440,13 @@ def process_company(
     dry_prefix = "[DRY] " if dry_run else ""
     log("WARN" if is_warn else "OK", code, f"{dry_prefix}Sparad: {out_name}")
 
-    if not dry_run:
-        REFERENS_DIR.mkdir(exist_ok=True)
-    move_to_referens(cfg["file"], dry_run)
-    for fname in cfg.get("extra", []):
-        move_to_referens(fname, dry_run)
-
     return "warn" if is_warn else "ok"
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main() -> None:
+    global GERMANY_DIR, OUTPUT_DIR, REFERENS_DIR
+
     parser = argparse.ArgumentParser(
         description="Bearbeta tyska SuSa/Monthly-Value-filer → INL.xlsx"
     )
@@ -522,9 +458,18 @@ def main() -> None:
         "--dry-run", "-n", action="store_true",
         help="Visa vad som skulle hända utan att skriva några filer",
     )
+    parser.add_argument(
+        "--period", "-p", metavar="YYYYMM", default=None,
+        help="Period att köra (t.ex. 202604). Standard: föregående månad.",
+    )
     args = parser.parse_args()
 
-    period = prev_month_period()
+    if args.period:
+        GERMANY_DIR  = GET_TESTFILES / "extracted" / args.period / "Germany"
+        OUTPUT_DIR   = GERMANY_DIR / "output"
+        REFERENS_DIR = GERMANY_DIR / "Referens"
+
+    period = args.period or prev_month_period()
     dry_label = "  [DRY RUN]" if args.dry_run else ""
     log("START", "process_germany.py", f"period {period}{dry_label}")
 
@@ -548,10 +493,32 @@ def main() -> None:
             log("ERROR", code, "Okänd bolagskod")
             stats["error"] += 1
             continue
+
         cfg      = COMPANY_DEFS[code]
         friendly = friendlies.get(int(code), f"Bolag{code}")
-        status = process_company(code, friendly, period, cfg, args.dry_run)
+
+        if cfg["reader"] == "skip":
+            log("SKIP", code, "Krypterade filer (.p7m) kan inte bearbetas automatiskt")
+            stats["skip"] += 1
+            continue
+
+        glob_pattern = cfg["file_glob"].format(period=period)
+        try:
+            filepath = glob_one(GERMANY_DIR, glob_pattern)
+        except FileNotFoundError:
+            log("SKIP", code, "Källfil saknas (redan i Referens?)")
+            stats["skip"] += 1
+            continue
+
+        status = process_company(code, friendly, period, filepath, cfg, args.dry_run)
         stats[status] = stats.get(status, 0) + 1
+
+        # Move all remaining {code}_* source files to Referens
+        if not args.dry_run:
+            REFERENS_DIR.mkdir(exist_ok=True)
+        for f in sorted(GERMANY_DIR.glob(f"{code}_*")):
+            if f.is_file():
+                move_to_referens(f.name, args.dry_run)
 
     log("DONE", "process_germany.py",
         f"{stats['ok']} OK  {stats['warn']} WARN  {stats['skip']} SKIP  {stats['error']} ERROR")

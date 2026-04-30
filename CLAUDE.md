@@ -6,43 +6,50 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Reset: restore all files for re-processing (move Referens/ back, delete output/)
-py reset.py --dry-run    # preview
-py reset.py              # run
+py reset.py --dry-run                 # preview all periods
+py reset.py --period 202604           # reset a specific period
+py reset.py                           # reset all periods
 
 # Run all countries in sequence
-py run_all.py --dry-run  # preview all
-py run_all.py            # run all
+py run_all.py --dry-run               # preview all (previous month)
+py run_all.py --period 202604         # run all for a specific period
+py run_all.py                         # run all (previous month)
 
-# Step 1: extract attachments from .msg emails → extracted/{Country}/
-py extract.py                      # previous month (auto-detected)
-py extract.py --period 202604      # specific period
+# Step 1: extract attachments from .msg emails → extracted/{period}/{Country}/
+py extract.py                         # previous month (auto-detected)
+py extract.py --period 202604         # specific period
 
 # Step 1 (preview only):
-py dry_run.py                      # previous month (auto-detected)
-py dry_run.py --period 202604      # specific period
+py dry_run.py                         # previous month (auto-detected)
+py dry_run.py --period 202604         # specific period
 
 # Emails must be placed in: _inbox/{YYYYMM}/*.msg  (e.g. _inbox/202604/)
 
-# Step 2: process by country
-py process_norway.py --dry-run        # preview
+# Step 2: process by country (all scripts accept --period YYYYMM)
+py process_norway.py --dry-run        # preview (previous month)
 py process_norway.py                  # run
+py process_norway.py --period 202604  # specific period
 py process_norway.py --prefix 198     # single company
 
 py process_sweden.py --dry-run
 py process_sweden.py
+py process_sweden.py --period 202604
 
-py process_finland.py              # all companies
-py process_finland.py 146          # single company
-py process_finland.py 134 196      # multiple companies
-py process_finland.py --dry-run    # preview
+py process_finland.py                 # all companies (previous month)
+py process_finland.py 146             # single company
+py process_finland.py 134 196         # multiple companies
+py process_finland.py --dry-run       # preview
+py process_finland.py --period 202604 # specific period
 
-py process_denmark.py              # all companies
-py process_denmark.py 229 242      # specific companies
+py process_denmark.py                 # all companies
+py process_denmark.py 229 242         # specific companies
 py process_denmark.py --dry-run
+py process_denmark.py --period 202604
 
-py process_germany.py              # all companies
-py process_germany.py 231 245      # specific companies
+py process_germany.py                 # all companies
+py process_germany.py 231 245         # specific companies
 py process_germany.py --dry-run
+py process_germany.py --period 202604
 ```
 
 Use `py` (not `python`) on this Windows machine.
@@ -52,16 +59,17 @@ Use `py` (not `python`) on this Windows machine.
 ### Data flow
 
 ```
-_inbox/*.msg
-    └─ extract.py ──────────────────────────────→ extracted/{Country}/{ID:03d}_{filename}
+_inbox/{YYYYMM}/*.msg
+    └─ extract.py ──────────────────────────────→ extracted/{period}/{Country}/{ID:03d}_{filename}
                                                         │
                               ┌─────────────────────────┤
                               ▼                         ▼
                     process_sweden.py           process_norway.py
                     process_finland.py          process_denmark.py
+                    process_germany.py
                               │
-                              ├── output/  ← INL.xlsx (FI/DK) or renamed SIE/SAF-T
-                              └── Referens/ ← source files moved here after processing
+                              ├── output/    ← INL.xlsx (FI/DK/DE) or renamed SIE/SAF-T (SE/NO)
+                              └── Referens/  ← source files moved here after processing
 ```
 
 All country scripts guard against reprocessing by checking whether source files have already been moved to `Referens/`.
@@ -131,8 +139,15 @@ Use `shared.log(status, label, msg)` for all status output. Status values: `STAR
 
 ### Adding a new monthly period
 
-- **Finland**: update `period="YYYYMM"` and filenames in each `run_NNN()` function.
-- **Denmark**: update `file` and `extra` filenames in `COMPANY_DEFS`.
-- **Germany**: update `file` and `extra` filenames in `COMPANY_DEFS`; period detected automatically.
-- **Sweden / Norway**: scripts detect period dynamically from file content (SIE `#RAR 0` / SAF-T XML headers).
-- **extract.py**: update `OVERRIDES` / `ATTACHMENT_OVERRIDES` for any new ambiguous mails.
+All scripts accept `--period YYYYMM` and discover files dynamically — no code changes needed for routine months.
+
+1. Place `.msg` files in `_inbox/{YYYYMM}/`.
+2. Run `py extract.py --period YYYYMM` → creates `extracted/{YYYYMM}/{Country}/`.
+3. Run `py run_all.py --period YYYYMM` (or individual process scripts with `--period`).
+
+**If ambiguous mails appear** (extract.py flags them as LOW or wrong match): add entries to `OVERRIDES` / `ATTACHMENT_OVERRIDES` in `extract.py` and `dry_run.py`.
+
+Period detection per script:
+- **Sweden**: from SIE file `#RAR 0` line (YTD period dates).
+- **Norway**: from SAF-T XML `<PeriodStart>` / `<PeriodEnd>` headers.
+- **Finland / Denmark / Germany**: from `--period` arg (or `prev_month_period()` fallback). Files discovered via glob patterns in `COMPANY_DEFS` / `RUNNERS`.

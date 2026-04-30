@@ -25,9 +25,14 @@ SCRIPTS = [
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kör alla landsprocesser i sekvens.")
     parser.add_argument("--dry-run", "-n", action="store_true", help="Dry-run alla skript")
+    parser.add_argument("--period", "-p", metavar="YYYYMM", default=None, help="Period att köra (t.ex. 202604)")
     args = parser.parse_args()
 
-    extra = ["--dry-run"] if args.dry_run else []
+    extra = []
+    if args.dry_run:
+        extra += ["--dry-run"]
+    if args.period:
+        extra += ["--period", args.period]
     prefix = "[DRY-RUN] " if args.dry_run else ""
     base = Path(__file__).resolve().parent
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}

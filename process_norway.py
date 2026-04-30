@@ -458,7 +458,15 @@ def main():
         action="store_true",
         help="Hoppa over steget att flytta icke-SAF-T-filer till Referens/",
     )
+    parser.add_argument(
+        "--period", metavar="YYYYMM", default=None,
+        help="Period att köra (t.ex. 202604). Standard: extracted/Norway/",
+    )
     args = parser.parse_args()
+
+    if args.period:
+        global NORWAY_DIR
+        NORWAY_DIR = GET_TESTFILES / "extracted" / args.period / "Norway"
 
     process_norway(prefix_filter=args.prefix, dry_run=args.dry_run)
 

@@ -30,7 +30,10 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from datetime import date
 from pathlib import Path
 
-from shared import load_dotterbolag, move_to_referens_safe, save_inl_xlsx, load_config, log
+from shared import (
+    load_dotterbolag, move_to_referens_safe, save_inl_xlsx,
+    load_config, log, DUPE_RE, glob_one,
+)
 
 try:
     import openpyxl
@@ -47,35 +50,31 @@ REFERENS_DIR = DENMARK_DIR / "Referens"
 DOTTERBOLAG  = _BASE / "_params" / "Dotterbolagslista.xlsx"
 
 # ── Company definitions ────────────────────────────────────────────────────────
-# is_max : max 4-digit account prefix (inclusive) counted as IS/P&L
-# bs_min : min 4-digit account prefix (inclusive) counted as BS; None = no BS
+# is_max      : max 4-digit account prefix (inclusive) counted as IS/P&L
+# bs_min      : min 4-digit account prefix (inclusive) counted as BS; None = no BS
+# file_glob   : glob pattern to find the monthly Saldobalance file
+# ytd_indicator: substring in the YTD file's name that distinguishes it from monthly
+# use_ytd_bs  : if True, read BS from the YTD file instead of the monthly file
 COMPANY_DEFS: dict[str, dict] = {
     "178": dict(
         is_max=4999, bs_min=5000, skip_formatting=True,
-        file="178_03 Marts 2026.xlsx",
-        exclude=[1999, 6140],
-        extra=[],
+        file_glob="178_*.xlsx", exclude=[1999, 6140],
     ),
     "190": dict(
         is_max=4999, bs_min=5000, skip_formatting=False,
-        file="190_03. Sikring Nord 0101-31032026.xlsx",
-        extra=[],
+        file_glob="190_*.xlsx",
     ),
     "216": dict(
         is_max=9999, bs_min=None, skip_formatting=False,
-        file="216_Balance pr. 310326 SIKOM Danmark.xlsx",
-        extra=[],
+        file_glob="216_*.xlsx",
     ),
     "229": dict(
         is_max=4999, bs_min=5000, skip_formatting=False,
-        file="229_Saldobalance månedsopdelt - 01-03-2026 - 31-03-2026.xlsx",
-        ytd_file="229_Saldobalance månedsopdelt - 01-01-2026 - 31-03-2026.xlsx",
-        extra=["229_Saldobalance månedsopdelt - 01-01-2026 - 31-03-2026.xlsx"],
+        file_glob="229_*.xlsx", ytd_indicator="01-01", use_ytd_bs=True,
     ),
     "242": dict(
         is_max=799, bs_min=800, skip_formatting=False,
-        file="242_Saldobalance - 01-03-2026 - 31-03-2026.xlsx",
-        extra=["242_Saldobalance - 01-01-2026 - 31-03-2026.xlsx"],
+        file_glob="242_Saldobalance*.xlsx", ytd_indicator="01-01",
     ),
 }
 
@@ -85,6 +84,36 @@ def prev_month_period() -> str:
     if today.month == 1:
         return f"{today.year - 1}12"
     return f"{today.year}{today.month - 1:02d}"
+
+
+# ── File discovery ─────────────────────────────────────────────────────────────
+def _find_files(
+    directory: Path, glob_pattern: str, ytd_indicator: str | None = None
+) -> tuple[Path, Path | None]:
+    """Return (main_file, ytd_file_or_None) for a company.
+
+    When ytd_indicator is given, separates YTD from monthly files by the
+    indicator substring. Falls back gracefully for January (no non-YTD file).
+    Prefers non-duplicate files (unique_path copies have ` (2)+` suffix).
+    Raises FileNotFoundError if no files match.
+    """
+    matches = sorted(directory.glob(glob_pattern))
+    if not matches:
+        raise FileNotFoundError(directory / glob_pattern)
+
+    if ytd_indicator:
+        ytd_matches  = [f for f in matches if ytd_indicator in f.name]
+        main_matches = [f for f in matches if ytd_indicator not in f.name]
+        # Take the latest alphabetically within each group — later months sort higher
+        ytd  = ytd_matches[-1]  if ytd_matches  else None
+        main = main_matches[-1] if main_matches else None
+        if main is None and ytd is not None:
+            main, ytd = ytd, None  # January edge case: only YTD file exists
+        if main is None:
+            raise FileNotFoundError(directory / glob_pattern)
+        return main, ytd
+    else:
+        return matches[-1], None
 
 
 # ── Amount parsing (Danish: . thousands, , decimal) ───────────────────────────
@@ -385,7 +414,6 @@ def process_company(
     is_max_4d: int,
     bs_min_4d: int | None,
     skip_formatting: bool,
-    extra_referens: list[str],
     dry_run: bool,
     exclude: list[int] | None = None,
     ytd_filepath: Path | None = None,
@@ -420,17 +448,13 @@ def process_company(
     dry_prefix = "[DRY] " if dry_run else ""
     log("WARN" if is_warn else "OK", code, f"{dry_prefix}Sparad: {out_name}")
 
-    if not dry_run:
-        REFERENS_DIR.mkdir(exist_ok=True)
-    move_to_referens(filepath.name, dry_run)
-    for fname in extra_referens:
-        move_to_referens(fname, dry_run)
-
     return "warn" if is_warn else "ok"
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main() -> None:
+    global DENMARK_DIR, OUTPUT_DIR, REFERENS_DIR
+
     parser = argparse.ArgumentParser(
         description="Bearbeta danska Saldobalance-filer → INL.xlsx"
     )
@@ -442,9 +466,18 @@ def main() -> None:
         "--dry-run", "-n", action="store_true",
         help="Visa vad som skulle hända utan att skriva några filer",
     )
+    parser.add_argument(
+        "--period", "-p", metavar="YYYYMM", default=None,
+        help="Period att köra (t.ex. 202604). Standard: föregående månad.",
+    )
     args = parser.parse_args()
 
-    period = prev_month_period()
+    if args.period:
+        DENMARK_DIR  = GET_TESTFILES / "extracted" / args.period / "Denmark"
+        OUTPUT_DIR   = DENMARK_DIR / "output"
+        REFERENS_DIR = DENMARK_DIR / "Referens"
+
+    period = args.period or prev_month_period()
     dry_label = "  [DRY RUN]" if args.dry_run else ""
     log("START", "process_denmark.py", f"period {period}{dry_label}")
 
@@ -469,11 +502,17 @@ def main() -> None:
             stats["error"] += 1
             continue
 
-        cfg         = COMPANY_DEFS[code]
-        friendly    = friendlies.get(int(code), f"Bolag{code}")
-        filepath    = DENMARK_DIR / cfg["file"]
-        ytd_file    = cfg.get("ytd_file")
-        ytd_filepath = DENMARK_DIR / ytd_file if ytd_file else None
+        cfg      = COMPANY_DEFS[code]
+        friendly = friendlies.get(int(code), f"Bolag{code}")
+
+        try:
+            filepath, ytd_filepath = _find_files(
+                DENMARK_DIR, cfg["file_glob"], cfg.get("ytd_indicator")
+            )
+        except FileNotFoundError:
+            log("SKIP", code, "Källfil saknas (redan i Referens?)")
+            stats["skip"] += 1
+            continue
 
         status = process_company(
             code=code,
@@ -483,12 +522,18 @@ def main() -> None:
             is_max_4d=cfg["is_max"],
             bs_min_4d=cfg["bs_min"],
             skip_formatting=cfg["skip_formatting"],
-            extra_referens=cfg["extra"],
             dry_run=args.dry_run,
             exclude=cfg.get("exclude"),
-            ytd_filepath=ytd_filepath,
+            ytd_filepath=ytd_filepath if cfg.get("use_ytd_bs") else None,
         )
         stats[status] = stats.get(status, 0) + 1
+
+        # Move all remaining {code}_* source files to Referens
+        if not args.dry_run:
+            REFERENS_DIR.mkdir(exist_ok=True)
+        for f in sorted(DENMARK_DIR.glob(f"{code}_*")):
+            if f.is_file():
+                move_to_referens(f.name, args.dry_run)
 
     if not args.codes or "54" in args.codes:
         archive_by_prefix("054", args.dry_run)

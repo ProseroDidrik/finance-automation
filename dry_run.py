@@ -253,7 +253,7 @@ def main():
     print("  Files per country folder:")
     for ctry in list(KNOWN_COUNTRIES) + ["Other"]:
         if country_counts[ctry]:
-            print("    extracted/{}/  ->  {} mails".format(ctry, country_counts[ctry]))
+            print("    extracted/{}/{}/  ->  {} mails".format(period, ctry, country_counts[ctry]))
 
     if unmatched:
         print()

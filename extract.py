@@ -228,9 +228,9 @@ def main():
     msg_files = sorted(p for p in inbox_dir.iterdir() if p.is_file() and p.suffix.lower() == ".msg")
     print("Found {} .msg files in _inbox/{}/\n".format(len(msg_files), period))
 
-    # Create country subdirs
+    # Create country subdirs under period
     for ctry in list(KNOWN_COUNTRIES) + ["Other"]:
-        (OUT_DIR / ctry).mkdir(parents=True, exist_ok=True)
+        (OUT_DIR / period / ctry).mkdir(parents=True, exist_ok=True)
 
     total_saved = 0
     total_inline = 0
@@ -246,7 +246,7 @@ def main():
 
         country = company.get("country", "Other")
         prefix = "{:03d}_".format(company["id"])
-        out_subdir = OUT_DIR / country
+        out_subdir = OUT_DIR / period / country
         score_str = "MAN" if score == 999 else str(score)
 
         try:
@@ -276,7 +276,7 @@ def main():
                         })
                         break
                 att_prefix   = "{:03d}_".format(att_company["id"])
-                att_subdir   = OUT_DIR / att_company.get("country", "Other")
+                att_subdir   = OUT_DIR / period / att_company.get("country", "Other")
                 att_subdir.mkdir(parents=True, exist_ok=True)
 
                 target = unique_path(att_subdir / "{}{}".format(att_prefix, safe))
