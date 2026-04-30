@@ -12,9 +12,9 @@ py extract.py
 py dry_run.py
 
 # Step 2: process by country
-py norway_saft.py --dry-run        # preview
-py norway_saft.py                  # run
-py norway_saft.py --prefix 198     # single company
+py process_norway.py --dry-run        # preview
+py process_norway.py                  # run
+py process_norway.py --prefix 198     # single company
 
 py process_sweden.py --dry-run
 py process_sweden.py
@@ -40,7 +40,7 @@ _inbox/*.msg
                                                         │
                               ┌─────────────────────────┤
                               ▼                         ▼
-                    process_sweden.py           norway_saft.py
+                    process_sweden.py           process_norway.py
                     process_finland.py          process_denmark.py
                               │
                               ├── output/  ← INL.xlsx (FI/DK) or renamed SIE/SAF-T
@@ -84,7 +84,7 @@ INL.xlsx layout: empty row 1, then IS rows, then BS rows (col A=account, B=name,
 ### Country-script structure
 
 - **Sweden** (`process_sweden.py`): parses SIE files (encoding fallback: utf-8-sig → cp437 → latin-1), resolves correct BolagsID via OrgNr lookup, validates `#RAR 0` for YTD period, renames, moves non-SIE files to `Referens/`.
-- **Norway** (`norway_saft.py`): handles both raw `.xml` and zipped `.zip` SAF-T; extracts from zip to renamed `.xml`. Uses `SOFTWARE_MAP` to abbreviate `SoftwareID` XML field.
+- **Norway** (`process_norway.py`): handles both raw `.xml` and zipped `.zip` SAF-T; extracts from zip to renamed `.xml`. Uses `SOFTWARE_MAP` to abbreviate `SoftwareID` XML field.
 - **Denmark** (`process_denmark.py`): `COMPANY_DEFS` dict configures each company's IS/BS account boundary (`is_max`, `bs_min` as 4-digit prefixes), filename, and extra files to move. Company 216 is IS-only (no BS). Company 178 skips bold+underline summary rows. Company 190 (Actas) is SAF-T-only, not INL.xlsx.
 - **Finland** (`process_finland.py`): each company has its own `run_NNN()` function registered in `RUNNERS` dict. Multiple reader formats (A–L) handle the variety of Finnish accounting software exports (Fennoa CSV, Muutos CSV/XLSX, period XLS, etc.). BS accounts 1–1999 (4-digit prefix) have sign flipped. Accounts `237X` (årets resultat) are excluded to avoid double-counting.
 
