@@ -31,6 +31,8 @@ FINLAND_DIR = (
 OUTPUT_DIR = os.path.join(FINLAND_DIR, "output")
 REFERENS_DIR = os.path.join(FINLAND_DIR, "Referens")
 
+_DRY_RUN = False
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -136,7 +138,7 @@ def verify_sum(is_rows, bs_rows) -> float:
 def move_to_referens(filename: str):
     src = Path(FINLAND_DIR) / filename
     if src.exists():
-        move_to_referens_safe(src, Path(REFERENS_DIR), dry_run=False)
+        move_to_referens_safe(src, Path(REFERENS_DIR), dry_run=_DRY_RUN)
 
 
 def move_pdfs_to_referens():
@@ -658,8 +660,11 @@ def process_company(
     print(f"  Rows IS={len(is_rows)}, BS={len(bs_rows)}   Sum={total:.4f}  {check}")
 
     filename = f"{code}_{friendly_name}_{period}_INL.xlsx"
-    save_inl_xlsx(is_rows, bs_rows, os.path.join(OUTPUT_DIR, filename))
-    print(f"  Saved: {filename}")
+    if _DRY_RUN:
+        print(f"  [dry] Skulle spara: {filename}  ({len(is_rows)} IS + {len(bs_rows)} BS rader)")
+    else:
+        save_inl_xlsx(is_rows, bs_rows, os.path.join(OUTPUT_DIR, filename))
+        print(f"  Saved: {filename}")
 
     if extra_files_to_referens:
         for f in extra_files_to_referens:
@@ -924,6 +929,22 @@ def run_238():
     )
 
 
+def run_145():
+    return process_company(
+        code="145", friendly_name="Prosero Security Oy", period="202603",
+        bs_rows_raw=read_muutos_xlsx(
+            p("145_Tase_Prosero_Security_Oy_(01.03.2026-31.03.2026).xls")
+        ),
+        is_rows_raw=read_income_only_xlsx(
+            p("145_Tuloslaskelma_Prosero_Security_Oy_(01.03.2026-31.03.2026).xls")
+        ),
+        extra_files_to_referens=[
+            "145_Tase_Prosero_Security_Oy_(01.03.2026-31.03.2026).xls",
+            "145_Tuloslaskelma_Prosero_Security_Oy_(01.03.2026-31.03.2026).xls",
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -946,16 +967,24 @@ RUNNERS = {
     "196": run_196,
     "199": run_199,
     "215": run_215,
+    "145": run_145,
     "221": run_221,
     "238": run_238,
 }
 
 if __name__ == "__main__":
-    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Processera finska bolag → INL.xlsx")
+    parser.add_argument("--dry-run", "-n", action="store_true", help="Visa utan att skriva")
+    parser.add_argument("codes", nargs="*", help="Bolagskoder (lämna tomt för alla)")
+    args = parser.parse_args()
+
+    _DRY_RUN = args.dry_run
 
     move_pdfs_to_referens()
 
-    codes = sys.argv[1:] if len(sys.argv) > 1 else sorted(RUNNERS)
+    codes = args.codes if args.codes else sorted(RUNNERS)
     skipped = []
     for code in codes:
         if code not in RUNNERS:

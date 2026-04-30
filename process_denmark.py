@@ -369,6 +369,17 @@ def move_to_referens(filename: str, dry_run: bool) -> None:
     move_to_referens_safe(src, REFERENS_DIR, dry_run)
 
 
+def archive_by_prefix(prefix: str, dry_run: bool) -> None:
+    """Flytta alla {prefix}_* filer till Referens/ utan att skapa INL.xlsx."""
+    files = sorted(f for f in DENMARK_DIR.glob(f"{prefix}_*") if f.is_file())
+    if not files:
+        return
+    print(f"\n── {prefix} {'─' * 45}")
+    print(f"  Arkiverar {len(files)} fil(er) → Referens/")
+    for f in files:
+        move_to_referens(f.name, dry_run)
+
+
 # ── Process one saldobalance company ──────────────────────────────────────────
 def process_company(
     code: str,
@@ -479,6 +490,9 @@ def main() -> None:
             exclude=cfg.get("exclude"),
             ytd_filepath=ytd_filepath,
         )
+
+    if not args.codes or "54" in args.codes:
+        archive_by_prefix("054", args.dry_run)
 
     print(f"\n{'═' * 55}")
     print("Klart!")

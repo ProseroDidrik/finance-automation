@@ -66,6 +66,15 @@ DOTTERBOLAG  = _BASE / "_params" / "Dotterbolagslista.xlsx"
 # ── Company definitions ────────────────────────────────────────────────────────
 # reader: "monthly_value" | "susa_pro_monat" | "susa_jahresuebersicht" | "skip"
 COMPANY_DEFS: dict[str, dict] = {
+    "187": dict(
+        reader="monthly_value",
+        file="187_Prosero Security GmbH monthly value 2026_03.xlsx",
+        extra=[
+            "187_Prosero Security GmbH Balance sheet 2026_03.xlsx",
+            "187_Prosero Security GmbH profit loss 2026_03.xlsx",
+            "187_Prosero Security GmbH reporting 2026_03.xlsx",
+        ],
+    ),
     "188": dict(
         reader="monthly_value",
         file="188_Bofferding GmbH monthly value 2026_03.xlsx",

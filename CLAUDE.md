@@ -5,6 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
+# Reset: restore all files for re-processing (move Referens/ back, delete output/)
+py reset.py --dry-run    # preview
+py reset.py              # run
+
+# Run all countries in sequence
+py run_all.py --dry-run  # preview all
+py run_all.py            # run all
+
 # Step 1: extract attachments from .msg emails → extracted/{Country}/
 py extract.py
 
@@ -22,6 +30,7 @@ py process_sweden.py
 py process_finland.py              # all companies
 py process_finland.py 146          # single company
 py process_finland.py 134 196      # multiple companies
+py process_finland.py --dry-run    # preview
 
 py process_denmark.py              # all companies
 py process_denmark.py 229 242      # specific companies

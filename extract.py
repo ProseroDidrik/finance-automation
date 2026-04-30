@@ -32,6 +32,7 @@ OVERRIDES = {
     "SIE-fil Dala Lås i Ludvika AB 2603": 73,  # filnamn säger Ludvika, matchade fel mot 072 (samma dalalås.se-grupp)
     "Låskomfort mars": 88,             # filnamn "LÅSKOMFO", matchade fel mot 087 (samma sicklalasteknik.se-grupp)
     "Månadsavstämning 2026-03-31 (2)": 93,     # bilaga Hässleholm, matchade fel mot 097 (samma hlmlassmed.se-grupp)
+    "VB_ Prosero Securty Oy": 145,             # stavfel "Securty" i originalfilnamnet; annars matchad till 052
 }
 
 # Per-bilaga-overrides: (msg_stem, lowercase-delsträng i bilagans filnamn) -> bolag_id
@@ -39,6 +40,20 @@ OVERRIDES = {
 ATTACHMENT_OVERRIDES = {
     ("Nylunds och Norrskydd mars", "norrskydd"): 76,   # AB Norrskydd
     ("Nylunds och Norrskydd mars", "nylunds"):   183,  # Nylunds Lås & Larm
+}
+
+# Interna bolag vars Market-kolumn (C) i Dotterbolagslista inte matchar något KNOWN_COUNTRIES-värde.
+COUNTRY_OVERRIDES: dict[int, str] = {
+    49:  "Sweden",
+    50:  "Sweden",
+    51:  "Sweden",
+    53:  "Sweden",
+    60:  "Sweden",
+    162: "Sweden",
+    52:  "Norway",
+    54:  "Denmark",
+    145: "Finland",
+    187: "Germany",
 }
 
 INLINE_IMAGE_RE = re.compile(
@@ -106,6 +121,8 @@ def load_companies(path):
         doman = str(row[9] or "").strip() if len(row) > 9 else ""
         market_raw = str(row[2] or "").strip()
         country = market_raw if market_raw in KNOWN_COUNTRIES else "Other"
+        if bolag_id in COUNTRY_OVERRIDES:
+            country = COUNTRY_OVERRIDES[bolag_id]
         companies.append({
             "id": bolag_id,
             "namn": namn,
