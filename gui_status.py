@@ -24,6 +24,7 @@ class CompanyRow:
     country: str
     name: str
     extracted: bool = False
+    dry_run_matched: bool = False
     processed: bool = False
     output_files: list[str] = field(default_factory=list)
     extracted_files: list[str] = field(default_factory=list)
@@ -91,6 +92,30 @@ def _find_files_with_prefix(directory: Path, prefix: str) -> list[str]:
     return sorted(p.name for p in directory.iterdir() if p.is_file() and p.name.startswith(prefix))
 
 
+def _latest_dry_run_matches(events: list[dict]) -> set[int]:
+    """Return bolag-IDs som matchades i SENASTE dry_run-körningen.
+
+    Förlitar sig på att dry_run.py:
+      1) skriver en START-rad via begin_run() vid uppstart, och
+      2) skriver en MATCH-rad per matchad .msg via log_event().
+    Tar events efter senaste dry_run-START och plockar MATCH-labels.
+    """
+    last_start_idx = -1
+    for i, ev in enumerate(events):
+        if ev.get("script") == "dry_run" and ev.get("status") == "START":
+            last_start_idx = i
+    if last_start_idx < 0:
+        return set()
+    matched: set[int] = set()
+    for ev in events[last_start_idx + 1:]:
+        if ev.get("script") != "dry_run" or ev.get("status") != "MATCH":
+            continue
+        label = str(ev.get("label", ""))
+        if label.isdigit():
+            matched.add(int(label))
+    return matched
+
+
 def compute_company_status(period: str) -> list[CompanyRow]:
     """Returnera en CompanyRow per bolag i Dotterbolagslistan för given period.
 
@@ -104,6 +129,7 @@ def compute_company_status(period: str) -> list[CompanyRow]:
     events_by_label: dict[str, list[dict]] = {}
     for ev in events:
         events_by_label.setdefault(ev.get("label", ""), []).append(ev)
+    dry_run_matched = _latest_dry_run_matches(events)
 
     rows: list[CompanyRow] = []
     base = base_path() / "extracted" / period
@@ -122,13 +148,21 @@ def compute_company_status(period: str) -> list[CompanyRow]:
         output_files = _find_files_with_prefix(country_dir_p / "output", prefix)
 
         company_events = events_by_label.get(str(bolag_id), [])
-        last_event = company_events[-1] if company_events else None
+        # Hoppa över MATCH-events från dry_run vid val av "senaste meddelande" — de
+        # är feedback från extract-matchningen, inte process-status, och skulle annars
+        # alltid skriva över process-resultatet i tabellen efter en dry-run.
+        non_match_events = [
+            ev for ev in company_events
+            if not (ev.get("script") == "dry_run" and ev.get("status") == "MATCH")
+        ]
+        last_event = non_match_events[-1] if non_match_events else None
 
         rows.append(CompanyRow(
             bolag_id=bolag_id,
             country=country,
             name=meta.get("name", ""),
             extracted=bool(extracted_files) or bool(referens_files),
+            dry_run_matched=bolag_id in dry_run_matched,
             processed=bool(referens_files) or bool(output_files),
             output_files=output_files,
             extracted_files=extracted_files,

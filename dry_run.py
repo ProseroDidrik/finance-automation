@@ -20,6 +20,7 @@ from shared import (
     begin_run as _begin_run,
     load_overrides as _load_overrides,
     country_constraint_from_haystacks as _country_constraint,
+    log_event as _log_event,
 )
 
 _BASE         = Path(__file__).resolve().parent
@@ -238,6 +239,8 @@ def main():
     for msg_path in msg_files:
         company, score, note = match_msg(msg_path, companies, id_index)
         results.append((msg_path, company, score, note))
+        if company is not None:
+            _log_event("MATCH", company["id"], f"score={score} <- {msg_path.name}")
 
     for i, (msg_path, company, score, note) in enumerate(results, 1):
         if company is None:

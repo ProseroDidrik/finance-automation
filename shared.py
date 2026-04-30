@@ -112,6 +112,12 @@ def log(status: str, label, msg: str = "") -> None:
     _append_event(status, label, msg)
 
 
+def log_event(status: str, label, msg: str = "") -> None:
+    """Append a JSONL event without printing. Useful for events that should be
+    visible to the GUI (via _logs/*.jsonl) but not clutter the script's stdout."""
+    _append_event(status, label, msg)
+
+
 def load_dotterbolag(path: Path) -> dict[int, str]:
     """bolagsid → friendly name from Dotterbolagslistan, skips 'consolidated' rows."""
     wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)

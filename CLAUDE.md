@@ -137,6 +137,8 @@ All process scripts emit structured log lines parseable by a future GUI:
 ```
 Use `shared.log(status, label, msg)` for all status output. Status values: `START`, `OK`, `WARN`, `SKIP`, `INFO`, `ERROR`, `DONE`.
 
+`shared.log_event(status, label, msg)` skriver bara till JSONL utan stdout-utskrift. Används av `dry_run.py` för att markera per-bolags-träffar (status `MATCH`) så att GUI:t kan visa "(✓)" i Extr-kolumnen för bolag som dry-run-matchats men inte extraherats än.
+
 ### Adding a new monthly period
 
 All scripts accept `--period YYYYMM` and discover files dynamically — no code changes needed for routine months.

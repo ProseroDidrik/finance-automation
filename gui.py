@@ -240,7 +240,7 @@ class MainWindow(QMainWindow):
 
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
-        ok = warn = err = extracted = processed = 0
+        ok = warn = err = extracted = dry_only = processed = 0
         for i, r in enumerate(rows):
             id_item = QTableWidgetItem()
             id_item.setData(Qt.DisplayRole, r.bolag_id)
@@ -248,7 +248,15 @@ class MainWindow(QMainWindow):
             self.table.setItem(i, 0, id_item)
             self.table.setItem(i, 1, QTableWidgetItem(r.country))
             self.table.setItem(i, 2, QTableWidgetItem(r.name))
-            self.table.setItem(i, 3, QTableWidgetItem("✓" if r.extracted else "—"))
+            if r.extracted:
+                extr_glyph, extr_tip = "✓", "Extraherad (filer på disk)"
+            elif r.dry_run_matched:
+                extr_glyph, extr_tip = "(✓)", "Matchad i senaste dry-run (ingen riktig extract än)"
+            else:
+                extr_glyph, extr_tip = "—", "Inte matchad"
+            extr_item = QTableWidgetItem(extr_glyph)
+            extr_item.setToolTip(extr_tip)
+            self.table.setItem(i, 3, extr_item)
             self.table.setItem(i, 4, QTableWidgetItem("✓" if r.processed else "—"))
             self.table.setItem(i, 5, QTableWidgetItem(", ".join(r.output_files) if r.output_files else "—"))
             status_text = f"[{r.last_status}]" if r.last_status else ""
@@ -269,13 +277,17 @@ class MainWindow(QMainWindow):
                 err += 1
             if r.extracted:
                 extracted += 1
+            elif r.dry_run_matched:
+                dry_only += 1
             if r.processed:
                 processed += 1
         self.table.setSortingEnabled(True)
 
         self.summary_label.setText(
             f"<b>{len(rows)}</b> bolag &nbsp;|&nbsp; "
-            f"Extr: {extracted} &nbsp;|&nbsp; Proc: {processed} &nbsp;|&nbsp; "
+            f"Extr: {extracted} &nbsp;|&nbsp; "
+            f"Dry: {dry_only} &nbsp;|&nbsp; "
+            f"Proc: {processed} &nbsp;|&nbsp; "
             f"<span style='color:#080'>OK: {ok}</span> &nbsp;"
             f"<span style='color:#a80'>WARN: {warn}</span> &nbsp;"
             f"<span style='color:#a00'>ERROR: {err}</span>"
