@@ -42,6 +42,8 @@ def connect(read_only: bool = False) -> duckdb.DuckDBPyConnection:
 SCHEMA_SQL = """
 CREATE SEQUENCE IF NOT EXISTS seq_fact_balances START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_load_history START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_fact_journal_sie START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_fact_journal_saft START 1;
 
 CREATE TABLE IF NOT EXISTS dim_company (
     company_id   INTEGER PRIMARY KEY,
@@ -84,6 +86,54 @@ CREATE INDEX IF NOT EXISTS idx_fb_period         ON fact_balances(period);
 CREATE INDEX IF NOT EXISTS idx_fb_account        ON fact_balances(account_code);
 CREATE INDEX IF NOT EXISTS idx_fb_idem
     ON fact_balances(company_id, period, source_kind, source_file);
+
+CREATE TABLE IF NOT EXISTS fact_journal_sie (
+    id              BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_journal_sie'),
+    company_id      INTEGER NOT NULL,
+    period          TEXT NOT NULL,           -- YYYYMM från voucher_date
+    series          TEXT,                    -- #VER series, t.ex. 'A'
+    voucher_number  TEXT NOT NULL,
+    voucher_date    DATE NOT NULL,
+    voucher_text    TEXT,
+    line_no         INTEGER NOT NULL,        -- ordning inom verifikat
+    account_code    TEXT NOT NULL,
+    account_name    TEXT,                    -- från #KONTO
+    amount          DOUBLE NOT NULL,         -- positivt = debet, negativt = kredit
+    transaction_text TEXT,                   -- valfri rad-kommentar
+    quantity        DOUBLE,                  -- valfri kvantitet
+    currency        TEXT NOT NULL,
+    source_file     TEXT NOT NULL,
+    loaded_at       TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fjs_company_period ON fact_journal_sie(company_id, period);
+CREATE INDEX IF NOT EXISTS idx_fjs_voucher        ON fact_journal_sie(company_id, series, voucher_number);
+CREATE INDEX IF NOT EXISTS idx_fjs_account        ON fact_journal_sie(account_code);
+
+CREATE TABLE IF NOT EXISTS fact_journal_saft (
+    id                 BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_journal_saft'),
+    company_id         INTEGER NOT NULL,
+    period             TEXT NOT NULL,        -- YYYYMM från transaction_date
+    journal_id         TEXT,
+    journal_description TEXT,
+    transaction_id     TEXT NOT NULL,
+    transaction_date   DATE,
+    transaction_description TEXT,
+    line_no            INTEGER NOT NULL,
+    record_id          TEXT,
+    account_code       TEXT NOT NULL,
+    debit_amount       DOUBLE,
+    credit_amount      DOUBLE,
+    amount             DOUBLE NOT NULL,      -- debit − credit
+    line_description   TEXT,
+    currency           TEXT NOT NULL,
+    source_file        TEXT NOT NULL,
+    loaded_at          TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fjsaft_company_period ON fact_journal_saft(company_id, period);
+CREATE INDEX IF NOT EXISTS idx_fjsaft_transaction    ON fact_journal_saft(company_id, transaction_id);
+CREATE INDEX IF NOT EXISTS idx_fjsaft_account        ON fact_journal_saft(account_code);
 
 CREATE TABLE IF NOT EXISTS load_history (
     id                       BIGINT PRIMARY KEY DEFAULT nextval('seq_load_history'),

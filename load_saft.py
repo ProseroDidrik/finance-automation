@@ -30,6 +30,7 @@ from shared import begin_run, load_config, log, prev_month_period
 NS = "urn:StandardAuditFile-Taxation-Financial:NO"
 SOURCE_KIND = "SAFT"
 PERIOD_TYPE = "ytd"
+JOURNAL_BATCH = 5000
 
 
 def _t(elem: ET.Element, tag: str) -> str | None:
@@ -109,12 +110,76 @@ def parse_saft(path: Path) -> dict:
             elem.clear()
 
         elif tag == "GeneralLedgerEntries":
-            # Vi är klara med MasterFiles — sluta läs (sparar minne + tid)
+            # Vi är klara med MasterFiles — sluta läs (sparar minne + tid).
+            # Journal-rader hämtas separat via iter_saft_journal().
             elem.clear()
             break
 
     out["accounts"] = accounts
     return out
+
+
+def _parse_iso_date(s: str | None):
+    """'2026-03-15' → date(2026,3,15), tomt/ogiltigt → None."""
+    if not s:
+        return None
+    try:
+        from datetime import date as _date
+        return _date(int(s[:4]), int(s[5:7]), int(s[8:10]))
+    except (ValueError, IndexError):
+        return None
+
+
+def iter_saft_journal(path: Path):
+    """Yield en dict per Line under GeneralLedgerEntries.
+
+    Strömmande iterparse — clearar varje Journal efter bearbetning så att
+    minnet hålls bundet till en Journal i taget. För monatliga norska
+    SAF-T-filer rymms detta enkelt; för stora årsfiler skalar det.
+    """
+    ctx = ET.iterparse(str(path), events=("end",))
+    in_gle = False
+    for event, elem in ctx:
+        tag = elem.tag.split("}", 1)[-1] if "}" in elem.tag else elem.tag
+
+        if tag == "Header" or tag == "MasterFiles":
+            elem.clear()
+            continue
+
+        if tag == "GeneralLedgerEntries":
+            elem.clear()
+            return  # klar
+
+        if tag == "Journal":
+            in_gle = True
+            j_id = _t(elem, "JournalID")
+            j_desc = _t(elem, "Description")
+            for tx in elem.findall(f"{{{NS}}}Transaction"):
+                tx_id = _t(tx, "TransactionID")
+                tx_date = _parse_iso_date(_t(tx, "TransactionDate"))
+                tx_desc = _t(tx, "Description")
+                line_no = 0
+                for line in tx.findall(f"{{{NS}}}Line"):
+                    line_no += 1
+                    rec_id = _t(line, "RecordID")
+                    acc = _t(line, "AccountID")
+                    line_desc = _t(line, "Description")
+                    debit_elem = line.find(f"{{{NS}}}DebitAmount")
+                    credit_elem = line.find(f"{{{NS}}}CreditAmount")
+                    debit = _amount(_t(debit_elem, "Amount")) if debit_elem is not None else 0.0
+                    credit = _amount(_t(credit_elem, "Amount")) if credit_elem is not None else 0.0
+                    yield {
+                        "journal_id": j_id, "journal_desc": j_desc,
+                        "transaction_id": tx_id, "transaction_date": tx_date,
+                        "transaction_desc": tx_desc,
+                        "line_no": line_no, "record_id": rec_id,
+                        "account_code": acc, "line_desc": line_desc,
+                        "debit": debit, "credit": credit,
+                    }
+            elem.clear()  # frigör hela Journal:n med dess Transactions/Lines
+
+    if not in_gle:
+        return
 
 
 def derive_period(parsed: dict, override: str | None) -> str | None:
@@ -146,7 +211,7 @@ def build_orgnr_lookup(con: duckdb.DuckDBPyConnection) -> dict[str, tuple[int, s
 
 
 def load_file(con, path: Path, base_path: Path, period_override: str | None,
-              orgnr_lookup: dict, *, dry_run: bool) -> str:
+              orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False) -> str:
     try:
         parsed = parse_saft(path)
     except ET.ParseError as e:
@@ -186,10 +251,18 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     now = datetime.now()
 
     if dry_run:
+        journal_msg = ""
+        if include_journal:
+            # Räkna i dry-run för synlighet (extra pass — endast vid --dry-run)
+            try:
+                jcount = sum(1 for _ in iter_saft_journal(path))
+                journal_msg = f"  JOURNAL≈{jcount}"
+            except Exception as e:
+                journal_msg = f"  JOURNAL=läsfel ({e})"
         log("INFO", company_id,
             f"[DRY] {path.name}  period={period} BS={len([r for r in rows if r[3]=='BS'])} "
             f"IS={len([r for r in rows if r[3]=='IS'])} "
-            f"sum_bs={total_bs:.2f} sum_is={total_is:.2f} sum_tot={total:.2f}")
+            f"sum_bs={total_bs:.2f} sum_is={total_is:.2f} sum_tot={total:.2f}{journal_msg}")
         return "warn" if is_warn else "ok"
 
     db.sync_dim_period(con, [period])
@@ -210,14 +283,55 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             [(company_id, period, PERIOD_TYPE, r[0], r[1], r[2], currency,
               r[3], SOURCE_KIND, rel_src, r[4], now) for r in rows],
         )
+
+        # Journal: strömmande iterparse + batchad insert (5000 rader/batch).
+        # Idempotens: en SAF-T-fil = ett komplett journal-set; rensa per
+        # (company_id, source_file) före insert.
+        journal_rows_loaded = 0
+        journal_periods: set[str] = set()
+        if include_journal:
+            con.execute(
+                """DELETE FROM fact_journal_saft
+                   WHERE company_id = ? AND source_file = ?""",
+                [company_id, rel_src],
+            )
+            batch: list[tuple] = []
+            for j in iter_saft_journal(path):
+                tx_date = j["transaction_date"]
+                jp = f"{tx_date.year:04d}{tx_date.month:02d}" if tx_date else period
+                journal_periods.add(jp)
+                debit = j["debit"] or 0.0
+                credit = j["credit"] or 0.0
+                amt = debit - credit
+                batch.append((
+                    company_id, jp,
+                    j["journal_id"], j["journal_desc"],
+                    j["transaction_id"], tx_date, j["transaction_desc"],
+                    j["line_no"], j["record_id"], j["account_code"],
+                    debit, credit, amt, j["line_desc"],
+                    currency, rel_src, now,
+                ))
+                if len(batch) >= JOURNAL_BATCH:
+                    con.executemany(_INSERT_JOURNAL_SAFT, batch)
+                    journal_rows_loaded += len(batch)
+                    batch.clear()
+            if batch:
+                con.executemany(_INSERT_JOURNAL_SAFT, batch)
+                journal_rows_loaded += len(batch)
+            if journal_periods:
+                db.sync_dim_period(con, sorted(journal_periods))
+
         con.execute(
             """INSERT INTO load_history
                (company_id, period, source_kind, source_file, rows_loaded,
                 sum_amount, statement_type_present, status, message, loaded_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [company_id, period, SOURCE_KIND, rel_src, len(rows), total, True,
+            [company_id, period, SOURCE_KIND, rel_src,
+             len(rows) + journal_rows_loaded, total, True,
              "warn" if is_warn else "ok",
-             f"sum_bs={total_bs:.2f} sum_is={total_is:.2f}", now],
+             f"sum_bs={total_bs:.2f} sum_is={total_is:.2f} "
+             f"journal_rows={journal_rows_loaded} "
+             f"journal_periods={len(journal_periods)}", now],
         )
         con.execute("COMMIT")
     except Exception as e:
@@ -226,8 +340,20 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         return "error"
 
     status = "WARN" if is_warn else "OK"
-    log(status, company_id, f"{path.name}  rader={len(rows)} sum={total:.2f}")
+    journal_msg = f" JOURNAL={journal_rows_loaded}({len(journal_periods)} mån)" if include_journal else ""
+    log(status, company_id, f"{path.name}  rader={len(rows)}{journal_msg} sum={total:.2f}")
     return "warn" if is_warn else "ok"
+
+
+_INSERT_JOURNAL_SAFT = """
+INSERT INTO fact_journal_saft
+(company_id, period, journal_id, journal_description,
+ transaction_id, transaction_date, transaction_description,
+ line_no, record_id, account_code,
+ debit_amount, credit_amount, amount, line_description,
+ currency, source_file, loaded_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
 
 
 def discover_files(source_dir: Path) -> list[Path]:
@@ -247,11 +373,16 @@ def main() -> None:
     parser.add_argument("--source-dir", default=None,
                         help="Mapp att läsa från (default: extracted/{period}/Norway under base_path)")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--include-journal", action="store_true",
+                        help="Ladda även GeneralLedgerEntries till "
+                             "fact_journal_saft (opt-in; SAF-T-filer är ofta stora)")
     args = parser.parse_args()
 
     period_for_log = args.period or prev_month_period()
     begin_run("load_saft.py", period_for_log)
-    log("START", "load_saft.py", f"period={args.period or '(auto)'} dry_run={args.dry_run}")
+    log("START", "load_saft.py",
+        f"period={args.period or '(auto)'} dry_run={args.dry_run} "
+        f"journal={args.include_journal}")
 
     cfg = load_config()
     base_path = Path(cfg["base_path"])
@@ -275,7 +406,8 @@ def main() -> None:
         counts = {"ok": 0, "warn": 0, "skip": 0, "error": 0}
         for f in files:
             status = load_file(con, f, base_path, args.period, orgnr_lookup,
-                               dry_run=args.dry_run)
+                               dry_run=args.dry_run,
+                               include_journal=args.include_journal)
             counts[status] = counts.get(status, 0) + 1
     finally:
         con.close()
