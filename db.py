@@ -28,6 +28,8 @@ COUNTRY_CURRENCY = {
     # CENTR = centrala/koncerngemensamma bolag (Prosero Security Oy/GmbH).
     # Default EUR; korrigera manuellt om något CENTR-bolag inte är euro-baserat.
     "CENTR": "EUR",
+    # CA = bolag med svenskt orgnr men annan koncernklassning (49, 162).
+    "CA": "SEK",
 }
 
 

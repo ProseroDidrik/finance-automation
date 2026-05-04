@@ -126,11 +126,11 @@ def load_file(con, path: Path, base_path: Path, *, dry_run: bool) -> str:
 
     con.execute("BEGIN")
     try:
+        # Bara EN INL-laddning per (bolag, period) — senaste filen vinner.
         con.execute(
             """DELETE FROM fact_balances
-               WHERE company_id = ? AND period = ?
-                 AND source_kind = ? AND source_file = ?""",
-            [company_id, period, SOURCE_KIND, rel_src],
+               WHERE company_id = ? AND period = ? AND source_kind = ?""",
+            [company_id, period, SOURCE_KIND],
         )
         con.executemany(
             """INSERT INTO fact_balances
