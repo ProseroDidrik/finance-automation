@@ -1,46 +1,46 @@
 {
   "_comment": "Mappar tvetydiga mail/bilagor till rätt BolagsID. Läses av extract.py och dry_run.py via shared.load_overrides(). Editeras via GUI:t (Redigera overrides) eller manuellt här.",
-  "subject_overrides": {
-    "Doorway mars": 162,
-    "Låskomfort mars": 88,
-    "Mars Säkerhetspartner i väst": 239,
-    "Månad mars _)": 33,
-    "Månadsavstämning 2026-03-31 (2)": 93,
-    "Q1 2026 rapportering i excel": 111,
-    "Rapport mars (3)": 77,
-    "SIE Montageservice": 94,
-    "SIE-fil Dala Lås i Ludvika AB 2603": 73,
-    "ST Hälytys reports": 196,
-    "Untitled": 164,
-    "VB_ Monthly Financial Report H+W mechatronik GmbH": 246,
-    "VB_ Monthly Financial Report H+W mechatronik GmbH (4)": 246,
-    "VB_ Prosero Securty Oy": 145
-  },
+  "subject_overrides": {},
   "attachment_overrides": [
     {
-      "msg_stem": "Nylunds och Norrskydd mars",
+      "msg_stem": "norrskydd",
       "attachment_substr": "norrskydd",
       "bolag_id": 76
     },
     {
-      "msg_stem": "Nylunds och Norrskydd mars",
+      "msg_stem": "norrskydd",
       "attachment_substr": "nylunds",
       "bolag_id": 183
     },
     {
-      "msg_stem": "Regnskap pr 31-03-2026 for Buysec og Buytec",
+      "msg_stem": "buysec og buytec",
       "attachment_substr": "buysec",
       "bolag_id": 176
     },
     {
-      "msg_stem": "Regnskap mars - NBV AS og DSN AS",
+      "msg_stem": "buysec og buytec",
+      "attachment_substr": "buytec",
+      "bolag_id": 175
+    },
+    {
+      "msg_stem": "nbv as og dsn",
       "attachment_substr": "dsn",
       "bolag_id": 106
     },
     {
-      "msg_stem": "Regnskap mars - NBV AS og DSN AS",
+      "msg_stem": "nbv as og dsn",
       "attachment_substr": "din sikkerhet",
       "bolag_id": 106
+    },
+    {
+      "msg_stem": "nbv as og dsn",
+      "attachment_substr": "nbv",
+      "bolag_id": 107
+    },
+    {
+      "msg_stem": "nbv as og dsn",
+      "attachment_substr": "norsk brannvern",
+      "bolag_id": 107
     }
   ],
   "country_overrides": {
@@ -56,11 +56,52 @@
     "187": "Germany"
   },
   "aliases": {
+    "12": [
+      "openup"
+    ],
+    "14": [
+      "sven alexand"
+    ],
+    "77": [
+      "låsservice ålesund"
+    ],
+    "88": [
+      "låskomfort"
+    ],
+    "93": [
+      "hlm låssmed"
+    ],
+    "94": [
+      "montageservice"
+    ],
+    "97": [
+      "all-round"
+    ],
+    "106": [
+      "DSN",
+      "din sikkerhet"
+    ],
+    "107": [
+      "NBV",
+      "norsk brannvern"
+    ],
+    "145": [
+      "prosero securty"
+    ],
+    "162": [
+      "doorway"
+    ],
     "202": [
       "AVN"
     ],
+    "218": [
+      "ellarman"
+    ],
     "220": [
       "Weckbacher"
+    ],
+    "239": [
+      "SPIV"
     ],
     "245": [
       "GF Sich"

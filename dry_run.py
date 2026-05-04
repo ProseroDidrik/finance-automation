@@ -32,6 +32,10 @@ KNOWN_COUNTRIES = ("Sweden", "Norway", "Finland", "Denmark", "Germany")
 # Overrides läses från _params/overrides.json (delas med extract.py).
 _OV = _load_overrides()
 OVERRIDES: dict[str, int] = {k: int(v) for k, v in _OV["subject_overrides"].items()}
+ATTACHMENT_OVERRIDES: dict[tuple[str, str], int] = {
+    (item["msg_stem"], item["attachment_substr"]): int(item["bolag_id"])
+    for item in _OV["attachment_overrides"]
+}
 
 
 def _build_alias_index(raw: dict) -> dict[int, list[str]]:
@@ -65,8 +69,13 @@ def normalize(s):
     return s.strip()
 
 
+# Bolagssuffix som inte diskriminerar — finns i nästan alla bolagsnamn och
+# blockerar annars full-match när suffixet inte råkar finnas i mailet.
+TOKEN_STOPWORDS = {"ab", "oy", "oyj", "as", "aps", "ltd", "gmbh", "ag", "ry", "inc", "plc", "llc"}
+
+
 def tokenize(s):
-    return [t for t in normalize(s).split() if len(t) >= 2]
+    return [t for t in normalize(s).split() if len(t) >= 2 and t not in TOKEN_STOPWORDS]
 
 
 def is_inline(att):
@@ -120,6 +129,10 @@ ALIASES_BY_ID: dict[int, list[str]] = _build_alias_index(_OV.get("aliases", {}))
 
 WEIGHTS = {"filename": 100, "subject": 80, "att_name": 60, "sender": 40, "body": 20}
 
+# Aliases är manuellt kurerade signaler — en träff är stark intent oavsett källa.
+# Floor på 50 låter alias i body slå pure sender-match (40).
+ALIAS_MIN_WEIGHT = 50
+
 
 def score_company(company, haystacks):
     best = 0
@@ -133,9 +146,11 @@ def score_company(company, haystacks):
             continue
         full_match = bool(tokens) and all(t in hay for t in tokens)
         alias_match = any(a in hay for a in aliases)
-        if full_match or alias_match:
+        if full_match:
             best = max(best, weight)
-        elif tokens:
+        if alias_match:
+            best = max(best, max(weight, ALIAS_MIN_WEIGHT))
+        if not (full_match or alias_match) and tokens:
             matched = sum(1 for t in tokens if t in hay)
             if matched:
                 best = max(best, int(weight * matched / len(tokens) * 0.6))
@@ -144,20 +159,49 @@ def score_company(company, haystacks):
     return best
 
 
+def _attachment_splits(msg, msg_path, id_index):
+    """Returnera lista [(att_filnamn, company_dict), ...] för bilagor som matchar
+    en ATTACHMENT_OVERRIDES-regel. Speglar logiken i extract.py.
+    msg_stem-jämförelsen är case-insensitive substring (matchar månadsvariationer)."""
+    stem_lower = msg_path.stem.strip().lower()
+    splits: list[tuple[str, dict]] = []
+    for idx, att in enumerate(msg.attachments):
+        if is_inline(att):
+            continue
+        orig = att_name(att, idx)
+        for (s_key, att_substr), att_id in ATTACHMENT_OVERRIDES.items():
+            if s_key.lower() in stem_lower and att_substr in orig.lower():
+                company = id_index.get(att_id, {
+                    "id": att_id, "namn": "ID {}".format(att_id),
+                    "friendly": "ID {}".format(att_id), "country": "Other",
+                    "tokens": [], "doman": "",
+                })
+                splits.append((orig, company))
+                break
+    return splits
+
+
 def match_msg(msg_path, companies, id_index):
-    if msg_path.stem in OVERRIDES:
-        override_id = OVERRIDES[msg_path.stem]
+    stem_key = msg_path.stem.strip()
+    if stem_key in OVERRIDES:
+        override_id = OVERRIDES[stem_key]
         company = id_index.get(override_id, {
             "id": override_id, "namn": "ID {}".format(override_id),
             "friendly": "ID {}".format(override_id), "country": "Other",
             "tokens": [], "doman": "",
         })
-        return company, 999, "manual"
+        try:
+            msg = extract_msg.Message(str(msg_path))
+            splits = _attachment_splits(msg, msg_path, id_index)
+            msg.close()
+        except Exception:
+            splits = []
+        return company, 999, "manual", splits
 
     try:
         msg = extract_msg.Message(str(msg_path))
     except Exception as e:
-        return None, 0, "open error: {}".format(e)
+        return None, 0, "open error: {}".format(e), []
 
     try:
         att_names = " ".join(att_name(a, i) for i, a in enumerate(msg.attachments) if not is_inline(a))
@@ -168,19 +212,27 @@ def match_msg(msg_path, companies, id_index):
             "sender": msg.sender or "",
             "body": (msg.body or "")[:1500],
         }
+        splits = _attachment_splits(msg, msg_path, id_index)
         allowed = _country_constraint(haystacks)
         eligible = (
             [c for c in companies if c["country"] in allowed]
             if allowed else companies
         )
         if not eligible:
-            return None, 0, "no eligible (country constraint: {})".format("/".join(allowed))
+            return None, 0, "no eligible (country constraint: {})".format("/".join(allowed)), splits
+        sender = haystacks.get("sender", "")
+        domain_matches = [c["id"] for c in eligible if c["doman"] and c["doman"] in sender]
+        unique_sender_id = domain_matches[0] if len(domain_matches) == 1 else None
         scores = [(c, score_company(c, haystacks)) for c in eligible]
-        scores.sort(key=lambda x: -x[1])
+        scores.sort(key=lambda x: (
+            -x[1],
+            -len(x[0]["tokens"]),
+            -int(x[0]["id"] == unique_sender_id),
+        ))
         best_company, best_score = scores[0]
         if best_score == 0:
-            return None, 0, "no match (country constraint: {})".format("/".join(allowed) if allowed else "none")
-        return best_company, best_score, ""
+            return None, 0, "no match (country constraint: {})".format("/".join(allowed) if allowed else "none"), splits
+        return best_company, best_score, "", splits
     finally:
         try:
             msg.close()
@@ -237,12 +289,19 @@ def main():
 
     results = []
     for msg_path in msg_files:
-        company, score, note = match_msg(msg_path, companies, id_index)
-        results.append((msg_path, company, score, note))
+        company, score, note, splits = match_msg(msg_path, companies, id_index)
+        results.append((msg_path, company, score, note, splits))
+        seen_ids: set[int] = set()
         if company is not None:
             _log_event("MATCH", company["id"], f"score={score} <- {msg_path.name}")
+            seen_ids.add(company["id"])
+        for _att_fn, split_company in splits:
+            if split_company["id"] in seen_ids:
+                continue
+            _log_event("MATCH", split_company["id"], f"score=999 <- {msg_path.name} (bilaga: {_att_fn})")
+            seen_ids.add(split_company["id"])
 
-    for i, (msg_path, company, score, note) in enumerate(results, 1):
+    for i, (msg_path, company, score, note, splits) in enumerate(results, 1):
         if company is None:
             unmatched.append(msg_path.name)
             print("{:>4}  {:>5}  {:>6}  {}  {}  {}  [NO MATCH]".format(
@@ -264,6 +323,13 @@ def main():
             print("{:>4}  {:>5}  {:>6}  {}  {}  {}{}".format(
                 i, score_str, company["id"],
                 fmt(country, 11), fmt(label, 33), msg_path.name, flag))
+        for att_fn, split_company in splits:
+            split_country = split_company.get("country", "Other")
+            split_label = "{:03d} {}".format(
+                split_company["id"], (split_company["friendly"] or split_company["namn"]))
+            print("{:>4}  {:>5}  {:>6}  {}  {}  └─ bilaga: {}".format(
+                "", "MAN", split_company["id"],
+                fmt(split_country, 11), fmt(split_label, 33), att_fn))
 
     print()
     print("=" * W)

@@ -78,8 +78,13 @@ def normalize(s):
     return s.strip()
 
 
+# Bolagssuffix som inte diskriminerar — finns i nästan alla bolagsnamn och
+# blockerar annars full-match när suffixet inte råkar finnas i mailet.
+TOKEN_STOPWORDS = {"ab", "oy", "oyj", "as", "aps", "ltd", "gmbh", "ag", "ry", "inc", "plc", "llc"}
+
+
 def tokenize(s):
-    return [t for t in normalize(s).split() if len(t) >= 2]
+    return [t for t in normalize(s).split() if len(t) >= 2 and t not in TOKEN_STOPWORDS]
 
 
 def is_inline(att):
@@ -145,6 +150,10 @@ ALIASES_BY_ID: dict[int, list[str]] = _build_alias_index(_OV.get("aliases", {}))
 
 WEIGHTS = {"filename": 100, "subject": 80, "att_name": 60, "sender": 40, "body": 20}
 
+# Aliases är manuellt kurerade signaler — en träff är stark intent oavsett källa.
+# Floor på 50 låter alias i body slå pure sender-match (40).
+ALIAS_MIN_WEIGHT = 50
+
 
 def score_company(company, haystacks):
     best = 0
@@ -158,9 +167,11 @@ def score_company(company, haystacks):
             continue
         full_match = bool(tokens) and all(t in hay for t in tokens)
         alias_match = any(a in hay for a in aliases)
-        if full_match or alias_match:
+        if full_match:
             best = max(best, weight)
-        elif tokens:
+        if alias_match:
+            best = max(best, max(weight, ALIAS_MIN_WEIGHT))
+        if not (full_match or alias_match) and tokens:
             matched = sum(1 for t in tokens if t in hay)
             if matched:
                 best = max(best, int(weight * matched / len(tokens) * 0.6))
@@ -170,8 +181,9 @@ def score_company(company, haystacks):
 
 
 def match_msg(msg_path, companies, id_index):
-    if msg_path.stem in OVERRIDES:
-        override_id = OVERRIDES[msg_path.stem]
+    stem_key = msg_path.stem.strip()
+    if stem_key in OVERRIDES:
+        override_id = OVERRIDES[stem_key]
         return id_index.get(override_id, {
             "id": override_id, "friendly": "", "namn": "ID {}".format(override_id),
             "country": "Other", "tokens": [], "doman": "",
@@ -196,8 +208,15 @@ def match_msg(msg_path, companies, id_index):
         )
         if not eligible:
             return (None, 0)
+        sender = haystacks.get("sender", "")
+        domain_matches = [c["id"] for c in eligible if c["doman"] and c["doman"] in sender]
+        unique_sender_id = domain_matches[0] if len(domain_matches) == 1 else None
         scores = [(c, score_company(c, haystacks)) for c in eligible]
-        scores.sort(key=lambda x: -x[1])
+        scores.sort(key=lambda x: (
+            -x[1],
+            -len(x[0]["tokens"]),
+            -int(x[0]["id"] == unique_sender_id),
+        ))
         best_c, best_s = scores[0]
         return (best_c, best_s) if best_s > 0 else (None, 0)
     finally:
@@ -274,8 +293,9 @@ def main():
 
                 # Per-bilaga-override: kolla om detta (msg_stem, bilagenamn) matchar
                 att_company = company
+                stem_lower = msg_path.stem.strip().lower()
                 for (stem_key, att_substr), att_id in ATTACHMENT_OVERRIDES.items():
-                    if msg_path.stem == stem_key and att_substr in orig.lower():
+                    if stem_key.lower() in stem_lower and att_substr in orig.lower():
                         att_company = id_index.get(att_id, {
                             "id": att_id, "friendly": "", "namn": "ID {}".format(att_id),
                             "country": "Other", "tokens": [], "doman": "",
