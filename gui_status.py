@@ -33,6 +33,8 @@ class CompanyRow:
     last_status: str | None = None
     last_msg: str = ""
     events: list[dict] = field(default_factory=list)
+    inl_sum: float | None = None
+    inl_balanced: bool | None = None
 
 
 def base_path() -> Path:
@@ -110,6 +112,55 @@ def _is_legacy_balance_warn(ev: dict) -> bool:
     return "rader=" in msg and "sum=" in msg
 
 
+def _renamed_in_place(filename: str, country: str) -> bool:
+    """True om filnamnet matchar shape som process_sweden/norway byter till in-place.
+
+    SE/NO-pipelines byter namn på SIE/SAF-T-filen i extracted/{Country}/ utan att
+    flytta den. För dessa länder räcker inte referens/output-existens som
+    processed-signal.
+    """
+    low = filename.lower()
+    if country == "Sweden":
+        return "_sie_" in low and low.endswith(".se")
+    if country == "Norway":
+        return "_saf-t_" in low and low.endswith(".xml")
+    return False
+
+
+_INL_SUM_CACHE: dict[str, tuple[float, float, bool]] = {}
+
+
+def _inl_sum_for_company(output_dir: Path, prefix: str) -> tuple[float | None, bool | None]:
+    """Summera kolumn C för senaste INL-fil under output_dir för givet bolags-prefix.
+
+    Returnerar (sum, balanced) eller (None, None) om ingen INL-fil finns.
+    Tröskel 1.0 matchar load_inl.is_warn. Cachar per (path, mtime).
+    """
+    if not output_dir.exists():
+        return None, None
+    candidates = sorted(output_dir.glob(f"{prefix}*_INL.xlsx"))
+    if not candidates:
+        return None, None
+    inl_path = candidates[-1]
+    key = str(inl_path)
+    try:
+        mtime = inl_path.stat().st_mtime
+    except OSError:
+        return None, None
+    cached = _INL_SUM_CACHE.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1], cached[2]
+    try:
+        from load_inl import read_inl_rows
+        rows, _ = read_inl_rows(inl_path)
+        total = float(sum(r[2] for r in rows))
+        balanced = abs(total) < 1.0
+    except Exception:
+        return None, None
+    _INL_SUM_CACHE[key] = (mtime, total, balanced)
+    return total, balanced
+
+
 def _latest_dry_run_matches(events: list[dict]) -> set[int]:
     """Return bolag-IDs som matchades i SENASTE dry_run-körningen.
 
@@ -167,6 +218,8 @@ def compute_company_status(period: str) -> list[CompanyRow]:
         extracted_files = _find_files_with_prefix(country_dir_p, prefix)
         referens_files = _find_files_with_prefix(country_dir_p / "Referens", prefix)
         output_files = _find_files_with_prefix(country_dir_p / "output", prefix)
+        inl_sum, inl_balanced = _inl_sum_for_company(country_dir_p / "output", prefix)
+        processed_in_place = any(_renamed_in_place(f, country) for f in extracted_files)
 
         company_events = events_by_label.get(str(bolag_id), [])
         # Hoppa över MATCH-events från dry_run vid val av "senaste meddelande" — de
@@ -188,7 +241,7 @@ def compute_company_status(period: str) -> list[CompanyRow]:
             name=meta.get("name", ""),
             extracted=bool(extracted_files) or bool(referens_files),
             dry_run_matched=bolag_id in dry_run_matched,
-            processed=bool(referens_files) or bool(output_files),
+            processed=bool(referens_files) or bool(output_files) or processed_in_place,
             excluded=bolag_id in excluded_ids,
             output_files=output_files,
             extracted_files=extracted_files,
@@ -196,6 +249,8 @@ def compute_company_status(period: str) -> list[CompanyRow]:
             last_status=last_event["status"] if last_event else None,
             last_msg=last_event["msg"] if last_event else "",
             events=company_events,
+            inl_sum=inl_sum,
+            inl_balanced=inl_balanced,
         ))
 
     country_order = {c: i for i, c in enumerate(KNOWN_COUNTRIES)}

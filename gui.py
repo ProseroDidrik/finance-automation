@@ -111,9 +111,9 @@ class MainWindow(QMainWindow):
         left = QSplitter(Qt.Vertical)
         body_split.addWidget(left)
 
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["ID", "Land", "Namn", "Extr", "Proc", "Output", "Status", "Senaste meddelande"]
+            ["ID", "Land", "Namn", "Extr", "Proc", "Output", "Σ", "Status", "Senaste meddelande"]
         )
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -128,7 +128,8 @@ class MainWindow(QMainWindow):
         h.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         h.setSectionResizeMode(5, QHeaderView.Stretch)
         h.setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        h.setSectionResizeMode(7, QHeaderView.Stretch)
+        h.setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        h.setSectionResizeMode(8, QHeaderView.Stretch)
         self.table.cellDoubleClicked.connect(self._on_row_double_clicked)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._on_table_context_menu)
@@ -279,6 +280,16 @@ class MainWindow(QMainWindow):
             self.table.setItem(i, 3, extr_item)
             self.table.setItem(i, 4, QTableWidgetItem("✓" if r.processed else "—"))
             self.table.setItem(i, 5, QTableWidgetItem(", ".join(r.output_files) if r.output_files else "—"))
+            if r.inl_balanced is True:
+                sum_glyph, sum_tip = "✓", f"Balanserad: Σ = {r.inl_sum:.2f}"
+            elif r.inl_balanced is False:
+                sum_glyph, sum_tip = "⚠", f"Obalans: Σ = {r.inl_sum:.2f}"
+            else:
+                sum_glyph, sum_tip = "—", "Ingen INL-fil"
+            sum_item = QTableWidgetItem(sum_glyph)
+            sum_item.setToolTip(sum_tip)
+            sum_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(i, 6, sum_item)
             status_text = f"[{r.last_status}]" if r.last_status else ""
             status_item = QTableWidgetItem(status_text)
             color = STATUS_COLORS.get(r.last_status or "")
@@ -287,8 +298,8 @@ class MainWindow(QMainWindow):
                     item = self.table.item(i, c)
                     if item:
                         item.setBackground(color)
-            self.table.setItem(i, 6, status_item)
-            self.table.setItem(i, 7, QTableWidgetItem(r.last_msg))
+            self.table.setItem(i, 7, status_item)
+            self.table.setItem(i, 8, QTableWidgetItem(r.last_msg))
             if r.excluded:
                 for c in range(self.table.columnCount()):
                     item = self.table.item(i, c)
