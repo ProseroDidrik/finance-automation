@@ -9,3 +9,4 @@ config.json
 *.csv
 *.xml
 data/
+.mcp_token

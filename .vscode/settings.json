@@ -1,0 +1,20 @@
+{
+    "workbench.editorAssociations": {
+        "*.copilotmd": "vscode.markdown.preview.editor",
+        "*.parquet": "duckdb.dataFileViewer",
+        "*.csv": "duckdb.dataFileViewer",
+        "*.tsv": "duckdb.dataFileViewer",
+        "*.xlsx": "duckdb.dataFileViewer"
+    },
+    "duckdb.defaultDatabase": "finance",
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "driver": "DuckDB",
+            "database": "${workspaceFolder:finance-automation}/data/finance.duckdb",
+            "name": "finance"
+        }
+    ],
+    "sqltools.useNodeRuntime": true,
+    "claudeCode.useTerminal": true
+}
