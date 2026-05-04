@@ -341,7 +341,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     if dry_run:
         journal_msg = (f" JOURNAL={len(journal_rows)} ({len(journal_periods)} mån)"
                        if include_journal else "")
-        log("INFO", company_id,
+        log("OK", company_id,
             f"[DRY] {path.name}  period={period} "
             f"UB={len([r for r in sie_rows if r[3]=='BS'])} "
             f"RES={len([r for r in sie_rows if r[3]=='IS'])} "

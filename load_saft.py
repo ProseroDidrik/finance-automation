@@ -260,7 +260,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                 journal_msg = f"  JOURNAL≈{jcount}"
             except Exception as e:
                 journal_msg = f"  JOURNAL=läsfel ({e})"
-        log("INFO", company_id,
+        log("OK", company_id,
             f"[DRY] {path.name}  period={period} BS={len([r for r in rows if r[3]=='BS'])} "
             f"IS={len([r for r in rows if r[3]=='IS'])} "
             f"sum_bs={total_bs:.2f} sum_is={total_is:.2f} sum_tot={total:.2f}{journal_msg}")
