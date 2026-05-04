@@ -38,8 +38,8 @@ RE_RES = re.compile(r"^#RES\s+0\s+(\S+)\s+(-?\d+(?:[.,]\d+)?)", re.IGNORECASE)
 
 
 def normalize_orgnr(orgnr: str) -> str:
-    """Strip whitespace and dashes — '556071-2340' → '5560712340'."""
-    return re.sub(r"[\s\-]", "", str(orgnr).strip())
+    """Strip allt utom siffror — '556071-2340' → '5560712340'."""
+    return re.sub(r"[^0-9]", "", str(orgnr).strip())
 
 
 def read_text_with_fallback(path: Path) -> str:
