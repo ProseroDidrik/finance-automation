@@ -246,7 +246,8 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     total_bs = sum(r[2] for r in rows if r[3] == "BS")
     total_is = sum(r[2] for r in rows if r[3] == "IS")
     total = total_bs + total_is
-    is_warn = abs(total) >= 1.0
+    # SAF-T: BS+IS = årets resultat (YTD), inte 0. Saldobalans-check görs inte
+    # här — använd verifikatnivå (fact_journal_saft) för debet/kredit-balans.
     rel_src = db.relpath_from_base(path, base_path)
     now = datetime.now()
 
@@ -263,7 +264,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             f"[DRY] {path.name}  period={period} BS={len([r for r in rows if r[3]=='BS'])} "
             f"IS={len([r for r in rows if r[3]=='IS'])} "
             f"sum_bs={total_bs:.2f} sum_is={total_is:.2f} sum_tot={total:.2f}{journal_msg}")
-        return "warn" if is_warn else "ok"
+        return "ok"
 
     db.sync_dim_period(con, [period])
 
@@ -328,7 +329,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [company_id, period, SOURCE_KIND, rel_src,
              len(rows) + journal_rows_loaded, total, True,
-             "warn" if is_warn else "ok",
+             "ok",
              f"sum_bs={total_bs:.2f} sum_is={total_is:.2f} "
              f"journal_rows={journal_rows_loaded} "
              f"journal_periods={len(journal_periods)}", now],
@@ -339,10 +340,9 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         log("ERROR", company_id, f"DB-fel {path.name}: {e}")
         return "error"
 
-    status = "WARN" if is_warn else "OK"
     journal_msg = f" JOURNAL={journal_rows_loaded}({len(journal_periods)} mån)" if include_journal else ""
-    log(status, company_id, f"{path.name}  rader={len(rows)}{journal_msg} sum={total:.2f}")
-    return "warn" if is_warn else "ok"
+    log("OK", company_id, f"{path.name}  rader={len(rows)}{journal_msg} sum={total:.2f}")
+    return "ok"
 
 
 _INSERT_JOURNAL_SAFT = """

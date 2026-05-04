@@ -93,6 +93,23 @@ def _find_files_with_prefix(directory: Path, prefix: str) -> list[str]:
     return sorted(p.name for p in directory.iterdir() if p.is_file() and p.name.startswith(prefix))
 
 
+def _is_legacy_balance_warn(ev: dict) -> bool:
+    """True om eventet är en pre-fix balance-WARN från SIE/SAF-T-laddaren.
+
+    load_sie/load_saft loggade tidigare WARN när BS+IS >= 1.0 — men för YTD-
+    format är summan = årets resultat och förväntat ≠ 0. Dessa skrivs inte
+    längre. Identifieras via shape: status=WARN, script=load_sie/load_saft, och
+    meddelande som innehåller både 'rader=' och 'sum=' (legitim 'Inga rader'-
+    WARN saknar 'rader=').
+    """
+    if ev.get("status") != "WARN":
+        return False
+    if ev.get("script") not in ("load_sie.py", "load_saft.py"):
+        return False
+    msg = ev.get("msg", "")
+    return "rader=" in msg and "sum=" in msg
+
+
 def _latest_dry_run_matches(events: list[dict]) -> set[int]:
     """Return bolag-IDs som matchades i SENASTE dry_run-körningen.
 
@@ -155,9 +172,13 @@ def compute_company_status(period: str) -> list[CompanyRow]:
         # Hoppa över MATCH-events från dry_run vid val av "senaste meddelande" — de
         # är feedback från extract-matchningen, inte process-status, och skulle annars
         # alltid skriva över process-resultatet i tabellen efter en dry-run.
+        # Hoppa även över legacy balance-WARN från load_sie/load_saft: de loggades
+        # tidigare när BS+IS != 0 men har semantiskt aldrig varit en varning för
+        # YTD-format (UB+RES = årets resultat, inte 0). Dessa skrivs inte längre.
         non_match_events = [
             ev for ev in company_events
             if not (ev.get("script") == "dry_run" and ev.get("status") == "MATCH")
+            and not _is_legacy_balance_warn(ev)
         ]
         last_event = non_match_events[-1] if non_match_events else None
 

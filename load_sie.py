@@ -326,7 +326,8 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     total_ub = sum(r[2] for r in sie_rows if r[3] == "BS")
     total_res = sum(r[2] for r in sie_rows if r[3] == "IS")
     total = total_ub + total_res
-    is_warn = abs(total) >= 1.0
+    # SIE: UB+RES = årets resultat (YTD), inte 0. Saldobalans-check görs inte
+    # här — använd verifikatnivå (fact_journal_sie) för debet/kredit-balans.
     rel_src = db.relpath_from_base(path, base_path)
     now = datetime.now()
 
@@ -347,7 +348,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             f"PSALDO={len(psaldo_rows)} ({len(psaldo_periods)} mån)"
             f"{journal_msg} "
             f"sum_ub={total_ub:.2f} sum_res={total_res:.2f} sum_tot={total:.2f}")
-        return "warn" if is_warn else "ok"
+        return "ok"
 
     db.sync_dim_period(con, [period] + psaldo_periods + sorted(journal_periods))
 
@@ -421,7 +422,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [company_id, period, SOURCE_KIND, rel_src,
              len(sie_rows) + len(psaldo_rows) + len(journal_rows), total, True,
-             "warn" if is_warn else "ok",
+             "ok",
              f"sie_rows={len(sie_rows)} psaldo_rows={len(psaldo_rows)} "
              f"psaldo_periods={len(psaldo_periods)} "
              f"journal_rows={len(journal_rows)} journal_periods={len(journal_periods)} "
@@ -434,12 +435,11 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         log("ERROR", company_id, f"DB-fel {path.name}: {e}")
         return "error"
 
-    status = "WARN" if is_warn else "OK"
     psaldo_msg = f" PSALDO={len(psaldo_rows)}({len(psaldo_periods)} mån)" if psaldo_rows else ""
     journal_msg = f" JOURNAL={len(journal_rows)}({len(journal_periods)} mån)" if journal_rows else ""
-    log(status, company_id,
+    log("OK", company_id,
         f"{path.name}  period={period}  rader={len(sie_rows)}{psaldo_msg}{journal_msg}  sum={total:.2f}")
-    return "warn" if is_warn else "ok"
+    return "ok"
 
 
 def discover_files(source_dir: Path) -> list[Path]:
