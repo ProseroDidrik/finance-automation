@@ -135,6 +135,21 @@ CREATE INDEX IF NOT EXISTS idx_fjsaft_company_period ON fact_journal_saft(compan
 CREATE INDEX IF NOT EXISTS idx_fjsaft_transaction    ON fact_journal_saft(company_id, transaction_id);
 CREATE INDEX IF NOT EXISTS idx_fjsaft_account        ON fact_journal_saft(account_code);
 
+CREATE TABLE IF NOT EXISTS dim_account_map (
+    account_id      TEXT PRIMARY KEY,           -- col B raw (t.ex. '10_1209', 'Equi', 'B')
+    description     TEXT,                       -- col C (Beskrivning)
+    description_en  TEXT,                       -- col D (Beskrivning Engelska)
+    is_aggregated   BOOLEAN NOT NULL,           -- col E='1' → TRUE, gruppkonto
+    parent_id       TEXT,                       -- col J (Tillhör Kontoklass), NULL för rot
+    source          TEXT,                       -- col I (Källa)
+    company_id      INTEGER,                    -- härlett: prefix-int från B där {int}_{rest}
+    account_code    TEXT,                       -- härlett: del efter första '_' i B
+    loaded_at       TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_dam_company  ON dim_account_map(company_id, account_code);
+CREATE INDEX IF NOT EXISTS idx_dam_parent   ON dim_account_map(parent_id);
+
 CREATE TABLE IF NOT EXISTS load_history (
     id                       BIGINT PRIMARY KEY DEFAULT nextval('seq_load_history'),
     company_id               INTEGER,

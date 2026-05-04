@@ -358,6 +358,7 @@ class MainWindow(QMainWindow):
         period = self._current_period()
         self._load_chain = [
             ("db.py", []),
+            ("load_account_map.py", []),
             ("load_inl.py",  ["--period", period]),
             ("load_sie.py",  ["--period", period]),
             ("load_saft.py", ["--period", period]),
