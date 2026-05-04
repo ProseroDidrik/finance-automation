@@ -50,6 +50,8 @@ class MainWindow(QMainWindow):
         self.runner.output_line.connect(self._append_log)
         self.runner.finished.connect(self._on_runner_finished)
 
+        self._load_chain: list[tuple[str, list[str]]] = []
+
         self._build_ui()
         self._build_menu()
 
@@ -174,6 +176,8 @@ class MainWindow(QMainWindow):
         a.addSpacing(8)
         add_btn("Run all", lambda: self._run_script("run_all.py"))
         add_btn("Dry run (extract)", lambda: self._run_script("dry_run.py"))
+        a.addSpacing(8)
+        add_btn("Ladda databas", self._run_load_db_chain)
         a.addSpacing(8)
         reset_btn = add_btn("Reset perioden …", self._on_reset)
         reset_btn.setStyleSheet("QPushButton { color: #a00; }")
@@ -336,6 +340,26 @@ class MainWindow(QMainWindow):
         self._set_buttons_enabled(False)
         self.runner.run(script, args)
 
+    def _run_load_db_chain(self) -> None:
+        if self.runner.is_running():
+            QMessageBox.information(self, "Pågår", "En körning pågår redan. Vänta tills den är klar.")
+            return
+        period = self._current_period()
+        self._load_chain = [
+            ("db.py", []),
+            ("load_inl.py",  ["--period", period]),
+            ("load_sie.py",  ["--period", period]),
+            ("load_saft.py", ["--period", period]),
+        ]
+        self._set_buttons_enabled(False)
+        self._run_next_in_chain()
+
+    def _run_next_in_chain(self) -> None:
+        if not self._load_chain:
+            return
+        script, args = self._load_chain.pop(0)
+        self.runner.run(script, args)
+
     def _on_reset(self) -> None:
         if self.runner.is_running():
             QMessageBox.information(self, "Pågår", "En körning pågår redan.")
@@ -368,6 +392,10 @@ class MainWindow(QMainWindow):
 
     def _on_runner_finished(self, code: int) -> None:
         self._append_log(f"[GUI] Avslutad med exit-code {code}.")
+        if code == 0 and self._load_chain:
+            self._run_next_in_chain()
+            return
+        self._load_chain = []
         self._set_buttons_enabled(True)
         self._refresh_table()
 
