@@ -248,12 +248,19 @@ def glob_one(directory: Path, pattern: str) -> Path:
 
 
 def save_inl_xlsx(is_rows: list, bs_rows: list, output_path: Path) -> None:
-    """Write IS+BS rows to INL.xlsx (empty row 1, then data rows with cols A/B/C)."""
+    """Write IS+BS rows to INL.xlsx.
+
+    Layout: empty row 1, then data rows with cols A=account, B=name, C=amount,
+    D='IS' or 'BS'. Column D lets the DB loader assign statement_type without
+    per-country heuristics; manual readers ignore it.
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    records = [{"A": None, "B": None, "C": None}]
-    for acc, name, amt in is_rows + bs_rows:
-        records.append({"A": acc, "B": name, "C": amt})
+    records = [{"A": None, "B": None, "C": None, "D": None}]
+    for acc, name, amt in is_rows:
+        records.append({"A": acc, "B": name, "C": amt, "D": "IS"})
+    for acc, name, amt in bs_rows:
+        records.append({"A": acc, "B": name, "C": amt, "D": "BS"})
     df = pd.DataFrame(records)
     with pd.ExcelWriter(str(output_path), engine="openpyxl") as writer:
         df.to_excel(writer, index=False, header=False, sheet_name="Sheet1")
