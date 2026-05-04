@@ -12,12 +12,12 @@ SIE-formatet är YTD-baserat. För varje fil:
 
 Period-härledning (#PSALDO är det enda fält i SIE som faktiskt anger
 "data fram till och med"; #GEN är exportdatum, #RAR är räkenskapsårets slut):
-  - --period given:
-      OK om filen saknar #PSALDO eller om max(#PSALDO) == --period.
-      ERROR om max(#PSALDO) != --period (skydd mot felklassning).
-  - --period inte given:
-      OK om filen har #PSALDO → använd max.
-      ERROR annars (kräv explicit --period).
+  - Om filen har #PSALDO används max(#PSALDO) som period för UB/RES —
+    det är filens faktiska data-through.
+  - --period fungerar som lägstagräns: ERROR om max(#PSALDO) < --period
+    (filen saknar data för begärd period). En senare PSALDO är OK; PSALDO-
+    lanen fyller ändå begärd period från radens egen YYYYMM.
+  - Saknar filen #PSALDO krävs --period explicit.
 
 Två separata source_kind-laner skrivs till fact_balances:
   SOURCE_KIND='SIE'         → UB/RES, period=fastställd för filen
@@ -266,16 +266,16 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     currency = "SEK"
 
     period_derived = derive_period(parsed)  # max #PSALDO eller None
-    if period_override:
-        period = period_override
-        if period_derived and period_derived != period:
+    if period_derived:
+        if period_override and period_derived < period_override:
             log("ERROR", company_id,
                 f"Period-mismatch i {path.name}: --period={period_override} "
-                f"men max #PSALDO={period_derived}. "
-                "Skydd mot felklassning av YTD-data.")
+                f"men filens data-through (#PSALDO max) är {period_derived}. "
+                "Filen saknar data för begärd period.")
             return "error"
-    elif period_derived:
         period = period_derived
+    elif period_override:
+        period = period_override
     else:
         log("ERROR", company_id,
             f"{path.name} saknar #PSALDO — kan inte avgöra data-through. "
