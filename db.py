@@ -44,6 +44,7 @@ CREATE SEQUENCE IF NOT EXISTS seq_fact_balances START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_load_history START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_journal_sie START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_journal_saft START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_dim_exchange_rate START 1;
 
 CREATE TABLE IF NOT EXISTS dim_company (
     company_id   INTEGER PRIMARY KEY,
@@ -75,10 +76,20 @@ CREATE TABLE IF NOT EXISTS fact_balances (
     amount          DOUBLE NOT NULL,
     currency        TEXT NOT NULL,
     statement_type  TEXT,                  -- 'IS' | 'BS' | NULL
-    source_kind     TEXT NOT NULL,         -- 'INL' | 'SIE' | 'SAFT'
+    source_kind     TEXT NOT NULL,         -- 'INL' | 'SIE' | 'SAFT' | 'MAN' | 'IMP' | 'IMP_ADJ' | 'IB'
     source_file     TEXT NOT NULL,         -- relativ till base_path
     row_index       INTEGER,
+    scenario        TEXT NOT NULL DEFAULT 'A',  -- 'A' = Actuals | 'B' = Budget
     loaded_at       TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dim_exchange_rate (
+    period      TEXT NOT NULL,    -- YYYYMM
+    currency    TEXT NOT NULL,    -- 'NOK' | 'DKK' | 'EUR'
+    rate_type   TEXT NOT NULL,    -- 'avg' | 'constant'
+    rate        DOUBLE NOT NULL,  -- SEK per enhet utländsk valuta
+    loaded_at   TIMESTAMP NOT NULL,
+    PRIMARY KEY (period, currency, rate_type)
 );
 
 CREATE INDEX IF NOT EXISTS idx_fb_company_period ON fact_balances(company_id, period);
@@ -169,6 +180,21 @@ CREATE TABLE IF NOT EXISTS load_history (
 def init_schema(con: duckdb.DuckDBPyConnection) -> None:
     """Create tables/indexes if missing. Idempotent."""
     con.execute(SCHEMA_SQL)
+    _migrate(con)
+
+
+def _migrate(con: duckdb.DuckDBPyConnection) -> None:
+    """Add columns introduced after initial schema. Safe to run repeatedly."""
+    existing = {
+        row[0]
+        for row in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'fact_balances'"
+        ).fetchall()
+    }
+    if "scenario" not in existing:
+        con.execute("ALTER TABLE fact_balances ADD COLUMN scenario TEXT DEFAULT 'A'")
+        con.execute("UPDATE fact_balances SET scenario = 'A' WHERE scenario IS NULL")
 
 
 def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:

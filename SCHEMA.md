@@ -38,6 +38,10 @@ en **load_history** för revision. All läsning/skrivning går genom `db.py`.
 | `SIE` | `ytd` | SE | `*.SE` (SIE-export) | `load_sie.py` |
 | `SIE_PSALDO` | `ytd` | SE | (samma fil, `#PSALDO`-rader) | `load_sie.py` |
 | `SAFT` | `ytd` | NO | `*_SAF-T_*.xml` | `load_saft.py` |
+| `MAN` | `monthly` | alla | Mercur-export / backup-txt | `load_history_excel.py` |
+| `IMP` | `monthly` | FI/DK/DE/NO | Mercur-export / backup-txt | `load_history_excel.py` |
+| `IMP_ADJ` | `monthly` | alla | Mercur-export | `load_history_excel.py` |
+| `IB` | `monthly` | alla | `*IB 2022.xlsx` (Mercur-rapport, per 202112) | `load_ib.py` |
 | `ACCOUNT_MAP` | (n/a) | (alla) | `_params/Dimensionsmedlemmar  Konto.xlsx` | `load_account_map.py` |
 
 YTD = year-to-date (ackumulerat sedan räkenskapsårets start). SE/NO är YTD per
@@ -105,13 +109,27 @@ Den centrala read-tabellen. En rad per (bolag, period, konto, källa).
 | `amount` | DOUBLE | Belopp i bolagets valuta |
 | `currency` | TEXT | `SEK`/`NOK`/`DKK`/`EUR` |
 | `statement_type` | TEXT | `IS` / `BS` / NULL |
-| `source_kind` | TEXT | `INL` / `SIE` / `SIE_PSALDO` / `SAFT` |
+| `source_kind` | TEXT | `INL` / `SIE` / `SIE_PSALDO` / `SAFT` / `MAN` / `IMP` / `IMP_ADJ` / `IB` |
 | `source_file` | TEXT | Relativ till `base_path` (Dropbox-roten) |
 | `row_index` | INT | Ordning i källfilen |
+| `scenario` | TEXT | `A` (Utfall) / `B` (Budget). Default `A`. |
 | `loaded_at` | TIMESTAMP | |
 
 **Idempotens**: laddarna `DELETE … WHERE company_id=? AND period=? AND
 source_kind=?` innan INSERT. Sista laddningen vinner per lane.
+MAN/IMP/IMP_ADJ inkluderar även `AND scenario=?` i DELETE för att separera
+utfall (A) från budget (B).
+
+### `dim_exchange_rate` — valutakurser
+| Kolumn | Typ | Notering |
+|---|---|---|
+| `period` | TEXT PK | `YYYYMM` |
+| `currency` | TEXT PK | `NOK` / `DKK` / `EUR` |
+| `rate_type` | TEXT PK | `avg` (genomsnittskurs) / `constant` (constant currency) |
+| `rate` | DOUBLE | SEK per enhet utländsk valuta |
+| `loaded_at` | TIMESTAMP | |
+
+Källa: `_params/Valutakurser.xlsx`. Laddas av `load_exchange_rates.py`. Perioder: 201912–202603.
 
 ### `fact_journal_sie` — SIE-verifikat (opt-in)
 Aktiveras av `load_sie.py --include-journal`. Innehåller `#VER`/`#TRANS`-rader.
@@ -173,6 +191,12 @@ py load_account_map.py                   # referensdata (TRUNCATE+INSERT)
 py load_inl.py  --period YYYYMM          # FI / DK / DE
 py load_sie.py  --period YYYYMM          # SE
 py load_saft.py --period YYYYMM          # NO
+
+# Historisk engångsladdning (2022–2025):
+py load_exchange_rates.py                # valutakurser (dim_exchange_rate)
+py load_history_sie_saft.py             # SIE/SAF-T från _history/2022–2025/
+py load_history_excel.py                # MAN/IMP/IMP_ADJ från _history/
+py load_ib.py                           # ingående balanser per 202112
 ```
 
 Varje laddare loggar strukturerat (`[OK]`/`[WARN]`/`[ERROR]`) till stdout +
@@ -219,21 +243,35 @@ WITH RECURSIVE walk AS (
 SELECT * FROM walk ORDER BY depth;
 ```
 
-## Volym (snapshot 2026-05-04)
+## Volym (snapshot 2026-05-05, efter historisk inläsning)
 
 | Tabell | Rader |
 |---|---:|
 | `dim_company` | 147 |
-| `dim_period` | 38 |
+| `dim_period` | 80+ |
 | `dim_account_map` | 80 729 |
-| `fact_balances` | 65 039 |
+| `dim_exchange_rate` | 456 |
+| `fact_balances` | ~410 000 |
 | `fact_journal_sie` | 600 868 |
 | `fact_journal_saft` | 288 708 |
-| `load_history` | 1 186 |
+| `load_history` | 1 200+ |
 
 Bolag per land: SE 61 · NO 42 · FI 21 · CENTR 8 · DK 8 · DE 5 · CA 2.
 
-Perioder med data: 202601 (100 bolag), 202602 (106), 202603 (110), 202604 (2 — påbörjat).
+Perioder med data: 202112 (IB, 75 bolag) · 202201–202512 (historik) · 202601–202604 (löpande).
+
+`fact_balances` source_kind-fördelning:
+| source_kind | scenario | Rader | Perioder |
+|---|---|---:|---|
+| `IB` | A | 2 726 | 202112 |
+| `IMP` | A | 187 122 | 202201–202512 |
+| `IMP_ADJ` | A | 209 | 202212–202603 |
+| `INL` | A | 6 988 | 202601–202603 |
+| `MAN` | A | 5 893 | 202201–202612 |
+| `MAN` | B | 45 844 | 202201–202612 |
+| `SAFT` | A | 67 486 | 202212–202603 |
+| `SIE` | A | 44 161 | 202212–202604 |
+| `SIE_PSALDO` | A | 49 389 | 202201–202604 |
 
 ## Inspektera live
 
