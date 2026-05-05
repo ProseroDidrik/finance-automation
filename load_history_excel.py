@@ -52,6 +52,14 @@ INSERT_SQL = """
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
+BACKUP_INSERT_SQL = """
+    INSERT INTO backup_from_mercur
+        (company_id, period, account_code, account_name,
+         amount, currency, source_kind, source_file,
+         row_index, scenario, loaded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
 
 def parse_account_code(konto: str) -> str:
     """Returnerar account_code-delen från ett Mercur-konto-ID.
@@ -128,7 +136,8 @@ def iter_txt_rows(path: Path):
 def load_file(con, path: Path, base_path: Path,
               *, dry_run: bool,
               filter_scenario: str | None,
-              valid_companies: set[int]) -> dict[str, int]:
+              valid_companies: set[int],
+              is_backup: bool = False) -> dict[str, int]:
     """Ladda en fil. Returnerar {status: count}."""
     suffix = path.suffix.lower()
     if suffix in (".xlsx", ".xls"):
@@ -191,10 +200,16 @@ def load_file(con, path: Path, base_path: Path,
 
         currency = (currency or "").upper().strip()
         lane_key = (company_id, period, kalla_upper, scenario)
-        lane_rows[lane_key].append((
-            company_id, period, PERIOD_TYPE, account_code, None,
-            amount, currency, None, kalla_upper, rel_src, row_idx, scenario, now,
-        ))
+        if is_backup:
+            lane_rows[lane_key].append((
+                company_id, period, account_code, None,
+                amount, currency, kalla_upper, rel_src, row_idx, scenario, now,
+            ))
+        else:
+            lane_rows[lane_key].append((
+                company_id, period, PERIOD_TYPE, account_code, None,
+                amount, currency, None, kalla_upper, rel_src, row_idx, scenario, now,
+            ))
 
     if not lane_rows:
         log("WARN", path.name, f"Inga giltiga rader (skippade={skipped})")
@@ -214,24 +229,30 @@ def load_file(con, path: Path, base_path: Path,
     all_periods = list({key[1] for key in lane_rows})
     db.sync_dim_period(con, all_periods)
 
+    target_table = "backup_from_mercur" if is_backup else "fact_balances"
+    insert_sql = BACKUP_INSERT_SQL if is_backup else INSERT_SQL
+
     con.execute("BEGIN")
     try:
         for (company_id, period, source_kind, scenario), rows in lane_rows.items():
             con.execute(
-                """DELETE FROM fact_balances
+                f"""DELETE FROM {target_table}
                    WHERE company_id = ? AND period = ?
                      AND source_kind = ? AND scenario = ?""",
                 [company_id, period, source_kind, scenario],
             )
-            con.executemany(INSERT_SQL, rows)
+            con.executemany(insert_sql, rows)
+        # amount är på index 5 för fact_balances-tupler, index 4 för backup-tupler
+        amt_idx = 4 if is_backup else 5
         con.execute(
             """INSERT INTO load_history
                (company_id, period, source_kind, source_file, rows_loaded,
                 sum_amount, statement_type_present, status, message, loaded_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [None, "HIST", "MAN/IMP", rel_src, total_rows,
-             sum(r[5] for rows in lane_rows.values() for r in rows),
-             False, "ok", f"lanes={len(lane_rows)} skipped={skipped}", now],
+             sum(r[amt_idx] for rows in lane_rows.values() for r in rows),
+             False, "ok",
+             f"->{target_table} lanes={len(lane_rows)} skipped={skipped}", now],
         )
         con.execute("COMMIT")
     except Exception as e:
@@ -239,7 +260,7 @@ def load_file(con, path: Path, base_path: Path,
         log("ERROR", path.name, f"DB-fel: {e}")
         return {"error": 1}
 
-    log("OK", path.name, f"{total_rows} rader laddade  {len(lane_rows)} lanes")
+    log("OK", path.name, f"{total_rows} rader laddade  {len(lane_rows)} lanes  ->{target_table}")
     return {"ok": 1}
 
 
@@ -278,13 +299,15 @@ def main() -> None:
         "NO DE FI DK Other Backup 2022 to 2026 March.txt",
     ]
 
+    # (path, is_backup) — txt-filer går till backup_from_mercur
     if args.file:
-        # Begränsa till en fil
-        all_files = [hist_root / args.file]
+        fpath = hist_root / args.file
+        is_backup = Path(args.file).suffix.lower() == ".txt"
+        files_to_load: list[tuple[Path, bool]] = [(fpath, is_backup)]
     else:
-        all_files = [hist_root / f for f in EXCEL_FILES]
+        files_to_load = [(hist_root / f, False) for f in EXCEL_FILES]
         if not args.skip_backup:
-            all_files += [hist_root / f for f in TXT_FILES]
+            files_to_load += [(hist_root / f, True) for f in TXT_FILES]
 
     con = db.connect()
     try:
@@ -302,7 +325,7 @@ def main() -> None:
 
         totals: dict[str, int] = {"ok": 0, "warn": 0, "skip": 0, "error": 0}
 
-        for fpath in all_files:
+        for fpath, is_backup in files_to_load:
             if not fpath.exists():
                 log("WARN", fpath.name, f"Filen saknas: {fpath}")
                 totals["skip"] += 1
@@ -312,6 +335,7 @@ def main() -> None:
                 dry_run=args.dry_run,
                 filter_scenario=args.scenario,
                 valid_companies=valid_companies,
+                is_backup=is_backup,
             )
             for k, v in counts.items():
                 totals[k] = totals.get(k, 0) + v

@@ -131,6 +131,43 @@ utfall (A) från budget (B).
 
 Källa: `_params/Valutakurser.xlsx`. Laddas av `load_exchange_rates.py`. Perioder: 201912–202603.
 
+### `backup_from_mercur` — råbackup från Mercur (facit)
+
+Mercur-backup-exporterna (`SE Backup 2022 to 2026 march.txt` m.fl.) laddas hit
+i stället för `fact_balances`. Fungerar som ground truth — används för att hitta
+perioder/bolag som saknas i de ordinarie Excel-exporterna.
+
+Laddas av `load_history_excel.py` (automatiskt för .txt-filer; `--skip-backup` hoppar över dem).
+
+| Kolumn | Typ | Notering |
+|---|---|---|
+| `id` | BIGINT PK | |
+| `company_id` | INT | |
+| `period` | TEXT | `YYYYMM` |
+| `account_code` | TEXT | Kontokod (prefix-strippad) |
+| `account_name` | TEXT | NULL (saknas i backup) |
+| `amount` | DOUBLE | |
+| `currency` | TEXT | |
+| `source_kind` | TEXT | `MAN` / `IMP` / `IMP_ADJ` |
+| `scenario` | TEXT | `A` / `B` |
+| `source_file` | TEXT | |
+| `row_index` | INT | |
+| `loaded_at` | TIMESTAMP | |
+
+**Jämförelsefråga** — hitta perioder som finns i backup men inte i fact_balances:
+```sql
+SELECT b.company_id, b.period, b.source_kind, b.scenario,
+       COUNT(*) AS backup_rows,
+       SUM(b.amount) AS backup_sum
+FROM backup_from_mercur b
+LEFT JOIN fact_balances f
+  ON f.company_id = b.company_id AND f.period = b.period
+     AND f.source_kind = b.source_kind AND f.scenario = b.scenario
+WHERE f.company_id IS NULL
+GROUP BY 1,2,3,4
+ORDER BY 2,1;
+```
+
 ### `fact_journal_sie` — SIE-verifikat (opt-in)
 Aktiveras av `load_sie.py --include-journal`. Innehåller `#VER`/`#TRANS`-rader.
 

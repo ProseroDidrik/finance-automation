@@ -32,6 +32,11 @@ SOURCE_KIND = "SAFT"
 PERIOD_TYPE = "ytd"
 JOURNAL_BATCH = 5000
 
+# SAF-T-filer som saknar RegistrationNumber i Header: filnamnssubsträng → company_id
+FILENAME_OVERRIDES: dict[str, int] = {
+    "081_Actas": 81,  # Actas DK — RegistrationNumber saknas i filen
+}
+
 
 def _t(elem: ET.Element, tag: str) -> str | None:
     """Hämta text från ett namespacad child-element, eller None."""
@@ -222,15 +227,24 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         return "error"
 
     orgnr_raw = parsed.get("orgnr")
+    company_id: int | None = None
     if not orgnr_raw:
-        log("ERROR", path.name, "Saknar Header/Company/RegistrationNumber")
-        return "error"
-
-    hit = orgnr_lookup.get(normalize_orgnr(orgnr_raw))
-    if not hit:
-        log("ERROR", path.name, f"OrgNr {orgnr_raw} saknas i dim_company")
-        return "error"
-    company_id, _name = hit
+        for substr, cid in FILENAME_OVERRIDES.items():
+            if substr in path.name:
+                company_id = cid
+                log("INFO", path.name,
+                    f"RegistrationNumber saknas — filename-override → company_id={cid}")
+                break
+        if company_id is None:
+            log("ERROR", path.name,
+                "Saknar Header/Company/RegistrationNumber (lägg till i FILENAME_OVERRIDES?)")
+            return "error"
+    else:
+        hit = orgnr_lookup.get(normalize_orgnr(orgnr_raw))
+        if not hit:
+            log("ERROR", path.name, f"OrgNr {orgnr_raw} saknas i dim_company")
+            return "error"
+        company_id, _name = hit
 
     period = derive_period(parsed, period_override)
     if not period:

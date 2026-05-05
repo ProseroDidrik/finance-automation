@@ -45,6 +45,7 @@ CREATE SEQUENCE IF NOT EXISTS seq_load_history START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_journal_sie START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_journal_saft START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_dim_exchange_rate START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_backup_from_mercur START 1;
 
 CREATE TABLE IF NOT EXISTS dim_company (
     company_id   INTEGER PRIMARY KEY,
@@ -160,6 +161,24 @@ CREATE TABLE IF NOT EXISTS dim_account_map (
 
 CREATE INDEX IF NOT EXISTS idx_dam_company  ON dim_account_map(company_id, account_code);
 CREATE INDEX IF NOT EXISTS idx_dam_parent   ON dim_account_map(parent_id);
+
+CREATE TABLE IF NOT EXISTS backup_from_mercur (
+    id           BIGINT PRIMARY KEY DEFAULT nextval('seq_backup_from_mercur'),
+    company_id   INTEGER NOT NULL,
+    period       TEXT NOT NULL,
+    account_code TEXT NOT NULL,
+    account_name TEXT,
+    amount       DOUBLE NOT NULL,
+    currency     TEXT NOT NULL,
+    source_kind  TEXT NOT NULL,       -- 'MAN' | 'IMP' | 'IMP_ADJ'
+    scenario     TEXT NOT NULL DEFAULT 'A',
+    source_file  TEXT NOT NULL,
+    row_index    INTEGER,
+    loaded_at    TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bfm_company_period ON backup_from_mercur(company_id, period);
+CREATE INDEX IF NOT EXISTS idx_bfm_idem           ON backup_from_mercur(company_id, period, source_kind, scenario);
 
 CREATE TABLE IF NOT EXISTS load_history (
     id                       BIGINT PRIMARY KEY DEFAULT nextval('seq_load_history'),
