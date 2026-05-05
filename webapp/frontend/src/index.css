@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tema-tokens (kan bytas till Prosero-orange/röd via en CSS-variabel) */
+:root {
+  --bg:        255 255 255;
+  --surface:   248 250 252;
+  --elevated: 241 245 249;
+  --border:    226 232 240;
+  --fg:         15  23  42;
+  --fg-muted: 100 116 139;
+  --accent:   249 115  22;
+  --positive:  16 185 129;
+  --negative: 239  68  68;
+  --warn:     245 158  11;
+}
+
+.dark {
+  --bg:         11  15  23;
+  --surface:    17  24  39;
+  --elevated:   24  33  47;
+  --border:     31  41  55;
+  --fg:        241 245 249;
+  --fg-muted: 148 163 184;
+  --accent:   249 115  22;
+  --positive:  16 185 129;
+  --negative: 248 113 113;
+  --warn:     245 158  11;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg text-fg font-sans antialiased;
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* Tabular figures för all monospace-text */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Subtila scrollbars (mörkt tema) */
+.dark ::-webkit-scrollbar { width: 10px; height: 10px; }
+.dark ::-webkit-scrollbar-track { background: rgb(var(--bg)); }
+.dark ::-webkit-scrollbar-thumb { background: rgb(var(--border)); border-radius: 4px; }
+.dark ::-webkit-scrollbar-thumb:hover { background: rgb(var(--fg-muted) / 0.5); }

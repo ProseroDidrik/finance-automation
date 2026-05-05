@@ -1,0 +1,201 @@
+# pnl_kpis.yaml
+# KPI-rader (sub-totaler och beräknade nyckeltal) som visas mellan grupper i P&L-rapporten.
+# Frontend infogar dessa rader på rätt position i sort_path-ordningen.
+#
+# === SIGN-KONVENTION ===
+# Backend (report_pnl.sql) returnerar SIE-räkenskapstecken: revenue NEGATIV, expense POSITIV.
+# Frontend gör en GLOBAL sign-flip på *alla* P&L-amounts vid presentation:
+#   display_amount = -raw_amount
+# Det innebär:
+#   - Revenue visas POSITIV (Mercur-konvention)
+#   - Expense visas NEGATIV
+#   - KPI-formler nedan räknar på POST-FLIP-värden — alltså läs varje
+#     account_id-referens som "det värde användaren ser i tabellen".
+# Exempel: kpi:gross_profit = kpi:total_sales + kpi:total_direct_cost
+#          = (+6.20M) + (−2.55M) = +3.65M  ← korrekt
+#
+# Definitioner:
+#   id          — unik identifierare
+#   label_sv/en — visningstext
+#   anchor      — efter vilken aggregerad nod (account_id) raden visas
+#   formula     — uttryck över aggregerade noder eller andra KPI:er
+#                 nodes via account_id (matchar dim_account_map.account_id)
+#                 andra KPI:er via "kpi:<id>"
+#   format      — 'currency' (heltal) eller 'percent' (procent med 1 decimal)
+#   emphasis    — 'subtotal' (gråmarkerad), 'total' (bold) eller 'metric' (kursiv mindre)
+
+kpis:
+  # --- Försäljning ---
+  - id: total_sales
+    label_sv: "Total Försäljning"
+    label_en: "Total Sales"
+    anchor: "Total Sales"     # visas i stället för/efter Total Sales-noden
+    formula: "Total Sales"           # SIE-konvention: revenue negativ → presentation positiv
+    format: currency
+    emphasis: subtotal
+
+  # --- Direkt kostnad ---
+  - id: total_direct_cost
+    label_sv: "Summa direkta kostnader"
+    label_en: "Total Direct Cost"
+    anchor: "Total Direct Cost"
+    formula: "Total Direct Cost"           # expenses i SIE är positiva → vi vill visa som negativa
+    format: currency
+    emphasis: subtotal
+
+  - id: gross_profit
+    label_sv: "Bruttovinst"
+    label_en: "Gross profit"
+    anchor: "Total Direct Cost"
+    formula: "kpi:total_sales + kpi:total_direct_cost"
+    format: currency
+    emphasis: total
+
+  - id: gross_margin
+    label_sv: "Bruttomarginal"
+    label_en: "Gross margin"
+    anchor: "Total Direct Cost"
+    formula: "kpi:gross_profit / kpi:total_sales"
+    format: percent
+    emphasis: metric
+
+  # --- Rörelsekostnader ---
+  - id: total_opex
+    label_sv: "Summa rörelsekostnader"
+    label_en: "Operating expenses"
+    anchor: "Operating Expenses"
+    formula: "Operating Expenses"
+    format: currency
+    emphasis: subtotal
+
+  - id: ebitda_adj
+    label_sv: "Justerad EBITDA"
+    label_en: "Adjusted EBITDA"
+    anchor: "Operating Expenses"
+    formula: "kpi:gross_profit + kpi:total_opex"
+    format: currency
+    emphasis: total
+
+  - id: ebitda_margin
+    label_sv: "Marginal"
+    label_en: "Margin"
+    anchor: "Operating Expenses"
+    formula: "kpi:ebitda_adj / kpi:total_sales"
+    format: percent
+    emphasis: metric
+
+  # --- Avskrivningar ---
+  - id: dep_tang
+    label_sv: "Avskrivningar (fixed assets)"
+    label_en: "Depreciation (fixed assets)"
+    anchor: "Depreciation TANG"
+    formula: "Depreciation TANG"
+    format: currency
+    emphasis: subtotal
+
+  - id: dep_leas
+    label_sv: "Avskrivningar (leased assets)"
+    label_en: "Depreciation (leased assets)"
+    anchor: "Depleas"
+    formula: "Depleas"
+    format: currency
+    emphasis: subtotal
+
+  - id: ebita_adj
+    label_sv: "Justerad EBITA"
+    label_en: "Adjusted EBITA"
+    anchor: "Depleas"
+    formula: "kpi:ebitda_adj + kpi:dep_tang + kpi:dep_leas"
+    format: currency
+    emphasis: total
+
+  # --- Goodwill / normalisering / EBIT ---
+  - id: goodwill_amort
+    label_sv: "Goodwill amortization"
+    label_en: "Goodwill amortization"
+    anchor: "Depreciation INTANG"
+    formula: "Depreciation INTANG"
+    format: currency
+    emphasis: subtotal
+
+  - id: normalisation
+    label_sv: "Normalisering"
+    label_en: "Normalisation"
+    anchor: "Normalisering Total"
+    formula: "Normalisering Total"
+    format: currency
+    emphasis: subtotal
+
+  - id: ebit
+    label_sv: "EBIT"
+    label_en: "EBIT"
+    anchor: "Normalisering Total"
+    formula: "kpi:ebita_adj + kpi:goodwill_amort + kpi:normalisation"
+    format: currency
+    emphasis: total
+
+  - id: ebit_margin
+    label_sv: "EBIT-marginal"
+    label_en: "EBIT margin"
+    anchor: "Normalisering Total"
+    formula: "kpi:ebit / kpi:total_sales"
+    format: percent
+    emphasis: metric
+
+  # --- Finansnetto, skatt, periodiseringsfond ---
+  - id: net_finance
+    label_sv: "Net finance items"
+    label_en: "Net finance items"
+    anchor: "Financial income and expense"
+    formula: "Financial income and expense"
+    format: currency
+    emphasis: subtotal
+
+  - id: appropriations
+    label_sv: "Periodiseringsfond"
+    label_en: "Appropriations"
+    anchor: "Appropriations"
+    formula: "Appropriations"
+    format: currency
+    emphasis: subtotal
+
+  - id: tax_total
+    label_sv: "Skatt"
+    label_en: "Tax"
+    anchor: "TAX TOTAL"
+    formula: "TAX TOTAL"
+    format: currency
+    emphasis: subtotal
+
+  - id: profit_period
+    label_sv: "Profit for the period"
+    label_en: "Profit for the period"
+    anchor: "TAX TOTAL"
+    formula: "kpi:ebit + kpi:net_finance + kpi:appropriations + kpi:tax_total"
+    format: currency
+    emphasis: total
+
+  # --- Management/Service fee, Local profit ---
+  - id: mgmt_fee
+    label_sv: "Management fee"
+    label_en: "Management fee"
+    anchor: "MANAGEMENT FEE NET"
+    formula: "MANAGEMENT FEE NET"
+    format: currency
+    emphasis: subtotal
+
+  - id: service_fee
+    label_sv: "Service fee"
+    label_en: "Service fee"
+    anchor: "SERVICE FEE NET"
+    formula: "SERVICE FEE NET"
+    format: currency
+    emphasis: subtotal
+
+  - id: local_profit
+    label_sv: "Local profit"
+    label_en: "Local profit"
+    anchor: "SERVICE FEE NET"
+    formula: "kpi:profit_period + kpi:mgmt_fee + kpi:service_fee"
+    format: currency
+    emphasis: total

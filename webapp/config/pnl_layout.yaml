@@ -1,0 +1,21 @@
+# pnl_layout.yaml
+# Ordning på storgrupperna (depth=1, dvs P&L-trädets toppnivå-noder)
+# i resultatrapporten. Speglar Mercurs ordning från _uploads/Ordning på rader.xlsx.
+#
+# Storgrupper som inte är listade hamnar i slutet (i sin alfabetiska ordning).
+# Inom varje storgrupp behålls SQL:ens sort_path-ordning (depth-first via
+# dim_account_map.parent_id).
+
+storgrupp_order:
+  - "Total Sales"                           # Försäljning, Övrig Försäljning, Total Försäljning
+  - "Total Direct Cost"                     # Materialkostnader, Underentreprenörskostnader, Bruttovinst, Bruttomarginal
+  - "Operating Expenses"                    # Lokal/Transport/Konsult/Övriga/Personal, EBITDA
+  - "Depleas"                               # Avskrivningar (leased assets)
+  - "Depreciation"                          # Avskrivningar (fixed assets) + Goodwill amortization, EBITA
+  - "Normalisering Total"                   # Normalisering, EBIT
+  - "Financial income and expense"          # Net finance items
+  - "Appropriations"                        # Periodiseringsfond
+  - "TAX TOTAL"                             # Skatt, Profit for the period
+  - "MANAGEMENT FEE NET"                    # Management fee
+  - "SERVICE FEE NET"                       # Service fee, Local profit
+  - "Accounts not included in Local profit" # Konton att checka
