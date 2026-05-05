@@ -11,8 +11,12 @@ import {
 import { fmtPeriod } from "./lib/format";
 import { KpiBar } from "./components/KpiBar";
 import { PnlReport } from "./components/PnlReport";
+import { CoverageReport } from "./components/CoverageReport";
+
+type Tab = "pnl" | "coverage";
 
 export default function App() {
+  const [tab, setTab] = useState<Tab>("pnl");
   const [companies, setCompanies] = useState<Company[]>([]);
   const [periods, setPeriods] = useState<Period[]>([]);
   const [companyId, setCompanyId] = useState<number | null>(null);
@@ -81,33 +85,54 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            <select
-              value={companyId ?? ""}
-              onChange={(e) => setCompanyId(parseInt(e.target.value, 10))}
-              className="bg-surface border border-border rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50"
-            >
-              {groupedCompanies.map(([country, cs]) => (
-                <optgroup key={country} label={country}>
-                  {cs.map((c) => (
-                    <option key={c.company_id} value={c.company_id}>
-                      {c.company_id} · {c.name}
+            {/* Flik-navigation */}
+            <div className="flex rounded-md border border-border overflow-hidden text-sm">
+              {(["pnl", "coverage"] as Tab[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`px-3 py-1.5 transition-colors ${
+                    tab === t
+                      ? "bg-accent text-white"
+                      : "bg-surface text-fg-muted hover:bg-elevated"
+                  }`}
+                >
+                  {t === "pnl" ? "P&L" : "Täckning"}
+                </button>
+              ))}
+            </div>
+
+            {tab === "pnl" && (
+              <>
+                <select
+                  value={companyId ?? ""}
+                  onChange={(e) => setCompanyId(parseInt(e.target.value, 10))}
+                  className="bg-surface border border-border rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50"
+                >
+                  {groupedCompanies.map(([country, cs]) => (
+                    <optgroup key={country} label={country}>
+                      {cs.map((c) => (
+                        <option key={c.company_id} value={c.company_id}>
+                          {c.company_id} · {c.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+
+                <select
+                  value={period}
+                  onChange={(e) => setPeriod(e.target.value)}
+                  className="bg-surface border border-border rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50"
+                >
+                  {periods.map((p) => (
+                    <option key={p.period} value={p.period}>
+                      {fmtPeriod(p.period)}
                     </option>
                   ))}
-                </optgroup>
-              ))}
-            </select>
-
-            <select
-              value={period}
-              onChange={(e) => setPeriod(e.target.value)}
-              className="bg-surface border border-border rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50"
-            >
-              {periods.map((p) => (
-                <option key={p.period} value={p.period}>
-                  {fmtPeriod(p.period)}
-                </option>
-              ))}
-            </select>
+                </select>
+              </>
+            )}
 
             <button
               onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
@@ -123,40 +148,46 @@ export default function App() {
 
       {/* Content */}
       <main className="max-w-screen-2xl mx-auto px-6 py-6 space-y-5">
-        {error && (
-          <div className="bg-negative/10 border border-negative/30 text-negative text-sm rounded-md p-3">
-            {error}
-          </div>
-        )}
+        {tab === "coverage" && <CoverageReport />}
 
-        {loading && !report && (
-          <div className="text-fg-muted text-sm">Hämtar data…</div>
-        )}
-
-        {report && (
+        {tab === "pnl" && (
           <>
-            <div className="flex items-baseline justify-between">
-              <div>
-                <h1 className="text-xl font-semibold">
-                  {report.company.name}
-                </h1>
-                <div className="text-sm text-fg-muted">
-                  Bolag {report.company.company_id} · {report.company.country} · {report.company.currency}
-                  {" · "}
-                  {fmtPeriod(report.period)}
-                </div>
+            {error && (
+              <div className="bg-negative/10 border border-negative/30 text-negative text-sm rounded-md p-3">
+                {error}
               </div>
-              {loading && <span className="text-fg-muted text-xs">uppdaterar…</span>}
-            </div>
+            )}
 
-            <KpiBar kpis={report.kpis} currency={report.company.currency} />
+            {loading && !report && (
+              <div className="text-fg-muted text-sm">Hämtar data…</div>
+            )}
 
-            <PnlReport data={report} />
+            {report && (
+              <>
+                <div className="flex items-baseline justify-between">
+                  <div>
+                    <h1 className="text-xl font-semibold">
+                      {report.company.name}
+                    </h1>
+                    <div className="text-sm text-fg-muted">
+                      Bolag {report.company.company_id} · {report.company.country} · {report.company.currency}
+                      {" · "}
+                      {fmtPeriod(report.period)}
+                    </div>
+                  </div>
+                  {loading && <span className="text-fg-muted text-xs">uppdaterar…</span>}
+                </div>
 
-            <div className="text-2xs text-fg-muted">
-              Källa: {report.company.country === "Sweden" ? "SIE" : report.company.country === "Norway" ? "SAF-T" : "INL"} ·
-              {" "}YTD från {fmtPeriod(report.year_start)} t.o.m. {fmtPeriod(report.period)}
-            </div>
+                <KpiBar kpis={report.kpis} currency={report.company.currency} />
+
+                <PnlReport data={report} />
+
+                <div className="text-2xs text-fg-muted">
+                  Källa: {report.company.country === "Sweden" ? "SIE" : report.company.country === "Norway" ? "SAF-T" : "INL"} ·
+                  {" "}YTD från {fmtPeriod(report.year_start)} t.o.m. {fmtPeriod(report.period)}
+                </div>
+              </>
+            )}
           </>
         )}
       </main>

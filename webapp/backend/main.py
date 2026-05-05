@@ -7,6 +7,7 @@ Endpoints:
     GET /api/companies                         — lista bolag (med country, currency)
     GET /api/periods                           — perioder med data
     GET /api/report/pnl?company_id=X&period=Y  — P&L-rapport (tree + KPIs)
+    GET /api/compare/coverage                  — backup vs fact_balances täckning
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ from webapp.backend.period_utils import prev_period, year_start  # noqa: E402
 
 DB_PATH = REPO / "data" / "finance.duckdb"
 SQL_PATH = REPO / "webapp" / "backend" / "sql" / "report_pnl.sql"
+SQL_COVERAGE = REPO / "webapp" / "backend" / "sql" / "compare_coverage.sql"
 
 # ----- Connection lifecycle ---------------------------------------------------
 
@@ -194,3 +196,26 @@ def pnl_report(
         "rows":        rows,
         "kpis":        kpis,
     }
+
+
+@app.get("/api/compare/coverage")
+def compare_coverage():
+    """Jämförelse backup_from_mercur vs fact_balances per (bolag, period, källa, scenario)."""
+    sql = SQL_COVERAGE.read_text(encoding="utf-8")
+    rows = db().execute(sql).df().to_dict("records")
+    return [
+        {
+            "company_id":   int(r["company_id"]) if r["company_id"] is not None else None,
+            "company_name": _safe_str(r["company_name"]),
+            "country":      _safe_str(r["country"]),
+            "period":       _safe_str(r["period"]),
+            "source_kind":  _safe_str(r["source_kind"]),
+            "scenario":     _safe_str(r["scenario"]),
+            "backup_rows":  _safe_num(r["backup_rows"]),
+            "fact_rows":    _safe_num(r["fact_rows"]),
+            "backup_sum":   _safe_num(r["backup_sum"]),
+            "fact_sum":     _safe_num(r["fact_sum"]),
+            "status":       _safe_str(r["status"]),
+        }
+        for r in rows
+    ]

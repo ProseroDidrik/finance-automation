@@ -72,3 +72,21 @@ export async function fetchPeriods(companyId?: number): Promise<Period[]> {
 export async function fetchPnlReport(companyId: number, period: string): Promise<PnlReport> {
   return getJSON<PnlReport>(`/api/report/pnl?company_id=${companyId}&period=${period}`);
 }
+
+export interface CoverageRow {
+  company_id: number;
+  company_name: string;
+  country: string;
+  period: string;
+  source_kind: string;
+  scenario: string;
+  backup_rows: number | null;
+  fact_rows: number | null;
+  backup_sum: number | null;
+  fact_sum: number | null;
+  status: "missing" | "mismatch" | "ok";
+}
+
+export async function fetchCoverage(): Promise<CoverageRow[]> {
+  return getJSON<CoverageRow[]>("/api/compare/coverage");
+}
