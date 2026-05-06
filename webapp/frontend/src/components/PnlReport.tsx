@@ -164,6 +164,7 @@ export function PnlReport({ data }: Props) {
             <th className="text-left  px-4 py-2 font-medium w-2/3">Konto / grupp</th>
             <th className="text-right px-4 py-2 font-medium">Period</th>
             <th className="text-right px-4 py-2 font-medium">YTD</th>
+            <th className="text-right px-4 py-2 font-medium">Budget YTD</th>
           </tr>
         </thead>
         <tbody>
@@ -209,6 +210,7 @@ function TreeRowComp({
   // Sign-flip vid display
   const m = row.amount_month === null ? null : -row.amount_month;
   const y = row.amount_ytd === null ? null : -row.amount_ytd;
+  const yb = row.amount_ytd_budget === null ? null : -row.amount_ytd_budget;
 
   const padLeft = `pl-[${row.depth * 16 + 16}px]`;
 
@@ -249,6 +251,7 @@ function TreeRowComp({
       </td>
       <td className={`px-4 py-1.5 text-right tabular ${amountClass(m)}`}>{fmtCurrency(m)}</td>
       <td className={`px-4 py-1.5 text-right tabular ${amountClass(y)}`}>{fmtCurrency(y)}</td>
+      <td className={`px-4 py-1.5 text-right tabular text-fg-muted ${amountClass(yb)}`}>{fmtCurrency(yb)}</td>
     </tr>
   );
 }
@@ -257,6 +260,7 @@ function KpiRow({ kpi, depth, visible }: { kpi: Kpi; depth: number; visible: boo
   if (!visible) return null;
   const m = kpi.amount_month;
   const y = kpi.amount_ytd;
+  const yb = kpi.amount_ytd_budget;
   const isPct = kpi.format === "percent";
   const isTotal = kpi.emphasis === "total";
   const isMetric = kpi.emphasis === "metric";
@@ -277,6 +281,9 @@ function KpiRow({ kpi, depth, visible }: { kpi: Kpi; depth: number; visible: boo
       </td>
       <td className={`px-4 py-1.5 text-right tabular ${!isMetric ? amountClass(y) : ""}`}>
         {isPct ? fmtPercent(y) : fmtCurrency(y)}
+      </td>
+      <td className={`px-4 py-1.5 text-right tabular text-fg-muted ${!isMetric ? amountClass(yb) : ""}`}>
+        {isPct ? fmtPercent(yb) : fmtCurrency(yb)}
       </td>
     </tr>
   );

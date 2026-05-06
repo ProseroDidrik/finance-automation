@@ -46,16 +46,20 @@ CREATE SEQUENCE IF NOT EXISTS seq_fact_journal_sie START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_journal_saft START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_dim_exchange_rate START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_backup_from_mercur START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_fact_personnel START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_fact_supplier_spend START 1;
 
 CREATE TABLE IF NOT EXISTS dim_company (
-    company_id   INTEGER PRIMARY KEY,
-    name         TEXT NOT NULL,
-    country      TEXT NOT NULL,
-    currency     TEXT NOT NULL,
-    orgnr        TEXT,
-    domain       TEXT,
-    kind         TEXT,
-    updated_at   TIMESTAMP NOT NULL
+    company_id        INTEGER PRIMARY KEY,
+    name              TEXT NOT NULL,
+    country           TEXT NOT NULL,
+    currency          TEXT NOT NULL,
+    orgnr             TEXT,
+    domain            TEXT,
+    kind              TEXT,
+    acquisition_year  INTEGER,
+    parent_id         INTEGER,        -- FK dim_company.company_id (konsoliderat moderbolag)
+    updated_at        TIMESTAMP NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS dim_period (
@@ -180,6 +184,70 @@ CREATE TABLE IF NOT EXISTS backup_from_mercur (
 CREATE INDEX IF NOT EXISTS idx_bfm_company_period ON backup_from_mercur(company_id, period);
 CREATE INDEX IF NOT EXISTS idx_bfm_idem           ON backup_from_mercur(company_id, period, source_kind, scenario);
 
+CREATE TABLE IF NOT EXISTS fact_personnel (
+    id                  BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_personnel'),
+    country             TEXT NOT NULL,        -- 'Sweden' | 'Norway' | 'Finland'
+    company_id          INTEGER NOT NULL,     -- FK till dim_company
+    employee_name       TEXT NOT NULL,
+    title               TEXT,
+    birth_date          DATE,
+    employed_from       DATE,
+    employed_to         DATE,                 -- NULL = aktiv
+    termination_reason  TEXT,
+    employment_pct      DOUBLE,               -- 1.0 = heltid
+    productivity        DOUBLE,               -- SE/NO
+    billable_pct        DOUBLE,               -- FI ('Laskutettavaa työtä')
+    gender              TEXT,                 -- 'M' | 'F' (normaliserat)
+    category            TEXT,                 -- 'Direkt' | 'Multi' (SE/NO)
+    salary_local        DOUBLE,               -- FI ('Palkka korjattu'); valuta = dim_company.currency
+    location            TEXT,                 -- NO
+    apprenticeship_end  DATE,                 -- NO
+    pension_apprentice  TEXT,                 -- SE ('Pension/Lärling')
+    snapshot_date       DATE NOT NULL,        -- filens mtime
+    source_file         TEXT NOT NULL,        -- relativ till base_path
+    loaded_at           TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fp_country_company ON fact_personnel(country, company_id);
+CREATE INDEX IF NOT EXISTS idx_fp_company         ON fact_personnel(company_id);
+
+CREATE TABLE IF NOT EXISTS dim_supplier_register (
+    country         TEXT NOT NULL,        -- 'Sweden' | 'Norway' | ...
+    levprefix       TEXT NOT NULL,        -- '<BolagLabel>_<LevNr>_<Namn>' från Excel
+    supplier_name   TEXT,                 -- 'Leverantör' (förenklat namn)
+    kategori        TEXT,                 -- 'Mekanik', 'IT', ... (NULL = okategoriserat)
+    segment         TEXT,                 -- 'Direkt' | 'Indirekt' | 'Interna inköp' (NULL = okategoriserat)
+    source_file     TEXT NOT NULL,
+    loaded_at       TIMESTAMP NOT NULL,
+    PRIMARY KEY (country, levprefix)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dsr_country_supplier ON dim_supplier_register(country, supplier_name);
+CREATE INDEX IF NOT EXISTS idx_dsr_country_kategori ON dim_supplier_register(country, kategori);
+
+CREATE TABLE IF NOT EXISTS fact_supplier_spend (
+    id              BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_supplier_spend'),
+    country         TEXT NOT NULL,        -- 'Sweden' | ...
+    company_id      INTEGER,              -- FK dim_company; NULL om mappning saknas
+    bolag_label     TEXT NOT NULL,        -- råtext från Excel "Bolag"
+    lev_nr          TEXT,                 -- leverantörsnummer i bolagets reskontra (kan saknas)
+    namn            TEXT,                 -- råtext från Excel "Namn"
+    levprefix       TEXT,                 -- joinnyckel mot dim_supplier_register (country, levprefix)
+    supplier_name   TEXT,                 -- snapshot från Excel Data-fliken (förenklat namn)
+    kategori        TEXT,                 -- snapshot från Excel Data-fliken
+    segment         TEXT,                 -- snapshot från Excel Data-fliken
+    year            INTEGER NOT NULL,     -- 2021..2025
+    period_kind     TEXT NOT NULL,        -- 'FULL' | 'H1'
+    amount          DOUBLE NOT NULL,      -- belopp i bolagets lokala valuta
+    currency        TEXT NOT NULL,
+    source_file     TEXT NOT NULL,
+    loaded_at       TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fss_country_year     ON fact_supplier_spend(country, year);
+CREATE INDEX IF NOT EXISTS idx_fss_company          ON fact_supplier_spend(company_id);
+CREATE INDEX IF NOT EXISTS idx_fss_levprefix        ON fact_supplier_spend(country, levprefix);
+
 CREATE TABLE IF NOT EXISTS load_history (
     id                       BIGINT PRIMARY KEY DEFAULT nextval('seq_load_history'),
     company_id               INTEGER,
@@ -204,16 +272,28 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
 
 def _migrate(con: duckdb.DuckDBPyConnection) -> None:
     """Add columns introduced after initial schema. Safe to run repeatedly."""
-    existing = {
+    fb_cols = {
         row[0]
         for row in con.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_name = 'fact_balances'"
         ).fetchall()
     }
-    if "scenario" not in existing:
+    if "scenario" not in fb_cols:
         con.execute("ALTER TABLE fact_balances ADD COLUMN scenario TEXT DEFAULT 'A'")
         con.execute("UPDATE fact_balances SET scenario = 'A' WHERE scenario IS NULL")
+
+    dc_cols = {
+        row[0]
+        for row in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'dim_company'"
+        ).fetchall()
+    }
+    if "acquisition_year" not in dc_cols:
+        con.execute("ALTER TABLE dim_company ADD COLUMN acquisition_year INTEGER")
+    if "parent_id" not in dc_cols:
+        con.execute("ALTER TABLE dim_company ADD COLUMN parent_id INTEGER")
 
 
 def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:
@@ -240,6 +320,8 @@ def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:
             info.get("orgnr") or None,
             info.get("domain") or None,
             info.get("kind") or None,
+            info.get("acquisition_year"),
+            info.get("parent_id"),
             now,
         ))
 
@@ -248,8 +330,9 @@ def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:
         con.execute("DELETE FROM dim_company")
         con.executemany(
             """INSERT INTO dim_company
-               (company_id, name, country, currency, orgnr, domain, kind, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (company_id, name, country, currency, orgnr, domain, kind,
+                acquisition_year, parent_id, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         con.execute("COMMIT")

@@ -153,12 +153,24 @@ def load_dotterbolag_full(path: Path) -> dict[int, dict]:
             bolag_id = int(row[1])
         except (TypeError, ValueError):
             continue
+        # Förvärvsår (col D, index 3) — int eller None
+        try:
+            acq_year = int(row[3]) if len(row) > 3 and row[3] is not None else None
+        except (TypeError, ValueError):
+            acq_year = None
+        # Parent (col G, index 6) — bolagsId till konsoliderat moderbolag
+        try:
+            parent_id = int(row[6]) if len(row) > 6 and row[6] is not None else None
+        except (TypeError, ValueError):
+            parent_id = None
         result[bolag_id] = {
             "name": str(row[4]).strip() if len(row) > 4 and row[4] else "",
             "country": str(row[2]).strip() if len(row) > 2 and row[2] else "",
             "orgnr": str(row[5]).strip() if len(row) > 5 and row[5] else "",
             "kind": str(row[7]).strip() if len(row) > 7 and row[7] else "",
             "domain": str(row[9]).strip() if len(row) > 9 and row[9] else "",
+            "acquisition_year": acq_year,
+            "parent_id": parent_id,
         }
     wb.close()
     return result
