@@ -50,16 +50,23 @@ CREATE SEQUENCE IF NOT EXISTS seq_fact_personnel START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_supplier_spend START 1;
 
 CREATE TABLE IF NOT EXISTS dim_company (
-    company_id        INTEGER PRIMARY KEY,
-    name              TEXT NOT NULL,
-    country           TEXT NOT NULL,
-    currency          TEXT NOT NULL,
-    orgnr             TEXT,
-    domain            TEXT,
-    kind              TEXT,
-    acquisition_year  INTEGER,
-    parent_id         INTEGER,        -- FK dim_company.company_id (konsoliderat moderbolag)
-    updated_at        TIMESTAMP NOT NULL
+    company_id           INTEGER PRIMARY KEY,
+    name                 TEXT NOT NULL,
+    country              TEXT NOT NULL,
+    currency             TEXT NOT NULL,
+    orgnr                TEXT,
+    domain               TEXT,
+    kind                 TEXT,
+    acquisition_year     INTEGER,
+    parent_id            INTEGER,        -- FK dim_company.company_id (konsoliderat moderbolag)
+    -- Förvärvsmetadata (Dotterbolagslistan kol K–P)
+    closing_date         DATE,           -- kol K Closing: datum för köp
+    investment_currency  TEXT,           -- kol L Investment: valuta för EBITDA/Sales LTM ('SEK'/'NOK'/'DKK'/'EUR')
+    ev_sek_m             DOUBLE,         -- kol M EV (SEKm): bolagsvärde vid köp (header säger SEKm men värdena är råa belopp)
+    ev_ebitda_ltm        DOUBLE,         -- kol N EV/EBITDA (LTM): värderingsmultipel mot LTM EBITDA
+    ebitda_ltm           DOUBLE,         -- kol O EBITDA (LTM): LTM EBITDA vid köp (lokal valuta)
+    sales_ltm            DOUBLE,         -- kol P Sales (LTM): LTM Sales vid köp (lokal valuta)
+    updated_at           TIMESTAMP NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS dim_period (
@@ -294,6 +301,18 @@ def _migrate(con: duckdb.DuckDBPyConnection) -> None:
         con.execute("ALTER TABLE dim_company ADD COLUMN acquisition_year INTEGER")
     if "parent_id" not in dc_cols:
         con.execute("ALTER TABLE dim_company ADD COLUMN parent_id INTEGER")
+    if "closing_date" not in dc_cols:
+        con.execute("ALTER TABLE dim_company ADD COLUMN closing_date DATE")
+    if "investment_currency" not in dc_cols:
+        con.execute("ALTER TABLE dim_company ADD COLUMN investment_currency TEXT")
+    if "ev_sek_m" not in dc_cols:
+        con.execute("ALTER TABLE dim_company ADD COLUMN ev_sek_m DOUBLE")
+    if "ev_ebitda_ltm" not in dc_cols:
+        con.execute("ALTER TABLE dim_company ADD COLUMN ev_ebitda_ltm DOUBLE")
+    if "ebitda_ltm" not in dc_cols:
+        con.execute("ALTER TABLE dim_company ADD COLUMN ebitda_ltm DOUBLE")
+    if "sales_ltm" not in dc_cols:
+        con.execute("ALTER TABLE dim_company ADD COLUMN sales_ltm DOUBLE")
 
 
 def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:
@@ -322,6 +341,12 @@ def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:
             info.get("kind") or None,
             info.get("acquisition_year"),
             info.get("parent_id"),
+            info.get("closing_date"),
+            info.get("investment_currency"),
+            info.get("ev_sek_m"),
+            info.get("ev_ebitda_ltm"),
+            info.get("ebitda_ltm"),
+            info.get("sales_ltm"),
             now,
         ))
 
@@ -331,8 +356,11 @@ def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:
         con.executemany(
             """INSERT INTO dim_company
                (company_id, name, country, currency, orgnr, domain, kind,
-                acquisition_year, parent_id, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                acquisition_year, parent_id,
+                closing_date, investment_currency,
+                ev_sek_m, ev_ebitda_ltm, ebitda_ltm, sales_ltm,
+                updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         con.execute("COMMIT")

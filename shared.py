@@ -138,11 +138,39 @@ def load_dotterbolag(path: Path) -> dict[int, str]:
 
 
 def load_dotterbolag_full(path: Path) -> dict[int, dict]:
-    """bolagsid → {name, country, orgnr, domain, kind} from Dotterbolagslistan.
+    """bolagsid → {name, country, orgnr, domain, kind, ...} from Dotterbolagslistan.
 
     Includes 'consolidated' rows (caller filters if needed). Used by the GUI
     where Country (col C) is needed in addition to friendly name.
+
+    Acquisition-fields (cols K–P) are returned as None when missing/0:
+      closing_date (date), investment_currency (str),
+      ev_sek_m, ev_ebitda_ltm, ebitda_ltm, sales_ltm (float).
     """
+    from datetime import date, datetime as _dt
+
+    def _to_float(v):
+        if v is None or v == "":
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if f != 0 else None
+
+    def _to_date(v):
+        if v is None or v == "":
+            return None
+        if isinstance(v, _dt):
+            return v.date()
+        if isinstance(v, date):
+            return v
+        # Fallback: ISO-sträng
+        try:
+            return _dt.fromisoformat(str(v).strip()[:10]).date()
+        except (TypeError, ValueError):
+            return None
+
     wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
     ws = wb["Data For Company Find"]
     result: dict[int, dict] = {}
@@ -163,6 +191,8 @@ def load_dotterbolag_full(path: Path) -> dict[int, dict]:
             parent_id = int(row[6]) if len(row) > 6 and row[6] is not None else None
         except (TypeError, ValueError):
             parent_id = None
+        inv_cur_raw = row[11] if len(row) > 11 else None
+        inv_cur = str(inv_cur_raw).strip().upper() if inv_cur_raw else None
         result[bolag_id] = {
             "name": str(row[4]).strip() if len(row) > 4 and row[4] else "",
             "country": str(row[2]).strip() if len(row) > 2 and row[2] else "",
@@ -171,6 +201,13 @@ def load_dotterbolag_full(path: Path) -> dict[int, dict]:
             "domain": str(row[9]).strip() if len(row) > 9 and row[9] else "",
             "acquisition_year": acq_year,
             "parent_id": parent_id,
+            # Förvärvsfält (cols K–P)
+            "closing_date": _to_date(row[10]) if len(row) > 10 else None,
+            "investment_currency": inv_cur or None,
+            "ev_sek_m": _to_float(row[12]) if len(row) > 12 else None,
+            "ev_ebitda_ltm": _to_float(row[13]) if len(row) > 13 else None,
+            "ebitda_ltm": _to_float(row[14]) if len(row) > 14 else None,
+            "sales_ltm": _to_float(row[15]) if len(row) > 15 else None,
         }
     wb.close()
     return result

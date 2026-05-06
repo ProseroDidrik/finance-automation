@@ -59,9 +59,19 @@ file-design; INL är månadsbalans (varje fil = en månads bevegelser).
 | `orgnr` | TEXT | Org/CVR/HR-nummer (kol F) |
 | `domain` | TEXT | Mejl-domän för matchning (kol J) |
 | `kind` | TEXT | `consolidated`-rader skippas av process-skripten |
+| `acquisition_year` | INT | Förvärvsår (kol D) |
+| `parent_id` | INT | FK→`dim_company.company_id`. Konsoliderat moderbolag (kol G) |
+| `closing_date` | DATE | Datum för köp (kol K Closing) |
+| `investment_currency` | TEXT | Valuta för LTM-siffrorna (kol L Investment). I praktiken samma som `currency` idag |
+| `ev_sek_m` | DOUBLE | Enterprise Value vid köp (kol M EV (SEKm)). OBS: header säger SEKm men värdena är råa belopp i `investment_currency` |
+| `ev_ebitda_ltm` | DOUBLE | Värderingsmultipel mot LTM EBITDA (kol N) |
+| `ebitda_ltm` | DOUBLE | LTM EBITDA vid köp (kol O), i `investment_currency` |
+| `sales_ltm` | DOUBLE | LTM Sales vid köp (kol P), i `investment_currency` |
 | `updated_at` | TIMESTAMP | Senaste sync från Excel |
 
-Synkas via `db.sync_dim_company()` (DELETE+INSERT av allt).
+Synkas via `db.sync_dim_company()` (DELETE+INSERT av allt). Förvärvsfälten
+(`closing_date`, `investment_currency`, `ev_*`, `ebitda_ltm`, `sales_ltm`) är
+NULL när cellen är tom eller 0 i Excel — täckning är därmed bara ~110/147 bolag.
 
 ### `dim_period` — kalenderdimension
 | Kolumn | Typ | Notering |
