@@ -215,13 +215,11 @@ def main() -> None:
     try:
         if not args.skip_init:
             print("Initierar schema i Postgres...")
-            with db.Conn(pg) as conn:
-                pass  # no-op
-            # init_schema förväntar sig en db.Conn-wrapper, skapa en utan att stänga pg:
+            # Wrappa pg i en Conn UTAN context-manager — vi vill inte stänga
+            # den underliggande connection:en mellan steg. init_schema commit:ar
+            # internt så pg-handtaget är konsistent när vi går vidare.
             wrapper = db.Conn(pg)
             db.init_schema(wrapper)
-            # init_schema commit:ar internt; pg-objektet förblir öppet tack vare
-            # att vi inte använder context-manager här.
 
         if args.truncate:
             print("TRUNCATE alla migrationstabeller...")

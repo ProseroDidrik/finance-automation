@@ -1,9 +1,9 @@
 -- Pivot: per supplier_name × år, summa amount.
 -- Parametrar (i ordning):
---   %s  country (TEXT)
---   %s  company_ids (INTEGER[]) — NULL = alla
---   %s  segments (TEXT[]) — NULL = alla, även NULL-segment
---   %s  include_uncategorized (BOOLEAN) — TRUE = inkludera rader utan supplier_name
+--   1: country (TEXT)
+--   2: company_ids (INTEGER[]) — NULL = alla
+--   3: segments (TEXT[]) — NULL = alla, även NULL-segment
+--   4: include_uncategorized (BOOLEAN) — TRUE = inkludera rader utan supplier_name
 WITH filtered AS (
     SELECT *
     FROM fact_supplier_spend

@@ -3,7 +3,7 @@
 -- Avsedd för pivot-vy: rader = konto-tree, kolumner = period-buckets, en cell-summa
 -- per (bolag, account_id, bucket_key).
 --
--- {bucket_values} ersätts av Python till en VALUES-lista (%s,%s,%s per bucket).
+-- {bucket_values} ersätts av Python till en VALUES-lista (3 placeholder per bucket).
 --
 -- Bind-parametrar (i ordning, EFTER bucket_values har fyllts in):
 --   - alla bucket-värden (3 per bucket: key, start_period, end_period)

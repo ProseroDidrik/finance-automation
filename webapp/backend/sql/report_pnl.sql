@@ -13,7 +13,7 @@
 -- räkenskapsår som inte börjar i januari (t.ex. sept-aug) ger fel YTD-värden.
 -- Alla nuvarande data följer kalenderår; dokumenterat för framtida laddningar.
 --
--- Parametrar (%s-bind i ordning):
+-- Parametrar (positionsbundna i ordning):
 --   1-3: company_id, year_start, period   — best_source
 --   4:   source_kind override (NULL = auto via prioritet)
 --   5-7: company_id, year_start, period   — raw_balances
