@@ -1,0 +1,42 @@
+# Stora / känsliga / irrelevanta katalogerVCS, IDE, virtuellenv
+.git
+.github
+.venv
+.vscode
+.claude
+.idea
+.mcp.json
+.mcp_token
+
+# Python-cache
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+
+# Lokala data + master + scratch — webapp läser allt från Postgres / Blob
+_params
+_inbox
+_uploads
+_logs
+data
+output
+extracted
+Referens
+counterparty_check_*.csv
+
+# Frontend build-artefakter och deps — de byggs i stage 1
+webapp/frontend/node_modules
+webapp/frontend/dist
+webapp/frontend/.vite
+
+# Tooling som inte behövs i container
+gui.py
+gui_*.py
+mcp_server.py
+start-mcp.ps1
+*.log
+*.tmp
+
+# Tester/scripts som inte ska köras i web-containern
+scripts/migrate_duckdb_to_postgres.py

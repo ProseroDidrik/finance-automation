@@ -133,6 +133,7 @@ def log_event(status: str, label, msg: str = "") -> None:
 
 def load_dotterbolag(path: Path) -> dict[int, str]:
     """bolagsid → friendly name from Dotterbolagslistan, skips 'consolidated' rows."""
+    path = _resolve_master_path(path)
     wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
     ws = wb["Data For Company Find"]
     result: dict[int, str] = {}
@@ -184,6 +185,7 @@ def load_dotterbolag_full(path: Path) -> dict[int, dict]:
         except (TypeError, ValueError):
             return None
 
+    path = _resolve_master_path(path)
     wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
     ws = wb["Data For Company Find"]
     result: dict[int, dict] = {}
@@ -326,3 +328,69 @@ def save_inl_xlsx(is_rows: list, bs_rows: list, output_path: Path) -> None:
     df = pd.DataFrame(records)
     with pd.ExcelWriter(str(output_path), engine="openpyxl") as writer:
         df.to_excel(writer, index=False, header=False, sheet_name="Sheet1")
+
+
+# ----- Azure Blob fallback för Dotterbolagslistan -----------------------------
+#
+# I molnet (App Service / Container Job) finns inte _params/ på filsystemet —
+# Dropbox-mappen ligger på laptopen. Master-filen pushas separat till Blob via
+# scripts/push_master.py. När shared.load_dotterbolag*-funktionerna körs i
+# molnet hämtas filen från Blob:en istället. Lokalt (där _params/-filen finns)
+# används den direkt och Blob rörs aldrig.
+#
+# Konfiguration:
+#   MASTER_BLOB_URL  — full URL till blobben, t.ex.
+#                      https://acct.blob.core.windows.net/master/Dotterbolagslista.xlsx
+#                      Auth: DefaultAzureCredential (Managed Identity i App
+#                      Service, az-cli-token lokalt).
+
+import os as _os
+import tempfile as _tempfile
+
+_MASTER_CACHE: Path | None = None  # download-cache för processens livstid
+
+
+def _resolve_master_path(local_path: Path) -> Path:
+    """Returnera en användbar fil-path till Dotterbolagslistan.
+
+    Prio:
+    1. Om local_path finns (laptop / volume-mountad container) → använd den.
+    2. Annars, om MASTER_BLOB_URL är satt → ladda ner till temp och cache:a
+       per process. Spara i en modul-global så upprepade anrop inom samma
+       process inte triggar nya downloads.
+    3. Annars → höj samma FileNotFoundError som tidigare.
+    """
+    local_path = Path(local_path)
+    if local_path.exists():
+        return local_path
+
+    global _MASTER_CACHE
+    if _MASTER_CACHE is not None and _MASTER_CACHE.exists():
+        return _MASTER_CACHE
+
+    blob_url = _os.environ.get("MASTER_BLOB_URL")
+    if not blob_url:
+        raise FileNotFoundError(
+            f"Master-filen saknas lokalt ({local_path}) och MASTER_BLOB_URL "
+            "är inte satt — kan inte falla tillbaka till Azure Blob."
+        )
+
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.storage.blob import BlobClient
+    except ImportError as e:
+        raise RuntimeError(
+            "azure-identity / azure-storage-blob saknas — pip install dem. "
+            f"Underliggande fel: {e}"
+        ) from e
+
+    cred = DefaultAzureCredential()
+    client = BlobClient.from_blob_url(blob_url, credential=cred)
+    tmp_dir = Path(_tempfile.gettempdir()) / "_master_cache"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = tmp_dir / local_path.name
+    with open(cache_path, "wb") as f:
+        downloader = client.download_blob()
+        downloader.readinto(f)
+    _MASTER_CACHE = cache_path
+    return cache_path

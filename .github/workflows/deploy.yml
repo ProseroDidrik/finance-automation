@@ -1,0 +1,104 @@
+name: Build & deploy webapp
+
+# Bygger en container, pushar till Azure Container Registry, och säger åt
+# App Service for Containers att dra om den. Authentication mot Azure sker
+# via Workload Identity Federation (OIDC) — inga client-secrets i GitHub.
+#
+# Engångs-setup (Azure-sidan):
+#   1. Skapa App Registration + Service Principal med rättighet att
+#      pusha till ACR (AcrPush) och deploy:a till App Service
+#      (Website Contributor).
+#   2. Konfigurera federated credential på App Registration:
+#        subject = repo:<org>/<repo>:ref:refs/heads/main
+#        issuer  = https://token.actions.githubusercontent.com
+#   3. Lägg secrets i repo: AZURE_CLIENT_ID, AZURE_TENANT_ID,
+#      AZURE_SUBSCRIPTION_ID.
+#   4. Lägg vars i repo: ACR_NAME, APP_NAME, RESOURCE_GROUP.
+#   5. App Service "Configuration" → Application settings:
+#        WEBSITES_PORT     = 8080  (matchar EXPOSE i Dockerfile)
+#        DATABASE_URL      = @Microsoft.KeyVault(SecretUri=https://<kv>.vault.azure.net/secrets/database-url/)
+#        MAESTRO_GROUP_ID  = <Entra-grupp-OID>
+#        MASTER_BLOB_URL   = https://<acct>.blob.core.windows.net/master/Dotterbolagslista.xlsx
+#      App Service Identity måste ha "Key Vault Secrets User" på vaulten
+#      och "AcrPull" på registret.
+#   6. Easy Auth: Authentication → Add identity provider → Microsoft.
+#      Action when not authenticated = Log in with Microsoft.
+#      App Registration → Token configuration → Add groups claim
+#      (security groups) så ``groups`` finns i X-MS-CLIENT-PRINCIPAL.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "webapp/**"
+      - "db.py"
+      - "shared.py"
+      - "requirements.txt"
+      - ".dockerignore"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # för OIDC-token mot Azure
+  contents: read
+
+concurrency:
+  group: deploy-webapp
+  cancel-in-progress: false  # låt pågående deploy slutföras innan nästa startar
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login till Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login till ACR
+        run: az acr login --name "${{ vars.ACR_NAME }}"
+
+      - name: Build & push image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ vars.ACR_NAME }}.azurecr.io/finance-webapp:${IMAGE_TAG}"
+          IMAGE_LATEST="${{ vars.ACR_NAME }}.azurecr.io/finance-webapp:latest"
+          docker build -f webapp/Dockerfile -t "$IMAGE" -t "$IMAGE_LATEST" .
+          docker push "$IMAGE"
+          docker push "$IMAGE_LATEST"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Peka App Service mot nya image-tagen
+        run: |
+          set -euo pipefail
+          az webapp config container set \
+            --name "${{ vars.APP_NAME }}" \
+            --resource-group "${{ vars.RESOURCE_GROUP }}" \
+            --container-image-name "${IMAGE}"
+          # config-set räcker oftast; en explicit restart säkerställer att
+          # SHA-taggen plockas även om App Service annars hade cache:at "latest".
+          az webapp restart \
+            --name "${{ vars.APP_NAME }}" \
+            --resource-group "${{ vars.RESOURCE_GROUP }}"
+
+      - name: Vänta på health-probe
+        run: |
+          set -euo pipefail
+          URL="https://${{ vars.APP_NAME }}.azurewebsites.net/api/health"
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            sleep 10
+            code=$(curl -sk -o /dev/null -w "%{http_code}" "$URL" || true)
+            echo "[$i] $URL -> $code"
+            if [ "$code" = "200" ]; then
+              echo "Health-probe OK efter ${i} försök."
+              exit 0
+            fi
+          done
+          echo "Health-probe svarade aldrig 200 — kolla App Service-loggarna."
+          exit 1

@@ -1,0 +1,3 @@
+# Default ägare för allt i repot. CODEOWNERS triggar review-requests
+# automatiskt på pull requests.
+*       @ProseroDidrik

@@ -41,6 +41,7 @@ from webapp.backend.period_utils import (  # noqa: E402
     prev_period, year_start, period_buckets, ltm_bucket, ytd_bucket, Bucket,
 )
 from webapp.backend import counterparty_data, counterparty_runner  # noqa: E402
+from webapp.backend.auth import install_auth_middleware  # noqa: E402
 
 SQL_PATH = REPO / "webapp" / "backend" / "sql" / "report_pnl.sql"
 SQL_COVERAGE = REPO / "webapp" / "backend" / "sql" / "compare_coverage.sql"
@@ -83,6 +84,10 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+# Easy Auth-gate: kollar Maestro-grupp på alla /api/*-rutter (utom /api/health).
+# Läggs efter CORS så CORS-preflight (OPTIONS) kortsluts innan auth ser dem.
+install_auth_middleware(app)
 
 
 # ----- Helpers ----------------------------------------------------------------

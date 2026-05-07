@@ -50,11 +50,33 @@ export interface PnlReport {
   kpis: Kpi[];
 }
 
-async function getJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+// Easy Auth signalerar utgången session med 401. Tjänsten har en inbyggd
+// /.auth/login/aad-endpoint som triggar Entra ID-redirect och därefter
+// återgår till post_login_redirect_uri. Vi skickar med location.href så
+// användaren landar tillbaka på samma sida efter inloggning.
+function redirectToLogin(): void {
+  const here = window.location.pathname + window.location.search;
+  const target = `/.auth/login/aad?post_login_redirect_uri=${encodeURIComponent(here)}`;
+  window.location.assign(target);
+}
+
+async function checkAuth(res: Response): Promise<void> {
+  // 401 = sessionen utgången / Easy Auth har släppt cookien. Skicka tillbaka
+  // till login. 403 = inloggad men saknar Maestro-grupp — visa felet i UI:t.
+  if (res.status === 401) {
+    redirectToLogin();
+    // Throwa så anropare ser fel medan redirect:en sker (location.assign är
+    // asynkron i praktiken).
+    throw new Error("Sessionen gick ut — omdirigerar till login.");
+  }
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   }
+}
+
+async function getJSON<T>(url: string): Promise<T> {
+  const res = await fetch(url, { credentials: "include" });
+  await checkAuth(res);
   return res.json();
 }
 
