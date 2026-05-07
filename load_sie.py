@@ -35,7 +35,7 @@ from pathlib import Path
 import duckdb
 
 import db
-from shared import begin_run, load_config, log, prev_month_period
+from shared import begin_run, is_override_for, load_config, log, prev_month_period
 
 SOURCE_KIND = "SIE"
 SOURCE_KIND_PSALDO = "SIE_PSALDO"
@@ -212,6 +212,21 @@ def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
     return rows, periods
 
 
+def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
+    """Räkenskapsårets (start_period, end_period) som 'YYYYMM'.
+
+    Härleds primärt från #RAR 0 (start- och slutdatum YYYYMMDD). Det är det enda
+    rätta sättet för bolag med brutet räkenskapsår. Fallback: kalenderår från
+    period:t självt (för filer som saknar #RAR).
+    """
+    rar_start = parsed.get("rar_start")
+    rar_end = parsed.get("rar_end")
+    if rar_start and rar_end and len(rar_start) == 8 and len(rar_end) == 8:
+        return rar_start[:6], rar_end[:6]
+    year = period[:4]
+    return f"{year}01", f"{year}12"
+
+
 def derive_period(parsed: dict) -> str | None:
     """Endast #PSALDO är ett tillförlitligt 'data-through'-signal i SIE.
 
@@ -244,7 +259,8 @@ def build_orgnr_lookup(con: duckdb.DuckDBPyConnection) -> dict[str, tuple[int, s
 
 
 def load_file(con, path: Path, base_path: Path, period_override: str | None,
-              orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False) -> str:
+              orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False,
+              override: list[int] | None = None) -> str:
     """Load one SIE file. Returns ok|warn|skip|error."""
     try:
         text = read_text_with_fallback(path)
@@ -323,6 +339,24 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         log("WARN", company_id, f"Inga UB/RES/PSALDO-rader i {path.name}")
         return "warn"
 
+    # Konfliktkoll: finns redan SIE/SIE_PSALDO för perioder >= filens period inom FY?
+    # Bredare än bara "samma period" — fångar även scenario där en april-fil
+    # har laddats tidigare och nu försöker man ladda en mars-fil ovanpå.
+    fy_start, fy_end = derive_fy_range(parsed, period)
+    has_override = is_override_for(override, company_id)
+    existing = con.execute(
+        """SELECT COUNT(*) FROM fact_balances
+           WHERE company_id = ? AND source_kind IN (?, ?)
+             AND period >= ? AND period BETWEEN ? AND ?""",
+        [company_id, SOURCE_KIND, SOURCE_KIND_PSALDO, period, fy_start, fy_end],
+    ).fetchone()[0]
+    if existing > 0 and not has_override:
+        log("SKIP", company_id,
+            f"{path.name}  SIE/SIE_PSALDO redan inläst för period >= {period} "
+            f"inom FY {fy_start}-{fy_end} ({existing} rader). "
+            "Kör med --override för att skriva över.")
+        return "skip"
+
     total_ub = sum(r[2] for r in sie_rows if r[3] == "BS")
     total_res = sum(r[2] for r in sie_rows if r[3] == "IS")
     total = total_ub + total_res
@@ -341,19 +375,41 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     if dry_run:
         journal_msg = (f" JOURNAL={len(journal_rows)} ({len(journal_periods)} mån)"
                        if include_journal else "")
+        ovr = f"  OVERRIDE (raderar {existing} rader inom FY)" if (existing > 0 and has_override) else ""
         log("OK", company_id,
-            f"[DRY] {path.name}  period={period} "
+            f"[DRY] {path.name}  period={period} FY={fy_start}-{fy_end} "
             f"UB={len([r for r in sie_rows if r[3]=='BS'])} "
             f"RES={len([r for r in sie_rows if r[3]=='IS'])} "
             f"PSALDO={len(psaldo_rows)} ({len(psaldo_periods)} mån)"
             f"{journal_msg} "
-            f"sum_ub={total_ub:.2f} sum_res={total_res:.2f} sum_tot={total:.2f}")
+            f"sum_ub={total_ub:.2f} sum_res={total_res:.2f} sum_tot={total:.2f}{ovr}")
         return "ok"
+
+    if existing > 0 and has_override:
+        log("INFO", company_id,
+            f"OVERRIDE: skriver över {existing} SIE/SIE_PSALDO-rader för "
+            f"period >= {period} inom FY {fy_start}-{fy_end}")
 
     db.sync_dim_period(con, [period] + psaldo_periods + sorted(journal_periods))
 
     con.execute("BEGIN")
     try:
+        # Override: rensa SIE/SIE_PSALDO och journal för perioder *efter* filens
+        # period inom FY (filen är "sanningen" för FY t.o.m. dess sista månad).
+        # Periodens egna SIE/SIE_PSALDO/journal rensas av efterföljande
+        # period-specifika DELETE nedan.
+        if has_override and existing > 0:
+            con.execute(
+                """DELETE FROM fact_balances
+                   WHERE company_id = ? AND source_kind IN (?, ?)
+                     AND period > ? AND period BETWEEN ? AND ?""",
+                [company_id, SOURCE_KIND, SOURCE_KIND_PSALDO, period, fy_start, fy_end],
+            )
+            con.execute(
+                """DELETE FROM fact_journal_sie
+                   WHERE company_id = ? AND period > ? AND period BETWEEN ? AND ?""",
+                [company_id, period, fy_start, fy_end],
+            )
         # SIE (UB/RES): senaste laddningen vinner per (bolag, period).
         con.execute(
             """DELETE FROM fact_balances
@@ -464,6 +520,9 @@ def main() -> None:
     parser.add_argument("--include-journal", action="store_true",
                         help="Ladda även #VER/#TRANS till fact_journal_sie "
                              "(opt-in, kan vara tungt för stora filer)")
+    parser.add_argument("--override", nargs="*", type=int, default=None, metavar="ID",
+                        help="Skriv över befintlig SIE/SIE_PSALDO inom FY. "
+                             "--override = global; --override 134 196 = bara dessa bolag.")
     args = parser.parse_args()
 
     period_for_log = args.period or prev_month_period()
@@ -496,7 +555,8 @@ def main() -> None:
         for f in files:
             status = load_file(con, f, base_path, args.period, orgnr_lookup,
                                dry_run=args.dry_run,
-                               include_journal=args.include_journal)
+                               include_journal=args.include_journal,
+                               override=args.override)
             counts[status] = counts.get(status, 0) + 1
     finally:
         con.close()

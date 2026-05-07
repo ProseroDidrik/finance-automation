@@ -19,6 +19,21 @@ _DATA_DIR = _REPO_ROOT / "data"
 DB_PATH = _DATA_DIR / "finance.duckdb"
 DOTTERBOLAG_PATH = _REPO_ROOT / "_params" / "Dotterbolagslista.xlsx"
 
+# IMP-lagret: alla auto-import-källor som tillsammans utgör "primär källfil-import".
+# Override och delete jobbar mot detta lager (lager-isolering: rör aldrig MAN/IMP_ADJ).
+# Per land mappar IMP-koncept till olika source_kind-värden:
+IMP_KINDS_BY_COUNTRY = {
+    "Sweden":  ("SIE", "SIE_PSALDO"),
+    "CA":      ("SIE", "SIE_PSALDO"),
+    "Norway":  ("SAFT",),
+    "Finland": ("IMP",),
+    "Denmark": ("IMP",),
+    "Germany": ("IMP",),
+    "CENTR":   ("IMP",),
+}
+IMP_KINDS = ("IMP", "SIE", "SIE_PSALDO", "SAFT")
+
+
 COUNTRY_CURRENCY = {
     "Sweden": "SEK",
     "Norway": "NOK",
@@ -88,7 +103,7 @@ CREATE TABLE IF NOT EXISTS fact_balances (
     amount          DOUBLE NOT NULL,
     currency        TEXT NOT NULL,
     statement_type  TEXT,                  -- 'IS' | 'BS' | NULL
-    source_kind     TEXT NOT NULL,         -- 'INL' | 'SIE' | 'SAFT' | 'MAN' | 'IMP' | 'IMP_ADJ' | 'IB'
+    source_kind     TEXT NOT NULL,         -- 'IMP' | 'SIE' | 'SIE_PSALDO' | 'SAFT' | 'MAN' | 'IMP_ADJ' | 'IB'
     source_file     TEXT NOT NULL,         -- relativ till base_path
     row_index       INTEGER,
     scenario        TEXT NOT NULL DEFAULT 'A',  -- 'A' = Actuals | 'B' = Budget
@@ -279,6 +294,12 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
 
 def _migrate(con: duckdb.DuckDBPyConnection) -> None:
     """Add columns introduced after initial schema. Safe to run repeatedly."""
+    # source_kind 'INL' (FI/DK/DE Excel-import) bytte namn till 'IMP' eftersom
+    # det konceptuellt är samma lager som Mercur-historikens IMP. Idempotent —
+    # gör inget när det inte finns några INL-rader kvar.
+    con.execute("UPDATE fact_balances SET source_kind = 'IMP' WHERE source_kind = 'INL'")
+    con.execute("UPDATE load_history  SET source_kind = 'IMP' WHERE source_kind = 'INL'")
+
     fb_cols = {
         row[0]
         for row in con.execute(

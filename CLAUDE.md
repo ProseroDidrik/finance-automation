@@ -50,6 +50,31 @@ py process_germany.py                 # all companies
 py process_germany.py 231 245         # specific companies
 py process_germany.py --dry-run
 py process_germany.py --period 202604
+
+# Step 3: ladda till DuckDB (fact_balances). source_kind = 'IMP' (FI/DK/DE),
+# 'SIE'+'SIE_PSALDO' (SE), 'SAFT' (NO). Konfliktkoll: skip om data redan finns
+# för (bolag, period[, FY]); --override (global eller per bolag) skriver över
+# och raderar senare-månader inom FY för SE/NO. Lager-isolering: rör aldrig
+# MAN/IMP_ADJ.
+py load_inl.py  --period 202604                       # FI/DK/DE Excel
+py load_inl.py  --period 202604 --override            # global override
+py load_inl.py  --period 202604 --override 134 196    # bara dessa bolag
+
+py load_sie.py  --period 202604                       # SE (auto-period från #PSALDO)
+py load_sie.py  --period 202604 --override 32         # rulla över bolag 32
+py load_sie.py  --include-journal                     # inkl. #VER/#TRANS
+
+py load_saft.py --period 202604                       # NO (auto-period från header)
+py load_saft.py --period 202604 --override
+py load_saft.py --include-journal                     # inkl. GeneralLedgerEntries
+
+# Radera utfall — --source_kind alltid krav (lager-isolering).
+# IMP på SE/NO → hela FY (SIE+SIE_PSALDO+journal eller SAFT+journal).
+# IMP på FI/DK/DE → bara den månaden. IMP_ADJ/MAN → alltid bara den månaden.
+py delete_db.py --period 202604 --source_kind IMP --dry-run
+py delete_db.py --period 202604 --source_kind IMP --company 134 196
+py delete_db.py --period 202604 --source_kind IMP --country Sweden
+py delete_db.py --period 202604 --source_kind MAN --company 134
 ```
 
 Use `py` (not `python`) on this Windows machine.

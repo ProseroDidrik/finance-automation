@@ -25,7 +25,7 @@ from pathlib import Path
 import duckdb
 
 import db
-from shared import begin_run, load_config, log, prev_month_period
+from shared import begin_run, is_override_for, load_config, log, prev_month_period
 
 NS = "urn:StandardAuditFile-Taxation-Financial:NO"
 SOURCE_KIND = "SAFT"
@@ -187,6 +187,27 @@ def iter_saft_journal(path: Path):
         return
 
 
+def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
+    """Räkenskapsårets (start_period, end_period) som 'YYYYMM'.
+
+    Härleds från SelectionCriteria.PeriodStartYear/PeriodEndYear i headern.
+    Fallback: kalenderår från period:t självt.
+    """
+    sy = parsed.get("period_start_year")
+    sm = parsed.get("period_start_month")
+    ey = parsed.get("period_end_year")
+    em = parsed.get("period_end_month")
+    try:
+        if sy and sm and ey and em:
+            start = f"{int(sy):04d}{int(sm):02d}"
+            end = f"{int(ey):04d}{int(em):02d}"
+            return start, end
+    except ValueError:
+        pass
+    year = period[:4]
+    return f"{year}01", f"{year}12"
+
+
 def derive_period(parsed: dict, override: str | None) -> str | None:
     """YYYYMM från SelectionCriteria.PeriodEndYear + PeriodEnd, eller override."""
     if override:
@@ -216,7 +237,8 @@ def build_orgnr_lookup(con: duckdb.DuckDBPyConnection) -> dict[str, tuple[int, s
 
 
 def load_file(con, path: Path, base_path: Path, period_override: str | None,
-              orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False) -> str:
+              orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False,
+              override: list[int] | None = None) -> str:
     try:
         parsed = parse_saft(path)
     except ET.ParseError as e:
@@ -256,6 +278,22 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         log("WARN", company_id, f"Inga Account-rader i {path.name}")
         return "warn"
 
+    # Konfliktkoll: finns redan SAFT för perioder >= filens period inom FY?
+    fy_start, fy_end = derive_fy_range(parsed, period)
+    has_override = is_override_for(override, company_id)
+    existing = con.execute(
+        """SELECT COUNT(*) FROM fact_balances
+           WHERE company_id = ? AND source_kind = ?
+             AND period >= ? AND period BETWEEN ? AND ?""",
+        [company_id, SOURCE_KIND, period, fy_start, fy_end],
+    ).fetchone()[0]
+    if existing > 0 and not has_override:
+        log("SKIP", company_id,
+            f"{path.name}  SAFT redan inläst för period >= {period} "
+            f"inom FY {fy_start}-{fy_end} ({existing} rader). "
+            "Kör med --override för att skriva över.")
+        return "skip"
+
     currency = parsed.get("currency") or "NOK"
     total_bs = sum(r[2] for r in rows if r[3] == "BS")
     total_is = sum(r[2] for r in rows if r[3] == "IS")
@@ -274,16 +312,40 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                 journal_msg = f"  JOURNAL≈{jcount}"
             except Exception as e:
                 journal_msg = f"  JOURNAL=läsfel ({e})"
+        ovr = f"  OVERRIDE (raderar {existing} rader inom FY)" if (existing > 0 and has_override) else ""
         log("OK", company_id,
-            f"[DRY] {path.name}  period={period} BS={len([r for r in rows if r[3]=='BS'])} "
+            f"[DRY] {path.name}  period={period} FY={fy_start}-{fy_end} "
+            f"BS={len([r for r in rows if r[3]=='BS'])} "
             f"IS={len([r for r in rows if r[3]=='IS'])} "
-            f"sum_bs={total_bs:.2f} sum_is={total_is:.2f} sum_tot={total:.2f}{journal_msg}")
+            f"sum_bs={total_bs:.2f} sum_is={total_is:.2f} sum_tot={total:.2f}{journal_msg}{ovr}")
         return "ok"
+
+    if existing > 0 and has_override:
+        log("INFO", company_id,
+            f"OVERRIDE: skriver över {existing} SAFT-rader för "
+            f"period >= {period} inom FY {fy_start}-{fy_end}")
 
     db.sync_dim_period(con, [period])
 
     con.execute("BEGIN")
     try:
+        # Override: rensa SAFT (period > filens period inom FY — egna period
+        # rensas av period-DELETE nedan) och journal (HELA FY — normal journal-
+        # DELETE matchar bara samma source_file, så vid override måste vi rensa
+        # alla källfilers journal för FY:t. Den nya filens journal-perioder
+        # återinfogas direkt efter).
+        if has_override and existing > 0:
+            con.execute(
+                """DELETE FROM fact_balances
+                   WHERE company_id = ? AND source_kind = ?
+                     AND period > ? AND period BETWEEN ? AND ?""",
+                [company_id, SOURCE_KIND, period, fy_start, fy_end],
+            )
+            con.execute(
+                """DELETE FROM fact_journal_saft
+                   WHERE company_id = ? AND period BETWEEN ? AND ?""",
+                [company_id, fy_start, fy_end],
+            )
         con.execute(
             """DELETE FROM fact_balances
                WHERE company_id = ? AND period = ? AND source_kind = ?""",
@@ -390,6 +452,9 @@ def main() -> None:
     parser.add_argument("--include-journal", action="store_true",
                         help="Ladda även GeneralLedgerEntries till "
                              "fact_journal_saft (opt-in; SAF-T-filer är ofta stora)")
+    parser.add_argument("--override", nargs="*", type=int, default=None, metavar="ID",
+                        help="Skriv över befintlig SAFT inom FY. "
+                             "--override = global; --override 134 196 = bara dessa bolag.")
     args = parser.parse_args()
 
     period_for_log = args.period or prev_month_period()
@@ -421,7 +486,8 @@ def main() -> None:
         for f in files:
             status = load_file(con, f, base_path, args.period, orgnr_lookup,
                                dry_run=args.dry_run,
-                               include_journal=args.include_journal)
+                               include_journal=args.include_journal,
+                               override=args.override)
             counts[status] = counts.get(status, 0) + 1
     finally:
         con.close()

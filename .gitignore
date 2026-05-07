@@ -1,6 +1,7 @@
 _params/*
 !_params/overrides.json
 _logs/
+_uploads/
 __pycache__/
 *.pyc
 .claude/

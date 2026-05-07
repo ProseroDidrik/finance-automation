@@ -4,11 +4,11 @@
 --         'ok'       = finns i båda och summor matchar
 --
 -- Källa-normalisering: backup_from_mercur använder Mercurs benämning (IMP = utfall),
--- medan fact_balances märker utfallsdata efter filformat (INL/SIE/SAFT/SIE_PSALDO/IMP).
+-- medan fact_balances märker utfallsdata efter filformat (IMP/SIE/SAFT/SIE_PSALDO).
 -- För jämförelse väljer vi en kanonisk utfalls-källa per (bolag, period, scenario) i
--- prio-ordning IMP > INL > SIE > SAFT > SIE_PSALDO och taggar den 'IMP' så att den
--- joinar mot backup. Detta undviker dubbelräkning när både gamla historik-IMP och
--- ny INL/SIE/SAFT finns för samma period.
+-- prio-ordning IMP > SIE > SAFT > SIE_PSALDO och taggar den 'IMP' så att den
+-- joinar mot backup. IMP täcker både Mercur-historikens IMP och nya FI/DK/DE
+-- Excel-imports (samma source_kind sedan migreringen INL→IMP).
 WITH backup_agg AS (
     SELECT company_id, period, source_kind, scenario,
            COUNT(*)    AS rows,
@@ -22,13 +22,12 @@ fact_actual_grouped AS (
            SUM(amount) AS total,
            CASE source_kind
                WHEN 'IMP'        THEN 1
-               WHEN 'INL'        THEN 2
-               WHEN 'SIE'        THEN 3
-               WHEN 'SAFT'       THEN 4
-               WHEN 'SIE_PSALDO' THEN 5
+               WHEN 'SIE'        THEN 2
+               WHEN 'SAFT'       THEN 3
+               WHEN 'SIE_PSALDO' THEN 4
            END AS prio
     FROM fact_balances
-    WHERE source_kind IN ('IMP','INL','SIE','SAFT','SIE_PSALDO')
+    WHERE source_kind IN ('IMP','SIE','SAFT','SIE_PSALDO')
     GROUP BY company_id, period, source_kind, scenario
 ),
 fact_actual_picked AS (

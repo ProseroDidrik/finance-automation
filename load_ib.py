@@ -15,7 +15,7 @@ Filformat (python-calamine för att undvika openpyxl fontId-bug):
 source_kind = 'IB', period_type = 'monthly', period = '202112'
 
 Konflikthantering (Alt A): rader för company_id hoppas över om det redan
-finns data för (company_id, '202112') med source_kind IN ('SIE', 'SAFT', 'INL')
+finns data för (company_id, '202112') med source_kind IN ('SIE', 'SAFT', 'IMP')
 i fact_balances.
 
 Körning:
@@ -242,17 +242,17 @@ def main() -> None:
     try:
         db.init_schema(con)
 
-        # Hitta bolag som redan har data för 202112 (SIE/SAFT/INL) → skip
+        # Hitta bolag som redan har data för 202112 (SIE/SAFT/IMP) → skip
         existing_companies: set[int] = {
             row[0]
             for row in con.execute(
                 """SELECT DISTINCT company_id FROM fact_balances
-                   WHERE period = ? AND source_kind IN ('SIE', 'SAFT', 'INL')""",
+                   WHERE period = ? AND source_kind IN ('SIE', 'SAFT', 'IMP')""",
                 [IB_PERIOD],
             ).fetchall()
         }
         log("INFO", "load_ib.py",
-            f"{len(existing_companies)} bolag har redan SIE/SAFT/INL för {IB_PERIOD}")
+            f"{len(existing_companies)} bolag har redan SIE/SAFT/IMP för {IB_PERIOD}")
 
         totals: dict[str, int] = {"ok": 0, "warn": 0, "skip": 0, "error": 0}
 

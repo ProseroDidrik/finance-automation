@@ -42,7 +42,7 @@ def main() -> int:
     raw_is = con.execute(
         """SELECT account_code, amount, statement_type
            FROM fact_balances
-           WHERE company_id = ? AND period = ? AND source_kind = 'INL'
+           WHERE company_id = ? AND period = ? AND source_kind = 'IMP'
              AND statement_type = 'IS'
            ORDER BY account_code""",
         [company_id, period],

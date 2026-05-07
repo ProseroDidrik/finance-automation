@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel, QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
     QPlainTextEdit, QSplitter, QHeaderView, QMessageBox, QGroupBox,
     QStatusBar, QAbstractItemView, QDialog, QCheckBox, QMenu,
+    QLineEdit, QFormLayout, QDialogButtonBox,
 )
 
 import shared
@@ -39,6 +40,85 @@ STATUS_COLORS = {
 
 COUNTRY_FILTER_ALL = "Alla"
 
+DELETE_COUNTRIES = ("Sweden", "Norway", "Finland", "Denmark", "Germany", "CENTR", "CA")
+DELETE_KINDS = ("IMP", "IMP_ADJ", "MAN")
+
+
+def _parse_company_ids(raw: str) -> list[str]:
+    """'134, 196' / '134 196' / '134;196' → ['134', '196']. Tomt → []."""
+    if not raw.strip():
+        return []
+    cleaned = raw.replace(",", " ").replace(";", " ")
+    return [s for s in cleaned.split() if s.strip()]
+
+
+class DeleteDBDialog(QDialog):
+    """Dialog för att samla parametrar till delete_db.py — dry-run körs alltid först."""
+
+    def __init__(self, parent=None, *, default_period: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Radera DB-data")
+        self.resize(440, 240)
+
+        layout = QFormLayout(self)
+
+        self.period_edit = QLineEdit(default_period)
+        self.period_edit.setPlaceholderText("YYYYMM")
+        layout.addRow("Period:", self.period_edit)
+
+        self.kind_combo = QComboBox()
+        self.kind_combo.addItems(DELETE_KINDS)
+        layout.addRow("Källa (--source_kind):", self.kind_combo)
+
+        self.country_combo = QComboBox()
+        self.country_combo.addItem("(alla)")
+        self.country_combo.addItems(DELETE_COUNTRIES)
+        layout.addRow("Land:", self.country_combo)
+
+        self.companies_edit = QLineEdit()
+        self.companies_edit.setPlaceholderText("t.ex. 134, 196 (tomt = alla bolag)")
+        layout.addRow("Bolag-IDs:", self.companies_edit)
+
+        info = QLabel(
+            "Dry-run körs först — du får bekräfta innan något raderas.\n"
+            "IMP på SE/NO raderar hela räkenskapsårets SIE/SAFT inkl. journal-tabeller."
+        )
+        info.setStyleSheet("color: #666;")
+        info.setWordWrap(True)
+        layout.addRow(info)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok_btn = buttons.button(QDialogButtonBox.Ok)
+        ok_btn.setText("Förhandsgranska (dry-run)")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def build_args(self) -> list[str]:
+        period = self.period_edit.text().strip()
+        args = ["--period", period,
+                "--source_kind", self.kind_combo.currentText()]
+        country = self.country_combo.currentText()
+        if country != "(alla)":
+            args.extend(["--country", country])
+        cids = _parse_company_ids(self.companies_edit.text())
+        if cids:
+            args.append("--company")
+            args.extend(cids)
+        return args
+
+    def validate(self) -> str | None:
+        """Returnera felmeddelande eller None om allt OK."""
+        period = self.period_edit.text().strip()
+        if len(period) != 6 or not period.isdigit():
+            return f"Period måste vara YYYYMM, fick {period!r}"
+        cids_raw = self.companies_edit.text().strip()
+        if cids_raw:
+            for s in _parse_company_ids(cids_raw):
+                if not s.lstrip("-").isdigit():
+                    return f"Ogiltigt bolags-ID: {s!r}"
+        return None
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -51,6 +131,8 @@ class MainWindow(QMainWindow):
         self.runner.finished.connect(self._on_runner_finished)
 
         self._load_chain: list[tuple[str, list[str]]] = []
+        # Sparade args för 2-stegs delete: dry-run → bekräfta → skarp körning.
+        self._delete_pending_args: list[str] | None = None
 
         self._build_ui()
         self._build_menu()
@@ -179,6 +261,24 @@ class MainWindow(QMainWindow):
         add_btn("Dry run (extract)", lambda: self._run_script("dry_run.py"))
         a.addSpacing(8)
         add_btn("Ladda databas", self._run_load_db_chain)
+        # Override-rad: checkbox + IDs (tomt = global)
+        self.override_cb = QCheckBox("Skriv över existerande (--override)")
+        self.override_cb.setToolTip(
+            "Skriver över befintlig IMP/SIE/SAFT vid laddning. Lager-isolerat — "
+            "MAN/IMP_ADJ rörs aldrig."
+        )
+        a.addWidget(self.override_cb)
+        ovr_row = QHBoxLayout()
+        ovr_row.addWidget(QLabel("  IDs:"))
+        self.override_ids = QLineEdit()
+        self.override_ids.setPlaceholderText("tomt = alla")
+        self.override_ids.setEnabled(False)
+        ovr_row.addWidget(self.override_ids, 1)
+        a.addLayout(ovr_row)
+        self.override_cb.toggled.connect(self.override_ids.setEnabled)
+        a.addSpacing(8)
+        delete_btn = add_btn("Radera DB-data …", self._on_delete_db)
+        delete_btn.setStyleSheet("QPushButton { color: #a00; }")
         a.addSpacing(8)
         reset_btn = add_btn("Reset perioden …", self._on_reset)
         reset_btn.setStyleSheet("QPushButton { color: #a00; }")
@@ -351,17 +451,38 @@ class MainWindow(QMainWindow):
         self._set_buttons_enabled(False)
         self.runner.run(script, args)
 
+    def _build_load_args(self, period: str) -> list[str]:
+        """Bygg argumentlistan för load_inl/sie/saft med ev. --override.
+
+        --override måste komma sist eftersom argparse nargs='*' annars äter
+        nästa flaggas värden.
+        """
+        args = ["--period", period]
+        if self.override_cb.isChecked():
+            args.append("--override")
+            ids = _parse_company_ids(self.override_ids.text())
+            args.extend(ids)  # tomt → global override
+        return args
+
     def _run_load_db_chain(self) -> None:
         if self.runner.is_running():
             QMessageBox.information(self, "Pågår", "En körning pågår redan. Vänta tills den är klar.")
             return
+        # Validera override-IDs om angivna
+        if self.override_cb.isChecked():
+            for s in _parse_company_ids(self.override_ids.text()):
+                if not s.lstrip("-").isdigit():
+                    QMessageBox.warning(self, "Ogiltigt ID",
+                                        f"Override-IDs måste vara heltal, fick {s!r}.")
+                    return
         period = self._current_period()
+        load_args = self._build_load_args(period)
         self._load_chain = [
             ("db.py", []),
             ("load_account_map.py", []),
-            ("load_inl.py",  ["--period", period]),
-            ("load_sie.py",  ["--period", period]),
-            ("load_saft.py", ["--period", period]),
+            ("load_inl.py",  load_args),
+            ("load_sie.py",  load_args),
+            ("load_saft.py", load_args),
         ]
         self._set_buttons_enabled(False)
         self._run_next_in_chain()
@@ -392,6 +513,22 @@ class MainWindow(QMainWindow):
         self._set_buttons_enabled(False)
         self.runner.run("reset.py", ["--period", period])
 
+    def _on_delete_db(self) -> None:
+        if self.runner.is_running():
+            QMessageBox.information(self, "Pågår", "En körning pågår redan.")
+            return
+        dlg = DeleteDBDialog(self, default_period=self._current_period())
+        if dlg.exec() != QDialog.Accepted:
+            return
+        err = dlg.validate()
+        if err:
+            QMessageBox.warning(self, "Ogiltiga värden", err)
+            return
+        args = dlg.build_args()
+        self._delete_pending_args = args  # bevaras till efter dry-run
+        self._set_buttons_enabled(False)
+        self.runner.run("delete_db.py", [*args, "--dry-run"])
+
     def _open_overrides(self) -> None:
         dlg = OverrideEditor(self)
         if dlg.exec() == QDialog.Accepted:
@@ -408,6 +545,24 @@ class MainWindow(QMainWindow):
             self._run_next_in_chain()
             return
         self._load_chain = []
+
+        # Två-stegs delete: efter dry-run, fråga om skarp körning.
+        if self._delete_pending_args is not None:
+            pending = self._delete_pending_args
+            self._delete_pending_args = None
+            if code == 0:
+                ret = QMessageBox.question(
+                    self,
+                    "Bekräfta skarp radering",
+                    "Dry-run klar — se loggen för exakt vad som skulle raderas.\n\n"
+                    "Köra skarpt nu? Detta är inte reversibelt.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if ret == QMessageBox.Yes:
+                    self.runner.run("delete_db.py", pending)
+                    return  # håll knappar disabled tills skarp körning klar
+
         self._set_buttons_enabled(True)
         self._refresh_table()
 

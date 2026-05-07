@@ -1,5 +1,9 @@
 """Ladda INL.xlsx-filer (FI/DK/DE) till fact_balances i DuckDB.
 
+source_kind='IMP' — Excel är en av flera "primär källfil-import"-lager.
+SE/NO använder samma IMP-koncept fast med source_kind='SIE'/'SAFT' (filformat-info
+behålls för t.ex. journal-uppslag).
+
 INL.xlsx layout (skrivs av shared.save_inl_xlsx):
   rad 1: tom
   rad 2..: A=konto, B=namn, C=belopp, D='IS'|'BS'  (D saknas i äldre filer)
@@ -7,8 +11,9 @@ INL.xlsx layout (skrivs av shared.save_inl_xlsx):
 Default-källa: extracted/{period}/{Country}/output/*_INL.xlsx under base_path.
 Använd --source-dir för att peka mot annan mapp (t.ex. _inbox/Facit för backfill).
 
-Idempotens: rader för (company_id, period, source_kind, source_file) tas bort innan
-nya skrivs. Du kan ladda samma fil om igen utan dubbletter.
+Konfliktkoll: utan --override skippas (bolag, period, IMP) om det redan finns
+data. Med --override (global) eller --override 134 196 (per bolag) skrivs
+existerande IMP över. MAN/IMP_ADJ rörs aldrig.
 
 Filnamnsformat: {ID:03d}_{FriendlyName}_{YYYYMM}_INL.xlsx
 """
@@ -22,13 +27,13 @@ from pathlib import Path
 import openpyxl
 
 import db
-from shared import begin_run, load_config, log, prev_month_period
+from shared import begin_run, is_override_for, load_config, log, prev_month_period
 
 INL_FILENAME_RE = re.compile(r"^(\d{3})_(.+)_(\d{6})_INL\.xlsx$", re.IGNORECASE)
 # INL genereras av process_denmark/finland/germany.py. CENTR = Prosero-koncernbolag
 # som processas av en av dessa pipelines (Oy via FI, GmbH via DE).
 COUNTRIES = ("Denmark", "Finland", "Germany", "CENTR")
-SOURCE_KIND = "INL"
+SOURCE_KIND = "IMP"
 PERIOD_TYPE = "monthly"  # INL = månadsvis saldobalans
 
 
@@ -80,7 +85,8 @@ def read_inl_rows(path: Path) -> tuple[list[tuple], bool]:
     return rows, has_st
 
 
-def load_file(con, path: Path, base_path: Path, *, dry_run: bool) -> str:
+def load_file(con, path: Path, base_path: Path, *,
+              dry_run: bool, override: list[int] | None = None) -> str:
     """Load one INL file into fact_balances. Returns status: ok|warn|skip|error."""
     parsed = parse_inl_filename(path.name)
     if parsed is None:
@@ -116,17 +122,35 @@ def load_file(con, path: Path, base_path: Path, *, dry_run: bool) -> str:
     rel_src = db.relpath_from_base(path, base_path)
     now = datetime.now()
 
+    # Konfliktkoll: finns redan IMP för (bolag, period)?
+    existing = con.execute(
+        """SELECT COUNT(*) FROM fact_balances
+           WHERE company_id = ? AND period = ? AND source_kind = ?""",
+        [company_id, period, SOURCE_KIND],
+    ).fetchone()[0]
+    has_override = is_override_for(override, company_id)
+    if existing > 0 and not has_override:
+        log("SKIP", company_id,
+            f"{path.name}  IMP redan inläst för {period} ({existing} rader). "
+            "Kör med --override för att skriva över.")
+        return "skip"
+
     if dry_run:
+        ovr = "  OVERRIDE" if (existing > 0 and has_override) else ""
         log("INFO", company_id,
             f"[DRY] {path.name}  rows={len(rows)} sum={total:.4f} "
-            f"statement_type={'JA' if has_st else 'nej'}")
+            f"statement_type={'JA' if has_st else 'nej'}{ovr}")
         return "warn" if is_warn else "ok"
+
+    if existing > 0 and has_override:
+        log("INFO", company_id,
+            f"OVERRIDE: skriver över {existing} befintliga IMP-rader för {period}")
 
     db.sync_dim_period(con, [period])
 
     con.execute("BEGIN")
     try:
-        # Bara EN INL-laddning per (bolag, period) — senaste filen vinner.
+        # Bara EN IMP-laddning per (bolag, period) — senaste filen vinner.
         con.execute(
             """DELETE FROM fact_balances
                WHERE company_id = ? AND period = ? AND source_kind = ?""",
@@ -181,6 +205,9 @@ def main() -> None:
                         help="Mapp att söka i (default: extracted/{period}/*/output under base_path)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Läs och rapportera, skriv inte till DB")
+    parser.add_argument("--override", nargs="*", type=int, default=None, metavar="ID",
+                        help="Skriv över befintlig IMP. --override = global; "
+                             "--override 134 196 = bara dessa bolag.")
     args = parser.parse_args()
 
     period_for_log = args.period or "all"
@@ -213,7 +240,8 @@ def main() -> None:
         db.init_schema(con)
         counts = {"ok": 0, "warn": 0, "skip": 0, "error": 0}
         for f in files:
-            status = load_file(con, f, base_path, dry_run=args.dry_run)
+            status = load_file(con, f, base_path,
+                               dry_run=args.dry_run, override=args.override)
             counts[status] = counts.get(status, 0) + 1
     finally:
         con.close()

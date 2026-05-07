@@ -27,7 +27,7 @@ FROM fact_balances fb JOIN dim_company c ON c.company_id = fb.company_id
 WHERE fb.company_id = {COMPANY}
   AND fb.period IN ('{PERIOD}', '{PREV}')
   AND fb.source_kind = CASE c.country
-       WHEN 'Sweden' THEN 'SIE' WHEN 'Norway' THEN 'SAFT' ELSE 'INL' END
+       WHEN 'Sweden' THEN 'SIE' WHEN 'Norway' THEN 'SAFT' ELSE 'IMP' END
 """)
 print()
 print("raw_balances rows:", con.execute("SELECT COUNT(*) FROM raw_balances").fetchone()[0])

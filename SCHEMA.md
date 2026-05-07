@@ -119,7 +119,7 @@ Den centrala read-tabellen. En rad per (bolag, period, konto, källa).
 | `amount` | DOUBLE | Belopp i bolagets valuta |
 | `currency` | TEXT | `SEK`/`NOK`/`DKK`/`EUR` |
 | `statement_type` | TEXT | `IS` / `BS` / NULL |
-| `source_kind` | TEXT | `INL` / `SIE` / `SIE_PSALDO` / `SAFT` / `MAN` / `IMP` / `IMP_ADJ` / `IB` |
+| `source_kind` | TEXT | `IMP` / `SIE` / `SIE_PSALDO` / `SAFT` / `MAN` / `IMP_ADJ` / `IB` |
 | `source_file` | TEXT | Relativ till `base_path` (Dropbox-roten) |
 | `row_index` | INT | Ordning i källfilen |
 | `scenario` | TEXT | `A` (Utfall) / `B` (Budget). Default `A`. |
@@ -219,10 +219,10 @@ En rad per (laddat fil) ELLER per kontoplans-laddning. Används för att felsök
 | `id` | BIGINT PK | |
 | `company_id` | INT | NULL för referens-laddningar |
 | `period` | TEXT | `YYYYMM` eller `'REF'` för kontoplan |
-| `source_kind` | TEXT | `INL`/`SIE`/`SAFT`/`ACCOUNT_MAP` |
+| `source_kind` | TEXT | `IMP`/`SIE`/`SAFT`/`ACCOUNT_MAP` |
 | `source_file` | TEXT | |
 | `rows_loaded` | INT | |
-| `sum_amount` | DOUBLE | Totalsumma — för INL ska den vara ≈ 0; för YTD = årets resultat |
+| `sum_amount` | DOUBLE | Totalsumma — för IMP (FI/DK/DE) ska den vara ≈ 0; för YTD (SE/NO) = årets resultat |
 | `statement_type_present` | BOOLEAN | TRUE om IS/BS-flagga fanns i källan |
 | `status` | TEXT | `ok` / `warn` / `error` |
 | `message` | TEXT | Fritext |
@@ -255,7 +255,7 @@ JSONL i `_logs/{period}/`.
 -- Saldobalans för ett bolag och period
 SELECT account_code, account_name, amount, statement_type
 FROM fact_balances
-WHERE company_id = 10 AND period = '202603' AND source_kind IN ('SIE','INL','SAFT')
+WHERE company_id = 10 AND period = '202603' AND source_kind IN ('SIE','IMP','SAFT')
 ORDER BY account_code;
 
 -- Konton mappade till gruppens kontoplan

@@ -44,6 +44,19 @@ def prev_month_period() -> str:
     return f"{today.year}{today.month - 1:02d}"
 
 
+def is_override_for(override: list[int] | None, company_id: int) -> bool:
+    """True om --override gäller för company_id.
+
+    argparse-konvention: nargs='*', default=None.
+    - None      → flaggan inte angiven → False
+    - []        → --override utan args → True (global override)
+    - [a, b, …] → --override a b      → True endast för listade IDs
+    """
+    if override is None:
+        return False
+    return not override or company_id in override
+
+
 def begin_run(script_name: str, period: str) -> None:
     """Activate JSONL persistence for subsequent log() calls in this process.
 

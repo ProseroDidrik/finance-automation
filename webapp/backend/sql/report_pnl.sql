@@ -4,7 +4,7 @@
 -- + bolagskonto-leaves (bara för det valda bolaget).
 --
 -- Amounts:
---   amount_month — månadens belopp (SE/NO: YTD - prev_month_YTD; INL: rådata)
+--   amount_month — månadens belopp (SE/NO: YTD - prev_month_YTD; IMP: rådata)
 --   amount_ytd   — YTD-belopp t.o.m. perioden
 -- Sign-konvention: SIE-rå (revenue negativ, expense positiv).
 -- Presentation/sign-flip görs i frontend via pnl_kpis.yaml.
@@ -35,7 +35,7 @@ pnl_tree(account_id, parent_id, label_sv, label_en, depth, sort_path) AS (
 ),
 
 -- 2a. Bästa tillgängliga source_kind per period (prioritetsordning per land).
---     Endast utfallskällor: SIE/SIE_PSALDO/SAFT/INL/IMP/IMP_ADJ.
+--     Endast utfallskällor: SIE/SIE_PSALDO/SAFT/IMP/IMP_ADJ.
 --     MAN hör till budget (scenario B) och får aldrig väljas av best_source.
 --     Om ingen utfallskälla finns för en period returneras NULL → tom rapport.
 best_source AS (
@@ -68,7 +68,6 @@ best_source AS (
         END
       ELSE  -- Finland, Denmark, Germany, CENTR
         CASE
-          WHEN MAX(CASE WHEN fb.source_kind = 'INL'     THEN 1 ELSE 0 END) = 1 THEN 'INL'
           WHEN MAX(CASE WHEN fb.source_kind = 'IMP'     THEN 1 ELSE 0 END) = 1 THEN 'IMP'
           WHEN MAX(CASE WHEN fb.source_kind = 'IMP_ADJ' THEN 1 ELSE 0 END) = 1 THEN 'IMP_ADJ'
           ELSE NULL
@@ -81,7 +80,7 @@ best_source AS (
   GROUP BY fb.company_id, fb.period, c.country
 ),
 
--- 2b. Hämta perioder från årsstart t.o.m. valt period (för INL-kumulering)
+-- 2b. Hämta perioder från årsstart t.o.m. valt period (för IMP-kumulering)
 --     + minst förra månaden (för SE/NO YTD-diff).
 --
 -- P-koder (t.ex. P_30, P_40) lagras av load_history_excel.py i Mercur-
@@ -108,7 +107,7 @@ raw_balances AS (
   GROUP BY fb.company_id, fb.period, fb.account_code
 ),
 
--- 3. För INL-bolag: kumulativ YTD = SUM över alla månader sedan årsstart.
+-- 3. För IMP-bolag (FI/DK/DE/CENTR): kumulativ YTD = SUM över alla månader sedan årsstart.
 --    För SE/NO (YTD-format): YTD = nuvarande periodens amount direkt.
 balances AS (
   SELECT
@@ -130,7 +129,7 @@ balances AS (
    AND prev.account_code = cur.account_code
    AND prev.period       = ?           -- prev_period
    AND prev.period_type  = 'ytd'
-  -- Kumulativ summa jan..valt period (för INL)
+  -- Kumulativ summa jan..valt period (för IMP)
   LEFT JOIN (
     SELECT company_id, account_code,
            SUM(amount) AS s

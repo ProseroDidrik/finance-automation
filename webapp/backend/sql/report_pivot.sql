@@ -84,7 +84,6 @@ best_source AS (
                 END
             ELSE  -- Finland, Denmark, Germany, CENTR
                 CASE
-                    WHEN MAX(CASE WHEN fb.source_kind = 'INL'     THEN 1 ELSE 0 END) = 1 THEN 'INL'
                     WHEN MAX(CASE WHEN fb.source_kind = 'IMP'     THEN 1 ELSE 0 END) = 1 THEN 'IMP'
                     WHEN MAX(CASE WHEN fb.source_kind = 'IMP_ADJ' THEN 1 ELSE 0 END) = 1 THEN 'IMP_ADJ'
                     ELSE NULL
