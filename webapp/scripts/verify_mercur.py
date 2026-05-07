@@ -2,21 +2,21 @@
 Verifierar både råa P&L-noder OCH KPI-formler från pnl_kpis.yaml.
 
 Kör:  py webapp/scripts/verify_mercur.py
+Förutsätter att DATABASE_URL är satt och att Postgres-warehouset är ifyllt
+(via scripts/migrate_duckdb_to_postgres.py eller vanlig load_*-pipeline).
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-import duckdb
-
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
+import db  # noqa: E402
 from webapp.backend.kpi import compute_kpis  # noqa: E402
 
 SQL_PATH = REPO / "webapp" / "backend" / "sql" / "report_pnl.sql"
-DB_PATH = REPO / "data" / "finance.duckdb"
 
 COMPANY_ID = 76
 PERIOD = "202603"
@@ -53,11 +53,16 @@ KPI_EXPECTED = {
 }
 
 
-def run_report(con, company_id: int, period: str, prev_period: str) -> list[dict]:
+def run_report(con: db.Conn, company_id: int, period: str, prev_period: str) -> list[dict]:
+    """Samma parameter-ordning som webapp/backend/main.py:_params(src=None, scenario='A')."""
     sql = SQL_PATH.read_text(encoding="utf-8")
     year_start = period[:4] + "01"
-    df = con.execute(sql, [company_id, year_start, period, prev_period, period]).df()
-    return df.to_dict("records")
+    params = [
+        None, company_id, year_start, period,         # best_source (4)
+        company_id, year_start, period, "A",          # raw_balances (4)
+        prev_period, period,                           # balances (2)
+    ]
+    return con.fetch_dicts(sql, params)
 
 
 def cmp_block(title: str, expected: dict, lookup):
@@ -94,12 +99,8 @@ def cmp_block(title: str, expected: dict, lookup):
 
 
 def main() -> int:
-    if not DB_PATH.exists():
-        print(f"FEL: warehouset saknas: {DB_PATH}")
-        return 1
-
-    con = duckdb.connect(str(DB_PATH), read_only=True)
-    rows = run_report(con, COMPANY_ID, PERIOD, PREV_PERIOD)
+    with db.connect(read_only=True) as con:
+        rows = run_report(con, COMPANY_ID, PERIOD, PREV_PERIOD)
     print(f"report_pnl(company={COMPANY_ID}, period={PERIOD}): {len(rows)} rader")
 
     # Slå upp aggregerade noder (post-flip för jämförelse)

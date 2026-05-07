@@ -22,17 +22,19 @@ Endpoints:
 from __future__ import annotations
 
 import math
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import duckdb
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
+import db  # noqa: E402  (Postgres-anslutning + Conn-wrapper)
 from webapp.backend.kpi import compute_kpis  # noqa: E402
 from webapp.backend.layout import reorder_rows  # noqa: E402
 from webapp.backend.period_utils import (  # noqa: E402
@@ -40,7 +42,6 @@ from webapp.backend.period_utils import (  # noqa: E402
 )
 from webapp.backend import counterparty_data, counterparty_runner  # noqa: E402
 
-DB_PATH = REPO / "data" / "finance.duckdb"
 SQL_PATH = REPO / "webapp" / "backend" / "sql" / "report_pnl.sql"
 SQL_COVERAGE = REPO / "webapp" / "backend" / "sql" / "compare_coverage.sql"
 SQL_PERSONNEL = REPO / "webapp" / "backend" / "sql" / "personnel_summary.sql"
@@ -48,25 +49,33 @@ SQL_PIVOT = REPO / "webapp" / "backend" / "sql" / "report_pivot.sql"
 SQL_SUP_BY_SUPPLIER = REPO / "webapp" / "backend" / "sql" / "suppliers_by_supplier.sql"
 SQL_SUP_BY_CATEGORY = REPO / "webapp" / "backend" / "sql" / "suppliers_by_category.sql"
 
+FRONTEND_DIST = REPO / "webapp" / "frontend" / "dist"
+
 # ----- Connection lifecycle ---------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not DB_PATH.exists():
-        raise RuntimeError(f"DuckDB-warehouset saknas: {DB_PATH}")
+    """Verifiera att Postgres är åtkomlig vid uppstart (snabbare felupptäckt
+    än att vänta på första request). I container körs detta innan health-probe
+    blir grön — App Service stoppar deploy om DATABASE_URL pekar fel."""
+    with db.connect(read_only=True) as con:
+        con.execute("SELECT 1")
+        con.fetchone()
     yield
 
 
-def db() -> duckdb.DuckDBPyConnection:
-    """Öppnar en ny read-only connection per anrop — undviker delat tillstånd."""
-    return duckdb.connect(str(DB_PATH), read_only=True)
+def open_db() -> db.Conn:
+    """Öppna en ny read-only connection per anrop. Autocommit=True så
+    SELECT-vägen aldrig håller en öppen transaktion mot Azure Postgres."""
+    return db.connect(read_only=True)
 
 
 # ----- App --------------------------------------------------------------------
 
 app = FastAPI(title="Finance Reporting API", lifespan=lifespan)
 
-# CORS för Vite-dev-server (port 5173)
+# CORS för Vite-dev-server (port 5173). I prod serveras frontend från samma
+# origin (StaticFiles-mount nedan) så CORS är inte i bruk där.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -79,7 +88,7 @@ app.add_middleware(
 # ----- Helpers ----------------------------------------------------------------
 
 def _safe_num(v):
-    """JSON kan inte serialisera NaN. Konvertera till None."""
+    """JSON kan inte serialisera NaN/Infinity. Konvertera till None."""
     if v is None:
         return None
     if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
@@ -88,7 +97,8 @@ def _safe_num(v):
 
 
 def _safe_str(v):
-    """Pandas konverterar NULL strängar till NaN. Konvertera till None."""
+    """Strängifiera, men låt None passera. NaN-floats (från ev. äldre kodvägar)
+    räknas som None."""
     if v is None:
         return None
     if isinstance(v, float) and math.isnan(v):
@@ -97,7 +107,8 @@ def _safe_str(v):
 
 
 def _safe_date(v):
-    """DuckDB DATE → ISO-datum (YYYY-MM-DD) eller None. Hanterar NaT, NaN, None."""
+    """DATE → ISO (YYYY-MM-DD) eller None. Hanterar None, datetime/date och
+    pandas-NaT (om något kodavsnitt fortfarande matar in via DataFrame)."""
     if v is None:
         return None
     try:
@@ -118,14 +129,17 @@ def _safe_date(v):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "db": str(DB_PATH)}
+    with open_db() as con:
+        con.execute("SELECT 1")
+        con.fetchone()
+    return {"status": "ok"}
 
 
 @app.get("/api/companies")
 async def list_companies():
     """Bolag som har P&L-data i någon period (filtrerade på consolidated)."""
-    with db() as con:
-        rows = con.execute(
+    with open_db() as con:
+        rows = con.fetch_dicts(
             """
             SELECT c.company_id, c.name, c.country, c.currency,
                    COUNT(DISTINCT fb.period) AS n_periods,
@@ -137,25 +151,25 @@ async def list_companies():
             HAVING COUNT(DISTINCT fb.period) > 0
             ORDER BY c.country, c.company_id
             """
-        ).df().to_dict("records")
+        )
     return {"companies": rows}
 
 
 @app.get("/api/periods")
 async def list_periods(company_id: int | None = Query(None)):
     """Alla perioder med data, eller filtrerat per bolag."""
-    with db() as con:
+    with open_db() as con:
         if company_id is None:
-            rows = con.execute(
+            rows = con.fetch_dicts(
                 """SELECT period, COUNT(DISTINCT company_id) AS n_companies
                    FROM fact_balances GROUP BY period ORDER BY period DESC"""
-            ).df().to_dict("records")
+            )
         else:
-            rows = con.execute(
-                """SELECT period FROM fact_balances WHERE company_id = ?
+            rows = con.fetch_dicts(
+                """SELECT period FROM fact_balances WHERE company_id = %s
                    GROUP BY period ORDER BY period DESC""",
                 [company_id],
-            ).df().to_dict("records")
+            )
     return {"periods": rows}
 
 
@@ -168,11 +182,11 @@ async def report_options(
 
     MAN exkluderas — den är reserverad för budget-kolumnen (scenario B).
     """
-    with db() as con:
+    with open_db() as con:
         rows = con.execute(
             """SELECT source_kind, COUNT(*) AS n_rows
                FROM fact_balances
-               WHERE company_id = ? AND period = ? AND source_kind != 'MAN'
+               WHERE company_id = %s AND period = %s AND source_kind != 'MAN'
                GROUP BY source_kind
                ORDER BY source_kind""",
             [company_id, period],
@@ -205,23 +219,23 @@ async def pnl_report(
                 company_id, ystart, period, scenario,        # raw_balances (4)
                 prev, period]                                # balances (2)
 
-    with db() as con:
+    with open_db() as con:
         info = con.execute(
-            "SELECT company_id, name, country, currency FROM dim_company WHERE company_id = ?",
+            "SELECT company_id, name, country, currency FROM dim_company WHERE company_id = %s",
             [company_id],
         ).fetchone()
         if info is None:
             raise HTTPException(status_code=404, detail=f"Bolag {company_id} hittades inte")
-        df_a = con.execute(sql, _params(src, "A")).df()
-        df_b = con.execute(sql, _params("MAN", "B")).df()
+        rows_a = con.fetch_dicts(sql, _params(src, "A"))
+        rows_b = con.fetch_dicts(sql, _params("MAN", "B"))
 
     # Bygg lookup: account_id → budget YTD (scenario B)
     budget_ytd_by_id: dict[str, float | None] = {}
-    for r in df_b.to_dict("records"):
+    for r in rows_b:
         budget_ytd_by_id[str(r["account_id"])] = _safe_num(r.get("amount_ytd"))
 
     rows = []
-    for r in df_a.to_dict("records"):
+    for r in rows_a:
         aid = _safe_str(r["account_id"])
         rows.append({
             "account_id":        aid,
@@ -243,16 +257,16 @@ async def pnl_report(
 
     # Budget-KPI:er — kör samma compute_kpis på scenario B-rader.
     # Vi behöver bara YTD; bygger minimala rader med amount_ytd = budget-YTD.
-    rows_b = [
+    rows_b_kpi = [
         {
             "is_aggregated": bool(r["is_aggregated"]),
             "account_id":    str(r["account_id"]),
             "amount_month":  None,
             "amount_ytd":    _safe_num(r.get("amount_ytd")),
         }
-        for r in df_b.to_dict("records")
+        for r in rows_b
     ]
-    kpis_b_dict = compute_kpis(rows_b)
+    kpis_b_dict = compute_kpis(rows_b_kpi)
 
     # Sortera om enligt Mercur-ordningen via webapp/config/pnl_layout.yaml
     rows = reorder_rows(rows)
@@ -288,8 +302,8 @@ async def pnl_report(
 async def compare_coverage():
     """Jämförelse backup_from_mercur vs fact_balances per (bolag, period, källa, scenario)."""
     sql = SQL_COVERAGE.read_text(encoding="utf-8")
-    with db() as con:
-        rows = con.execute(sql).df().to_dict("records")
+    with open_db() as con:
+        rows = con.fetch_dicts(sql)
     return [
         {
             "company_id":   int(r["company_id"]) if r["company_id"] is not None else None,
@@ -313,7 +327,7 @@ async def compare_coverage():
 @app.get("/api/personnel/countries")
 async def personnel_countries():
     """Länder med data i fact_personnel + radantal + senaste snapshot."""
-    with db() as con:
+    with open_db() as con:
         rows = con.execute(
             """SELECT country,
                       COUNT(*)                         AS n_rows,
@@ -344,11 +358,11 @@ async def personnel_summary(country: str = Query(..., description="Sweden|Norway
     från innevarande år, t.o.m. innevarande år + 1 (för att fånga 'Slutat' som
     ligger i framtiden, t.ex. uppsägning till nästa år).
     """
-    with db() as con:
+    with open_db() as con:
         bounds = con.execute(
             """SELECT MIN(EXTRACT(year FROM employed_from))::INTEGER,
                       MAX(EXTRACT(year FROM employed_from))::INTEGER
-               FROM fact_personnel WHERE country = ?""",
+               FROM fact_personnel WHERE country = %s""",
             [country],
         ).fetchone()
     if bounds is None or bounds[0] is None:
@@ -363,12 +377,13 @@ async def personnel_summary(country: str = Query(..., description="Sweden|Norway
     years = list(range(start_year, end_year + 1))
 
     sql = SQL_PERSONNEL.read_text(encoding="utf-8")
-    with db() as con:
-        df = con.execute(sql, [years, country]).df()
+    with open_db() as con:
+        # SQL-ordning: %s #1 = years (INTEGER[]), %s #2 = country (TEXT).
+        rows = con.fetch_dicts(sql, [years, country])
 
     # Pivotera till en rad per bolag med dict {year: {ub, began, slutat}}
     by_company: dict[int, dict] = {}
-    for r in df.to_dict("records"):
+    for r in rows:
         cid = int(r["company_id"])
         rec = by_company.setdefault(cid, {
             "company_id":   cid,
@@ -381,8 +396,8 @@ async def personnel_summary(country: str = Query(..., description="Sweden|Norway
             "slutat": int(r["slutat"]),
         }
 
-    rows = sorted(by_company.values(), key=lambda x: (x["company_name"] or "").lower())
-    return {"country": country, "years": years, "rows": rows}
+    rows_out = sorted(by_company.values(), key=lambda x: (x["company_name"] or "").lower())
+    return {"country": country, "years": years, "rows": rows_out}
 
 
 @app.get("/api/personnel/employees")
@@ -390,27 +405,27 @@ async def personnel_employees(
     company_id: int = Query(..., description="dim_company.company_id"),
 ):
     """Anställda för ett bolag, sorterade på employed_from desc (NULL sist)."""
-    with db() as con:
+    with open_db() as con:
         meta = con.execute(
-            "SELECT name, country, currency FROM dim_company WHERE company_id = ?",
+            "SELECT name, country, currency FROM dim_company WHERE company_id = %s",
             [company_id],
         ).fetchone()
         if meta is None:
             raise HTTPException(status_code=404, detail=f"Bolag {company_id} hittades inte")
-        df = con.execute(
+        rows = con.fetch_dicts(
             """SELECT employee_name, title, birth_date,
                       employed_from, employed_to, termination_reason,
                       employment_pct, productivity, billable_pct,
                       gender, category, salary_local,
                       location, apprenticeship_end, pension_apprentice
                FROM fact_personnel
-               WHERE company_id = ?
+               WHERE company_id = %s
                ORDER BY employed_from DESC NULLS LAST, employee_name""",
             [company_id],
-        ).df()
+        )
 
     employees = []
-    for r in df.to_dict("records"):
+    for r in rows:
         employees.append({
             "employee_name":      _safe_str(r["employee_name"]),
             "title":              _safe_str(r["title"]),
@@ -458,7 +473,7 @@ def _build_buckets(
 
 
 def _resolve_company_ids(
-    con: duckdb.DuckDBPyConnection,
+    con: db.Conn,
     country: str | None,
     company_ids_csv: str | None,
 ) -> list[int]:
@@ -475,7 +490,7 @@ def _resolve_company_ids(
     if country:
         rows = con.execute(
             """SELECT company_id FROM dim_company
-               WHERE country = ? AND COALESCE(kind, '') != 'consolidated'
+               WHERE country = %s AND COALESCE(kind, '') != 'consolidated'
                ORDER BY company_id""",
             [country],
         ).fetchall()
@@ -515,7 +530,7 @@ async def report_pivot(
     if not buckets:
         return {"buckets": [], "companies": [], "rows": [], "report_currency": report_currency}
 
-    with db() as con:
+    with open_db() as con:
         company_ids_list = _resolve_company_ids(con, country, company_ids)
         if not company_ids_list:
             return {"buckets": [], "companies": [], "rows": [], "report_currency": report_currency}
@@ -524,7 +539,7 @@ async def report_pivot(
         comp_rows = con.execute(
             """SELECT company_id, name, country, currency, kind, parent_id, acquisition_year
                FROM dim_company
-               WHERE company_id IN (SELECT UNNEST(?::INTEGER[]))
+               WHERE company_id IN (SELECT UNNEST(%s::INTEGER[]))
                ORDER BY country, name""",
             [company_ids_list],
         ).fetchall()
@@ -542,7 +557,7 @@ async def report_pivot(
         ]
 
         # Bygg VALUES-stränpermitt + parametrar
-        bucket_values_clause = "VALUES " + ", ".join(["(?, ?, ?)"] * len(buckets))
+        bucket_values_clause = "VALUES " + ", ".join(["(%s, %s, %s)"] * len(buckets))
         bucket_params = [v for b in buckets for v in (b.key, b.start, b.end)]
         sql_template = SQL_PIVOT.read_text(encoding="utf-8")
         sql = sql_template.replace("{bucket_values}", bucket_values_clause)
@@ -551,11 +566,11 @@ async def report_pivot(
             bucket_params
             + [company_ids_list, source_kind, scenario, report_currency]
         )
-        df = con.execute(sql, params).df()
+        df_rows = con.fetch_dicts(sql, params)
 
     # Pivota till struktur: en rad per (account_id, parent_id, sort_path) med by_company-dict
     rows_by_account: dict[str, dict] = {}
-    for r in df.to_dict("records"):
+    for r in df_rows:
         aid = _safe_str(r["account_id"])
         if aid is None:
             continue
@@ -719,16 +734,16 @@ def _parse_str_list(csv: str | None) -> list[str] | None:
 @app.get("/api/suppliers/meta")
 async def suppliers_meta(country: str = Query(..., description="Sweden|...")):
     """Metadata för filter: bolag, segment, år, kategorier."""
-    with db() as con:
+    with open_db() as con:
         comp = con.execute(
             """SELECT f.company_id, COALESCE(c.name, f.bolag_label) AS name,
                       f.bolag_label,
                       SUM(f.amount) FILTER (WHERE f.year = (SELECT MAX(year)
                                                            FROM fact_supplier_spend
-                                                           WHERE country = ? AND period_kind='FULL')) AS latest_total
+                                                           WHERE country = %s AND period_kind='FULL')) AS latest_total
                FROM fact_supplier_spend f
                LEFT JOIN dim_company c ON c.company_id = f.company_id
-               WHERE f.country = ?
+               WHERE f.country = %s
                GROUP BY f.company_id, c.name, f.bolag_label
                ORDER BY name""",
             [country, country],
@@ -736,7 +751,7 @@ async def suppliers_meta(country: str = Query(..., description="Sweden|...")):
         years = [
             int(r[0]) for r in con.execute(
                 """SELECT DISTINCT year FROM fact_supplier_spend
-                   WHERE country = ? AND period_kind='FULL'
+                   WHERE country = %s AND period_kind='FULL'
                    ORDER BY year""",
                 [country],
             ).fetchall()
@@ -744,7 +759,7 @@ async def suppliers_meta(country: str = Query(..., description="Sweden|...")):
         segments = [
             r[0] for r in con.execute(
                 """SELECT DISTINCT segment FROM fact_supplier_spend
-                   WHERE country = ? AND segment IS NOT NULL
+                   WHERE country = %s AND segment IS NOT NULL
                    ORDER BY segment""",
                 [country],
             ).fetchall()
@@ -752,13 +767,13 @@ async def suppliers_meta(country: str = Query(..., description="Sweden|...")):
         kategorier = [
             r[0] for r in con.execute(
                 """SELECT DISTINCT kategori FROM fact_supplier_spend
-                   WHERE country = ? AND kategori IS NOT NULL
+                   WHERE country = %s AND kategori IS NOT NULL
                    ORDER BY kategori""",
                 [country],
             ).fetchall()
         ]
         n_total = con.execute(
-            "SELECT COUNT(*) FROM fact_supplier_spend WHERE country = ?", [country],
+            "SELECT COUNT(*) FROM fact_supplier_spend WHERE country = %s", [country],
         ).fetchone()[0]
     return {
         "country":  country,
@@ -779,16 +794,16 @@ async def suppliers_meta(country: str = Query(..., description="Sweden|...")):
 
 
 def _pivot_to_rows(
-    df, key_cols: list[str], years: list[int], compare_year: int | None = None,
+    rows: list[dict], key_cols: list[str], years: list[int], compare_year: int | None = None,
 ) -> list[dict]:
-    """df har kolumnerna key_cols + ['year','amount']. Returnerar en rad per nyckel
+    """rows har kolumnerna key_cols + ['year','amount']. Returnerar en rad per nyckel
     med {key_cols, by_year: {year: amount}, total_latest, growth_yoy, share_latest}.
 
     compare_year (default = max(years)) styr vilket år som används för
     total_latest/growth_yoy/share_latest. growth_yoy = (compare / compare-1) - 1.
     """
     by_key: dict[tuple, dict] = {}
-    for r in df.to_dict("records"):
+    for r in rows:
         key = tuple(_safe_str(r.get(c)) for c in key_cols)
         rec = by_key.setdefault(key, {**{c: _safe_str(r.get(c)) for c in key_cols},
                                        "by_year": {}})
@@ -800,9 +815,9 @@ def _pivot_to_rows(
     latest = compare_year if compare_year is not None and compare_year in years else max(years)
     prev = latest - 1 if (latest - 1) in years else None
 
-    rows = list(by_key.values())
-    total_latest = sum((r["by_year"].get(str(latest)) or 0.0) for r in rows) or 1.0
-    for r in rows:
+    rows_out = list(by_key.values())
+    total_latest = sum((r["by_year"].get(str(latest)) or 0.0) for r in rows_out) or 1.0
+    for r in rows_out:
         l = r["by_year"].get(str(latest))
         p = r["by_year"].get(str(prev)) if prev is not None else None
         r["total_latest"] = _safe_num(l)
@@ -811,8 +826,8 @@ def _pivot_to_rows(
         else:
             r["growth_yoy"] = None
         r["share_latest"] = (l / total_latest) if l is not None else None
-    rows.sort(key=lambda x: -(x["total_latest"] or 0))
-    return rows
+    rows_out.sort(key=lambda x: -(x["total_latest"] or 0))
+    return rows_out
 
 
 @app.get("/api/suppliers/by_supplier")
@@ -827,18 +842,18 @@ async def suppliers_by_supplier(
     cids = _parse_int_list(company_ids)
     segs = _parse_str_list(segments)
     sql = SQL_SUP_BY_SUPPLIER.read_text(encoding="utf-8")
-    with db() as con:
+    with open_db() as con:
         years = [int(r[0]) for r in con.execute(
             """SELECT DISTINCT year FROM fact_supplier_spend
-               WHERE country = ? AND period_kind='FULL'
+               WHERE country = %s AND period_kind='FULL'
                ORDER BY year""", [country],
         ).fetchall()]
-        df = con.execute(
+        rows = con.fetch_dicts(
             sql,
             [country, cids, cids, segs, segs, include_uncategorized],
-        ).df()
-    rows = _pivot_to_rows(df, ["supplier_name"], years, compare_year)
-    return {"country": country, "years": years, "compare_year": compare_year or (max(years) if years else None), "rows": rows}
+        )
+    pivot_rows = _pivot_to_rows(rows, ["supplier_name"], years, compare_year)
+    return {"country": country, "years": years, "compare_year": compare_year or (max(years) if years else None), "rows": pivot_rows}
 
 
 @app.get("/api/suppliers/by_category")
@@ -853,15 +868,29 @@ async def suppliers_by_category(
     cids = _parse_int_list(company_ids)
     segs = _parse_str_list(segments)
     sql = SQL_SUP_BY_CATEGORY.read_text(encoding="utf-8")
-    with db() as con:
+    with open_db() as con:
         years = [int(r[0]) for r in con.execute(
             """SELECT DISTINCT year FROM fact_supplier_spend
-               WHERE country = ? AND period_kind='FULL'
+               WHERE country = %s AND period_kind='FULL'
                ORDER BY year""", [country],
         ).fetchall()]
-        df = con.execute(
+        rows = con.fetch_dicts(
             sql,
             [country, cids, cids, segs, segs, include_uncategorized],
-        ).df()
-    rows = _pivot_to_rows(df, ["kategori", "segment"], years, compare_year)
-    return {"country": country, "years": years, "compare_year": compare_year or (max(years) if years else None), "rows": rows}
+        )
+    pivot_rows = _pivot_to_rows(rows, ["kategori", "segment"], years, compare_year)
+    return {"country": country, "years": years, "compare_year": compare_year or (max(years) if years else None), "rows": pivot_rows}
+
+
+# ----- Static frontend (single-origin i prod) ---------------------------------
+
+# I prod servar vi den byggda frontenden från samma origin som API:et.
+# I dev (Vite på 5173) finns ingen dist/ — då hoppas mounten över så CORS-vägen
+# används istället. Mountas SIST så /api/* tar prio.
+if FRONTEND_DIST.is_dir() and (FRONTEND_DIST / "index.html").exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
+elif os.environ.get("WEBAPP_REQUIRE_FRONTEND") == "1":
+    raise RuntimeError(
+        f"WEBAPP_REQUIRE_FRONTEND=1 men frontend dist saknas: {FRONTEND_DIST}. "
+        "Kör 'npm run build' i webapp/frontend/ innan containerbygge."
+    )

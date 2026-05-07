@@ -16,6 +16,7 @@ from pathlib import Path
 import calendar
 
 import psycopg
+from psycopg.rows import dict_row
 
 from shared import load_dotterbolag_full
 
@@ -101,6 +102,13 @@ class Conn:
 
     def fetchall(self):
         return self._cur.fetchall() if self._cur is not None else []
+
+    def fetch_dicts(self, sql: str, params=None) -> list[dict]:
+        """SELECT → list[dict] via dict_row-cursor. Ersätter tidigare DuckDB-mönster
+        ``con.execute(sql, params).df().to_dict("records")`` i webapp-endpoints."""
+        with self._conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(sql, params or ())
+            return cur.fetchall()
 
     def cursor(self) -> psycopg.Cursor:
         """Skapa en NY cursor (oberoende av wrapperns interna)."""
