@@ -24,8 +24,6 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-import duckdb
-
 import db
 import load_sie
 import load_saft
@@ -108,7 +106,7 @@ def discover_year(year_dir: Path) -> dict[str, tuple[Path, str]]:
     return {orgnr: (t[0], t[2]) for orgnr, t in best.items()}
 
 
-def load_year(con: duckdb.DuckDBPyConnection, year: int, year_dir: Path,
+def load_year(con: db.Conn, year: int, year_dir: Path,
               base_path: Path, orgnr_lookup_sie: dict, orgnr_lookup_saft: dict,
               *, dry_run: bool, include_journal: bool) -> dict[str, int]:
     """Ladda ett årsdir. Returnerar {status: count}."""

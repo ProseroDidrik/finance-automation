@@ -1,22 +1,25 @@
-"""DuckDB-anslutning och schema för finance-warehouse.
+"""Postgres-anslutning och schema för finance-warehouse.
 
-Lokalt under testperioden: data/finance.duckdb i repo-roten.
-Star schema: fact_balances + dim_company + dim_period.
-Verifikat-rader (SIE/SAF-T) får senare en separat fact_journal.
+Migrerat från DuckDB → Azure Database for PostgreSQL Flexible Server.
+
+Lokalt: docker compose up -d postgres + sätt DATABASE_URL.
+Produktion: App Service injicerar DATABASE_URL från Key Vault.
+
+Star schema: fact_balances + dim_company + dim_period. Verifikat-rader
+(SIE/SAF-T) ligger i fact_journal_sie / fact_journal_saft.
 """
 from __future__ import annotations
 
+import os
 from datetime import date, datetime
 from pathlib import Path
 import calendar
 
-import duckdb
+import psycopg
 
 from shared import load_dotterbolag_full
 
 _REPO_ROOT = Path(__file__).resolve().parent
-_DATA_DIR = _REPO_ROOT / "data"
-DB_PATH = _DATA_DIR / "finance.duckdb"
 DOTTERBOLAG_PATH = _REPO_ROOT / "_params" / "Dotterbolagslista.xlsx"
 
 # IMP-lagret: alla auto-import-källor som tillsammans utgör "primär källfil-import".
@@ -48,10 +51,109 @@ COUNTRY_CURRENCY = {
 }
 
 
-def connect(read_only: bool = False) -> duckdb.DuckDBPyConnection:
-    """Open the warehouse DB; create the data dir on first run."""
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    return duckdb.connect(str(DB_PATH), read_only=read_only)
+class Conn:
+    """Tunn wrapper kring psycopg.Connection som speglar tidigare DuckDB-API.
+
+    Befintliga loaders kallar ``con.execute(sql, [params]).fetchone()`` och
+    ``con.executemany(sql, rows)`` direkt på connection. psycopg använder
+    cursor som ett separat objekt — wrappern håller en intern cursor och
+    accepterar ``BEGIN``/``COMMIT``/``ROLLBACK`` som SQL-strängar för att
+    minimera diff i kallande kod.
+    """
+
+    def __init__(self, conn: psycopg.Connection):
+        self._conn = conn
+        self._cur: psycopg.Cursor | None = None
+
+    def _ensure_cursor(self) -> psycopg.Cursor:
+        if self._cur is None or self._cur.closed:
+            self._cur = self._conn.cursor()
+        return self._cur
+
+    def execute(self, sql: str, params=None) -> "Conn":
+        # Hantera transaktionskommandon utan att skicka dem till servern.
+        # I psycopg är autocommit-läget connection-level; "BEGIN" i SQL
+        # räcker inte för att starta en transaktion, och "COMMIT" som SQL
+        # fungerar inte tillförlitligt om autocommit=False. Översätt:
+        s = sql.strip().rstrip(";").upper()
+        if s == "BEGIN":
+            return self
+        if s == "COMMIT":
+            self._conn.commit()
+            return self
+        if s == "ROLLBACK":
+            self._conn.rollback()
+            return self
+        cur = self._ensure_cursor()
+        if params is None:
+            cur.execute(sql)
+        else:
+            cur.execute(sql, params)
+        return self
+
+    def executemany(self, sql: str, rows) -> "Conn":
+        cur = self._ensure_cursor()
+        cur.executemany(sql, rows)
+        return self
+
+    def fetchone(self):
+        return self._cur.fetchone() if self._cur is not None else None
+
+    def fetchall(self):
+        return self._cur.fetchall() if self._cur is not None else []
+
+    def cursor(self) -> psycopg.Cursor:
+        """Skapa en NY cursor (oberoende av wrapperns interna)."""
+        return self._conn.cursor()
+
+    @property
+    def raw(self) -> psycopg.Connection:
+        """Underliggande psycopg-connection — t.ex. för pd.read_sql_query."""
+        return self._conn
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        if self._cur is not None and not self._cur.closed:
+            self._cur.close()
+        self._conn.close()
+
+    def __enter__(self) -> "Conn":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self.close()
+
+
+def _database_url() -> str:
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL saknas. Lokalt:\n"
+            '  $env:DATABASE_URL = "postgresql://dev:dev@localhost:5432/finance"\n'
+            "Lokal Postgres via Docker: docker compose up -d postgres"
+        )
+    return url
+
+
+def connect(read_only: bool = False) -> Conn:
+    """Öppna en warehouse-anslutning.
+
+    read_only=True  → autocommit=True (webapp/SELECT-paths håller inga transaktioner).
+    read_only=False → autocommit=False (loaders kör explicit BEGIN/COMMIT).
+    """
+    conn = psycopg.connect(_database_url(), autocommit=read_only)
+    return Conn(conn)
 
 
 SCHEMA_SQL = """
@@ -74,13 +176,13 @@ CREATE TABLE IF NOT EXISTS dim_company (
     kind                 TEXT,
     acquisition_year     INTEGER,
     parent_id            INTEGER,        -- FK dim_company.company_id (konsoliderat moderbolag)
-    -- Förvärvsmetadata (Dotterbolagslistan kol K–P)
-    closing_date         DATE,           -- kol K Closing: datum för köp
-    investment_currency  TEXT,           -- kol L Investment: valuta för EBITDA/Sales LTM ('SEK'/'NOK'/'DKK'/'EUR')
-    ev_sek_m             DOUBLE,         -- kol M EV (SEKm): bolagsvärde vid köp (header säger SEKm men värdena är råa belopp)
-    ev_ebitda_ltm        DOUBLE,         -- kol N EV/EBITDA (LTM): värderingsmultipel mot LTM EBITDA
-    ebitda_ltm           DOUBLE,         -- kol O EBITDA (LTM): LTM EBITDA vid köp (lokal valuta)
-    sales_ltm            DOUBLE,         -- kol P Sales (LTM): LTM Sales vid köp (lokal valuta)
+    -- Förvärvsmetadata (Dotterbolagslistan kol K-P)
+    closing_date         DATE,
+    investment_currency  TEXT,
+    ev_sek_m             DOUBLE PRECISION,
+    ev_ebitda_ltm        DOUBLE PRECISION,
+    ebitda_ltm           DOUBLE PRECISION,
+    sales_ltm            DOUBLE PRECISION,
     updated_at           TIMESTAMP NOT NULL
 );
 
@@ -100,21 +202,21 @@ CREATE TABLE IF NOT EXISTS fact_balances (
     period_type     TEXT NOT NULL,        -- 'monthly' | 'ytd'
     account_code    TEXT NOT NULL,
     account_name    TEXT,
-    amount          DOUBLE NOT NULL,
+    amount          DOUBLE PRECISION NOT NULL,
     currency        TEXT NOT NULL,
     statement_type  TEXT,                  -- 'IS' | 'BS' | NULL
     source_kind     TEXT NOT NULL,         -- 'IMP' | 'SIE' | 'SIE_PSALDO' | 'SAFT' | 'MAN' | 'IMP_ADJ' | 'IB'
-    source_file     TEXT NOT NULL,         -- relativ till base_path
+    source_file     TEXT NOT NULL,
     row_index       INTEGER,
     scenario        TEXT NOT NULL DEFAULT 'A',  -- 'A' = Actuals | 'B' = Budget
     loaded_at       TIMESTAMP NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS dim_exchange_rate (
-    period      TEXT NOT NULL,    -- YYYYMM
-    currency    TEXT NOT NULL,    -- 'NOK' | 'DKK' | 'EUR'
-    rate_type   TEXT NOT NULL,    -- 'avg' | 'constant'
-    rate        DOUBLE NOT NULL,  -- SEK per enhet utländsk valuta
+    period      TEXT NOT NULL,
+    currency    TEXT NOT NULL,
+    rate_type   TEXT NOT NULL,
+    rate        DOUBLE PRECISION NOT NULL,
     loaded_at   TIMESTAMP NOT NULL,
     PRIMARY KEY (period, currency, rate_type)
 );
@@ -128,17 +230,17 @@ CREATE INDEX IF NOT EXISTS idx_fb_idem
 CREATE TABLE IF NOT EXISTS fact_journal_sie (
     id              BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_journal_sie'),
     company_id      INTEGER NOT NULL,
-    period          TEXT NOT NULL,           -- YYYYMM från voucher_date
-    series          TEXT,                    -- #VER series, t.ex. 'A'
+    period          TEXT NOT NULL,
+    series          TEXT,
     voucher_number  TEXT NOT NULL,
     voucher_date    DATE NOT NULL,
     voucher_text    TEXT,
-    line_no         INTEGER NOT NULL,        -- ordning inom verifikat
+    line_no         INTEGER NOT NULL,
     account_code    TEXT NOT NULL,
-    account_name    TEXT,                    -- från #KONTO
-    amount          DOUBLE NOT NULL,         -- positivt = debet, negativt = kredit
-    transaction_text TEXT,                   -- valfri rad-kommentar
-    quantity        DOUBLE,                  -- valfri kvantitet
+    account_name    TEXT,
+    amount          DOUBLE PRECISION NOT NULL,
+    transaction_text TEXT,
+    quantity        DOUBLE PRECISION,
     currency        TEXT NOT NULL,
     source_file     TEXT NOT NULL,
     loaded_at       TIMESTAMP NOT NULL
@@ -151,7 +253,7 @@ CREATE INDEX IF NOT EXISTS idx_fjs_account        ON fact_journal_sie(account_co
 CREATE TABLE IF NOT EXISTS fact_journal_saft (
     id                 BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_journal_saft'),
     company_id         INTEGER NOT NULL,
-    period             TEXT NOT NULL,        -- YYYYMM från transaction_date
+    period             TEXT NOT NULL,
     journal_id         TEXT,
     journal_description TEXT,
     transaction_id     TEXT NOT NULL,
@@ -160,9 +262,9 @@ CREATE TABLE IF NOT EXISTS fact_journal_saft (
     line_no            INTEGER NOT NULL,
     record_id          TEXT,
     account_code       TEXT NOT NULL,
-    debit_amount       DOUBLE,
-    credit_amount      DOUBLE,
-    amount             DOUBLE NOT NULL,      -- debit − credit
+    debit_amount       DOUBLE PRECISION,
+    credit_amount      DOUBLE PRECISION,
+    amount             DOUBLE PRECISION NOT NULL,
     line_description   TEXT,
     currency           TEXT NOT NULL,
     source_file        TEXT NOT NULL,
@@ -174,14 +276,14 @@ CREATE INDEX IF NOT EXISTS idx_fjsaft_transaction    ON fact_journal_saft(compan
 CREATE INDEX IF NOT EXISTS idx_fjsaft_account        ON fact_journal_saft(account_code);
 
 CREATE TABLE IF NOT EXISTS dim_account_map (
-    account_id      TEXT PRIMARY KEY,           -- col B raw (t.ex. '10_1209', 'Equi', 'B')
-    description     TEXT,                       -- col C (Beskrivning)
-    description_en  TEXT,                       -- col D (Beskrivning Engelska)
-    is_aggregated   BOOLEAN NOT NULL,           -- col E='1' → TRUE, gruppkonto
-    parent_id       TEXT,                       -- col J (Tillhör Kontoklass), NULL för rot
-    source          TEXT,                       -- col I (Källa)
-    company_id      INTEGER,                    -- härlett: prefix-int från B där {int}_{rest}
-    account_code    TEXT,                       -- härlett: del efter första '_' i B
+    account_id      TEXT PRIMARY KEY,
+    description     TEXT,
+    description_en  TEXT,
+    is_aggregated   BOOLEAN NOT NULL,
+    parent_id       TEXT,
+    source          TEXT,
+    company_id      INTEGER,
+    account_code    TEXT,
     loaded_at       TIMESTAMP NOT NULL
 );
 
@@ -194,9 +296,9 @@ CREATE TABLE IF NOT EXISTS backup_from_mercur (
     period       TEXT NOT NULL,
     account_code TEXT NOT NULL,
     account_name TEXT,
-    amount       DOUBLE NOT NULL,
+    amount       DOUBLE PRECISION NOT NULL,
     currency     TEXT NOT NULL,
-    source_kind  TEXT NOT NULL,       -- 'MAN' | 'IMP' | 'IMP_ADJ'
+    source_kind  TEXT NOT NULL,
     scenario     TEXT NOT NULL DEFAULT 'A',
     source_file  TEXT NOT NULL,
     row_index    INTEGER,
@@ -208,25 +310,25 @@ CREATE INDEX IF NOT EXISTS idx_bfm_idem           ON backup_from_mercur(company_
 
 CREATE TABLE IF NOT EXISTS fact_personnel (
     id                  BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_personnel'),
-    country             TEXT NOT NULL,        -- 'Sweden' | 'Norway' | 'Finland'
-    company_id          INTEGER NOT NULL,     -- FK till dim_company
+    country             TEXT NOT NULL,
+    company_id          INTEGER NOT NULL,
     employee_name       TEXT NOT NULL,
     title               TEXT,
     birth_date          DATE,
     employed_from       DATE,
-    employed_to         DATE,                 -- NULL = aktiv
+    employed_to         DATE,
     termination_reason  TEXT,
-    employment_pct      DOUBLE,               -- 1.0 = heltid
-    productivity        DOUBLE,               -- SE/NO
-    billable_pct        DOUBLE,               -- FI ('Laskutettavaa työtä')
-    gender              TEXT,                 -- 'M' | 'F' (normaliserat)
-    category            TEXT,                 -- 'Direkt' | 'Multi' (SE/NO)
-    salary_local        DOUBLE,               -- FI ('Palkka korjattu'); valuta = dim_company.currency
-    location            TEXT,                 -- NO
-    apprenticeship_end  DATE,                 -- NO
-    pension_apprentice  TEXT,                 -- SE ('Pension/Lärling')
-    snapshot_date       DATE NOT NULL,        -- filens mtime
-    source_file         TEXT NOT NULL,        -- relativ till base_path
+    employment_pct      DOUBLE PRECISION,
+    productivity        DOUBLE PRECISION,
+    billable_pct        DOUBLE PRECISION,
+    gender              TEXT,
+    category            TEXT,
+    salary_local        DOUBLE PRECISION,
+    location            TEXT,
+    apprenticeship_end  DATE,
+    pension_apprentice  TEXT,
+    snapshot_date       DATE NOT NULL,
+    source_file         TEXT NOT NULL,
     loaded_at           TIMESTAMP NOT NULL
 );
 
@@ -234,11 +336,11 @@ CREATE INDEX IF NOT EXISTS idx_fp_country_company ON fact_personnel(country, com
 CREATE INDEX IF NOT EXISTS idx_fp_company         ON fact_personnel(company_id);
 
 CREATE TABLE IF NOT EXISTS dim_supplier_register (
-    country         TEXT NOT NULL,        -- 'Sweden' | 'Norway' | ...
-    levprefix       TEXT NOT NULL,        -- '<BolagLabel>_<LevNr>_<Namn>' från Excel
-    supplier_name   TEXT,                 -- 'Leverantör' (förenklat namn)
-    kategori        TEXT,                 -- 'Mekanik', 'IT', ... (NULL = okategoriserat)
-    segment         TEXT,                 -- 'Direkt' | 'Indirekt' | 'Interna inköp' (NULL = okategoriserat)
+    country         TEXT NOT NULL,
+    levprefix       TEXT NOT NULL,
+    supplier_name   TEXT,
+    kategori        TEXT,
+    segment         TEXT,
     source_file     TEXT NOT NULL,
     loaded_at       TIMESTAMP NOT NULL,
     PRIMARY KEY (country, levprefix)
@@ -249,18 +351,18 @@ CREATE INDEX IF NOT EXISTS idx_dsr_country_kategori ON dim_supplier_register(cou
 
 CREATE TABLE IF NOT EXISTS fact_supplier_spend (
     id              BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_supplier_spend'),
-    country         TEXT NOT NULL,        -- 'Sweden' | ...
-    company_id      INTEGER,              -- FK dim_company; NULL om mappning saknas
-    bolag_label     TEXT NOT NULL,        -- råtext från Excel "Bolag"
-    lev_nr          TEXT,                 -- leverantörsnummer i bolagets reskontra (kan saknas)
-    namn            TEXT,                 -- råtext från Excel "Namn"
-    levprefix       TEXT,                 -- joinnyckel mot dim_supplier_register (country, levprefix)
-    supplier_name   TEXT,                 -- snapshot från Excel Data-fliken (förenklat namn)
-    kategori        TEXT,                 -- snapshot från Excel Data-fliken
-    segment         TEXT,                 -- snapshot från Excel Data-fliken
-    year            INTEGER NOT NULL,     -- 2021..2025
-    period_kind     TEXT NOT NULL,        -- 'FULL' | 'H1'
-    amount          DOUBLE NOT NULL,      -- belopp i bolagets lokala valuta
+    country         TEXT NOT NULL,
+    company_id      INTEGER,
+    bolag_label     TEXT NOT NULL,
+    lev_nr          TEXT,
+    namn            TEXT,
+    levprefix       TEXT,
+    supplier_name   TEXT,
+    kategori        TEXT,
+    segment         TEXT,
+    year            INTEGER NOT NULL,
+    period_kind     TEXT NOT NULL,
+    amount          DOUBLE PRECISION NOT NULL,
     currency        TEXT NOT NULL,
     source_file     TEXT NOT NULL,
     loaded_at       TIMESTAMP NOT NULL
@@ -277,26 +379,27 @@ CREATE TABLE IF NOT EXISTS load_history (
     source_kind              TEXT,
     source_file              TEXT,
     rows_loaded              INTEGER,
-    sum_amount               DOUBLE,
+    sum_amount               DOUBLE PRECISION,
     statement_type_present   BOOLEAN,
-    status                   TEXT,                -- 'ok' | 'warn' | 'error'
+    status                   TEXT,
     message                  TEXT,
     loaded_at                TIMESTAMP NOT NULL
 );
 """
 
 
-def init_schema(con: duckdb.DuckDBPyConnection) -> None:
+def init_schema(con: Conn) -> None:
     """Create tables/indexes if missing. Idempotent."""
     con.execute(SCHEMA_SQL)
+    con.commit()
     _migrate(con)
+    con.commit()
 
 
-def _migrate(con: duckdb.DuckDBPyConnection) -> None:
+def _migrate(con: Conn) -> None:
     """Add columns introduced after initial schema. Safe to run repeatedly."""
     # source_kind 'INL' (FI/DK/DE Excel-import) bytte namn till 'IMP' eftersom
-    # det konceptuellt är samma lager som Mercur-historikens IMP. Idempotent —
-    # gör inget när det inte finns några INL-rader kvar.
+    # det konceptuellt är samma lager som Mercur-historikens IMP. Idempotent.
     con.execute("UPDATE fact_balances SET source_kind = 'IMP' WHERE source_kind = 'INL'")
     con.execute("UPDATE load_history  SET source_kind = 'IMP' WHERE source_kind = 'INL'")
 
@@ -327,16 +430,16 @@ def _migrate(con: duckdb.DuckDBPyConnection) -> None:
     if "investment_currency" not in dc_cols:
         con.execute("ALTER TABLE dim_company ADD COLUMN investment_currency TEXT")
     if "ev_sek_m" not in dc_cols:
-        con.execute("ALTER TABLE dim_company ADD COLUMN ev_sek_m DOUBLE")
+        con.execute("ALTER TABLE dim_company ADD COLUMN ev_sek_m DOUBLE PRECISION")
     if "ev_ebitda_ltm" not in dc_cols:
-        con.execute("ALTER TABLE dim_company ADD COLUMN ev_ebitda_ltm DOUBLE")
+        con.execute("ALTER TABLE dim_company ADD COLUMN ev_ebitda_ltm DOUBLE PRECISION")
     if "ebitda_ltm" not in dc_cols:
-        con.execute("ALTER TABLE dim_company ADD COLUMN ebitda_ltm DOUBLE")
+        con.execute("ALTER TABLE dim_company ADD COLUMN ebitda_ltm DOUBLE PRECISION")
     if "sales_ltm" not in dc_cols:
-        con.execute("ALTER TABLE dim_company ADD COLUMN sales_ltm DOUBLE")
+        con.execute("ALTER TABLE dim_company ADD COLUMN sales_ltm DOUBLE PRECISION")
 
 
-def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:
+def sync_dim_company(con: Conn) -> int:
     """Upsert dim_company from Dotterbolagslistan. Returns row count written."""
     if not DOTTERBOLAG_PATH.exists():
         raise FileNotFoundError(
@@ -350,7 +453,6 @@ def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:
         country = info.get("country") or ""
         currency = COUNTRY_CURRENCY.get(country, "")
         if not currency:
-            # Saknad/ovanlig country → hoppa över; konsoliderade rader kan ha tomt land.
             continue
         rows.append((
             bid,
@@ -381,7 +483,7 @@ def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:
                 closing_date, investment_currency,
                 ev_sek_m, ev_ebitda_ltm, ebitda_ltm, sales_ltm,
                 updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             rows,
         )
         con.execute("COMMIT")
@@ -391,7 +493,7 @@ def sync_dim_company(con: duckdb.DuckDBPyConnection) -> int:
     return len(rows)
 
 
-def sync_dim_period(con: duckdb.DuckDBPyConnection, periods: list[str]) -> int:
+def sync_dim_period(con: Conn, periods: list[str]) -> int:
     """Insert any missing 'YYYYMM' periods into dim_period."""
     rows = []
     for p in sorted(set(periods)):
@@ -413,9 +515,10 @@ def sync_dim_period(con: duckdb.DuckDBPyConnection, periods: list[str]) -> int:
     if not rows:
         return 0
     con.executemany(
-        """INSERT OR IGNORE INTO dim_period
+        """INSERT INTO dim_period
            (period, year, month, quarter, period_start, period_end)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           VALUES (%s, %s, %s, %s, %s, %s)
+           ON CONFLICT (period) DO NOTHING""",
         rows,
     )
     return len(rows)
@@ -431,13 +534,10 @@ def relpath_from_base(path: Path, base: Path) -> str:
 
 def main() -> None:
     """CLI: initiera schema + synka dim_company. `py db.py`"""
-    con = connect()
-    try:
+    with connect() as con:
         init_schema(con)
         n = sync_dim_company(con)
-        print(f"[OK]     dim_company  {n} bolag synkade  ({DB_PATH})")
-    finally:
-        con.close()
+        print(f"[OK]     dim_company  {n} bolag synkade  ({_database_url()})")
 
 
 if __name__ == "__main__":

@@ -22,8 +22,6 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-import duckdb
-
 import db
 from shared import begin_run, is_override_for, load_config, log, prev_month_period
 
@@ -222,7 +220,7 @@ def derive_period(parsed: dict, override: str | None) -> str | None:
     return None
 
 
-def build_orgnr_lookup(con: duckdb.DuckDBPyConnection) -> dict[str, tuple[int, str]]:
+def build_orgnr_lookup(con: db.Conn) -> dict[str, tuple[int, str]]:
     """orgnr_normalized → (company_id, name) för alla bolag med orgnr."""
     lookup: dict[str, tuple[int, str]] = {}
     for row in con.execute(
@@ -283,8 +281,8 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     has_override = is_override_for(override, company_id)
     existing = con.execute(
         """SELECT COUNT(*) FROM fact_balances
-           WHERE company_id = ? AND source_kind = ?
-             AND period >= ? AND period BETWEEN ? AND ?""",
+           WHERE company_id = %s AND source_kind = %s
+             AND period >= %s AND period BETWEEN %s AND %s""",
         [company_id, SOURCE_KIND, period, fy_start, fy_end],
     ).fetchone()[0]
     if existing > 0 and not has_override:
@@ -337,18 +335,18 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         if has_override and existing > 0:
             con.execute(
                 """DELETE FROM fact_balances
-                   WHERE company_id = ? AND source_kind = ?
-                     AND period > ? AND period BETWEEN ? AND ?""",
+                   WHERE company_id = %s AND source_kind = %s
+                     AND period > %s AND period BETWEEN %s AND %s""",
                 [company_id, SOURCE_KIND, period, fy_start, fy_end],
             )
             con.execute(
                 """DELETE FROM fact_journal_saft
-                   WHERE company_id = ? AND period BETWEEN ? AND ?""",
+                   WHERE company_id = %s AND period BETWEEN %s AND %s""",
                 [company_id, fy_start, fy_end],
             )
         con.execute(
             """DELETE FROM fact_balances
-               WHERE company_id = ? AND period = ? AND source_kind = ?""",
+               WHERE company_id = %s AND period = %s AND source_kind = %s""",
             [company_id, period, SOURCE_KIND],
         )
         con.executemany(
@@ -356,7 +354,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                (company_id, period, period_type, account_code, account_name,
                 amount, currency, statement_type, source_kind, source_file,
                 row_index, loaded_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             [(company_id, period, PERIOD_TYPE, r[0], r[1], r[2], currency,
               r[3], SOURCE_KIND, rel_src, r[4], now) for r in rows],
         )
@@ -369,7 +367,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         if include_journal:
             con.execute(
                 """DELETE FROM fact_journal_saft
-                   WHERE company_id = ? AND source_file = ?""",
+                   WHERE company_id = %s AND source_file = %s""",
                 [company_id, rel_src],
             )
             batch: list[tuple] = []
@@ -402,7 +400,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             """INSERT INTO load_history
                (company_id, period, source_kind, source_file, rows_loaded,
                 sum_amount, statement_type_present, status, message, loaded_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             [company_id, period, SOURCE_KIND, rel_src,
              len(rows) + journal_rows_loaded, total, True,
              "ok",
@@ -428,7 +426,7 @@ INSERT INTO fact_journal_saft
  line_no, record_id, account_code,
  debit_amount, credit_amount, amount, line_description,
  currency, source_file, loaded_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 

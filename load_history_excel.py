@@ -49,7 +49,7 @@ INSERT_SQL = """
         (company_id, period, period_type, account_code, account_name,
          amount, currency, statement_type, source_kind, source_file,
          row_index, scenario, loaded_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 BACKUP_INSERT_SQL = """
@@ -57,7 +57,7 @@ BACKUP_INSERT_SQL = """
         (company_id, period, account_code, account_name,
          amount, currency, source_kind, source_file,
          row_index, scenario, loaded_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 
@@ -237,8 +237,8 @@ def load_file(con, path: Path, base_path: Path,
         for (company_id, period, source_kind, scenario), rows in lane_rows.items():
             con.execute(
                 f"""DELETE FROM {target_table}
-                   WHERE company_id = ? AND period = ?
-                     AND source_kind = ? AND scenario = ?""",
+                   WHERE company_id = %s AND period = %s
+                     AND source_kind = %s AND scenario = %s""",
                 [company_id, period, source_kind, scenario],
             )
             con.executemany(insert_sql, rows)
@@ -248,7 +248,7 @@ def load_file(con, path: Path, base_path: Path,
             """INSERT INTO load_history
                (company_id, period, source_kind, source_file, rows_loaded,
                 sum_amount, statement_type_present, status, message, loaded_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             [None, "HIST", "MAN/IMP", rel_src, total_rows,
              sum(r[amt_idx] for rows in lane_rows.values() for r in rows),
              False, "ok",

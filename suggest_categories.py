@@ -86,7 +86,7 @@ def build_authority_map(
     rows = con.execute(
         """SELECT supplier_name, kategori, segment, COUNT(*) AS n
            FROM fact_supplier_spend
-           WHERE country = ? AND kategori IS NOT NULL
+           WHERE country = %s AND kategori IS NOT NULL
            GROUP BY supplier_name, kategori, segment""",
         ["Sweden"],
     ).fetchall()

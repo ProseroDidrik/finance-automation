@@ -13,7 +13,7 @@
 -- räkenskapsår som inte börjar i januari (t.ex. sept-aug) ger fel YTD-värden.
 -- Alla nuvarande data följer kalenderår; dokumenterat för framtida laddningar.
 --
--- Parametrar (?-bind i ordning):
+-- Parametrar (%s-bind i ordning):
 --   1-3: company_id, year_start, period   — best_source
 --   4:   source_kind override (NULL = auto via prioritet)
 --   5-7: company_id, year_start, period   — raw_balances
@@ -43,7 +43,7 @@ best_source AS (
     fb.company_id,
     fb.period,
     -- Om explicit source_kind ges (param 4), använd den; annars välj per land via prioritet.
-    COALESCE(?, CASE c.country
+    COALESCE(%s, CASE c.country
       WHEN 'Sweden' THEN
         CASE
           WHEN MAX(CASE WHEN fb.source_kind = 'SIE'        THEN 1 ELSE 0 END) = 1 THEN 'SIE'
@@ -75,8 +75,8 @@ best_source AS (
     END) AS source_kind
   FROM fact_balances fb
   JOIN dim_company c ON c.company_id = fb.company_id
-  WHERE fb.company_id = ?
-    AND fb.period BETWEEN ? AND ?
+  WHERE fb.company_id = %s
+    AND fb.period BETWEEN %s AND %s
   GROUP BY fb.company_id, fb.period, c.country
 ),
 
@@ -95,15 +95,15 @@ raw_balances AS (
   SELECT fb.company_id, fb.period, fb.account_code,
          MAX(fb.account_name) AS account_name,
          MAX(fb.period_type)  AS period_type,
-         SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%' THEN -1 ELSE 1 END) AS amount
+         SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%%' THEN -1 ELSE 1 END) AS amount
   FROM fact_balances fb
   JOIN best_source bs
     ON bs.company_id  = fb.company_id
    AND bs.period      = fb.period
    AND bs.source_kind = fb.source_kind
-  WHERE fb.company_id = ?
-    AND fb.period BETWEEN ? AND ?
-    AND fb.scenario = COALESCE(?, fb.scenario)
+  WHERE fb.company_id = %s
+    AND fb.period BETWEEN %s AND %s
+    AND fb.scenario = COALESCE(%s, fb.scenario)
   GROUP BY fb.company_id, fb.period, fb.account_code
 ),
 
@@ -127,7 +127,7 @@ balances AS (
   LEFT JOIN raw_balances prev
     ON prev.company_id   = cur.company_id
    AND prev.account_code = cur.account_code
-   AND prev.period       = ?           -- prev_period
+   AND prev.period       = %s           -- prev_period
    AND prev.period_type  = 'ytd'
   -- Kumulativ summa jan..valt period (för IMP)
   LEFT JOIN (
@@ -139,7 +139,7 @@ balances AS (
   ) inl_ytd
     ON inl_ytd.company_id   = cur.company_id
    AND inl_ytd.account_code = cur.account_code
-  WHERE cur.period = ?                  -- bara valt period, inte årets alla månader
+  WHERE cur.period = %s                  -- bara valt period, inte årets alla månader
 ),
 
 -- 4. Bolagskonton som mappar in i P&L-trädet via parent_id.

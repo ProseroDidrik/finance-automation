@@ -217,7 +217,7 @@ def parse_data(
 INSERT_REG_SQL = """
 INSERT INTO dim_supplier_register
     (country, levprefix, supplier_name, kategori, segment, source_file, loaded_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
 """
 
 INSERT_FACT_SQL = """
@@ -225,7 +225,7 @@ INSERT INTO fact_supplier_spend
     (country, company_id, bolag_label, lev_nr, namn, levprefix,
      supplier_name, kategori, segment,
      year, period_kind, amount, currency, source_file, loaded_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 
@@ -250,8 +250,8 @@ def write_country(
     ]
     con.execute("BEGIN")
     try:
-        con.execute("DELETE FROM dim_supplier_register WHERE country = ?", [country])
-        con.execute("DELETE FROM fact_supplier_spend  WHERE country = ?", [country])
+        con.execute("DELETE FROM dim_supplier_register WHERE country = %s", [country])
+        con.execute("DELETE FROM fact_supplier_spend  WHERE country = %s", [country])
         if reg_payload:
             con.executemany(INSERT_REG_SQL, reg_payload)
         if fact_payload:
@@ -260,7 +260,7 @@ def write_country(
             """INSERT INTO load_history
                (company_id, period, source_kind, source_file, rows_loaded, sum_amount,
                 statement_type_present, status, message, loaded_at)
-               VALUES (NULL, NULL, 'SUPPLIER', ?, ?, ?, FALSE, 'ok', ?, ?)""",
+               VALUES (NULL, NULL, 'SUPPLIER', %s, %s, %s, FALSE, 'ok', %s, %s)""",
             [source_file, len(fact_payload),
              sum(r["amount"] for r in facts) if facts else 0.0,
              f"country={country} register_rows={len(reg_payload)}", now],

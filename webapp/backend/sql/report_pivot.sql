@@ -3,7 +3,7 @@
 -- Avsedd för pivot-vy: rader = konto-tree, kolumner = period-buckets, en cell-summa
 -- per (bolag, account_id, bucket_key).
 --
--- {bucket_values} ersätts av Python till en VALUES-lista (?,?,? per bucket).
+-- {bucket_values} ersätts av Python till en VALUES-lista (%s,%s,%s per bucket).
 --
 -- Bind-parametrar (i ordning, EFTER bucket_values har fyllts in):
 --   - alla bucket-värden (3 per bucket: key, start_period, end_period)
@@ -17,7 +17,7 @@ WITH RECURSIVE
 bucket_spec(bucket_key, start_period, end_period) AS ({bucket_values}),
 
 -- Lista över bolag att rapportera:
-company_filter AS (SELECT UNNEST(?::INTEGER[]) AS company_id),
+company_filter AS (SELECT UNNEST(%s::INTEGER[]) AS company_id),
 
 -- Alla månader vi behöver hämta (täckning av alla bucket-intervall):
 months_needed AS (
@@ -59,7 +59,7 @@ best_source AS (
     SELECT
         fb.company_id,
         fb.period,
-        COALESCE(?, CASE c.country
+        COALESCE(%s, CASE c.country
             WHEN 'Sweden' THEN
                 CASE
                     WHEN MAX(CASE WHEN fb.source_kind = 'SIE'        THEN 1 ELSE 0 END) = 1 THEN 'SIE'
@@ -103,14 +103,14 @@ raw_balances AS (
         fb.company_id, fb.period, fb.account_code,
         MAX(fb.account_name) AS account_name,
         MAX(fb.period_type)  AS period_type,
-        SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%' THEN -1 ELSE 1 END) AS amount
+        SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%%' THEN -1 ELSE 1 END) AS amount
     FROM fact_balances fb
     JOIN best_source bs
         ON bs.company_id  = fb.company_id
        AND bs.period      = fb.period
        AND bs.source_kind = fb.source_kind
     JOIN months_with_prev mw ON mw.period = fb.period
-    WHERE fb.scenario = ?
+    WHERE fb.scenario = %s
     GROUP BY fb.company_id, fb.period, fb.account_code
 ),
 
@@ -150,7 +150,7 @@ month_amounts_fx AS (
         m.company_id, m.period, m.account_code, m.account_name,
         m.amount_month * (
             CASE
-                WHEN ? = 'SEK' AND c.currency != 'SEK' THEN COALESCE(fx.rate, NULL)
+                WHEN %s = 'SEK' AND c.currency != 'SEK' THEN COALESCE(fx.rate, NULL)
                 ELSE 1.0
             END
         ) AS amount_reported

@@ -96,7 +96,7 @@ def load_file(con, path: Path, base_path: Path, *,
 
     # Verifiera att bolaget finns i dim_company
     co = con.execute(
-        "SELECT name, country, currency FROM dim_company WHERE company_id = ?",
+        "SELECT name, country, currency FROM dim_company WHERE company_id = %s",
         [company_id],
     ).fetchone()
     if co is None:
@@ -125,7 +125,7 @@ def load_file(con, path: Path, base_path: Path, *,
     # Konfliktkoll: finns redan IMP för (bolag, period)?
     existing = con.execute(
         """SELECT COUNT(*) FROM fact_balances
-           WHERE company_id = ? AND period = ? AND source_kind = ?""",
+           WHERE company_id = %s AND period = %s AND source_kind = %s""",
         [company_id, period, SOURCE_KIND],
     ).fetchone()[0]
     has_override = is_override_for(override, company_id)
@@ -153,7 +153,7 @@ def load_file(con, path: Path, base_path: Path, *,
         # Bara EN IMP-laddning per (bolag, period) — senaste filen vinner.
         con.execute(
             """DELETE FROM fact_balances
-               WHERE company_id = ? AND period = ? AND source_kind = ?""",
+               WHERE company_id = %s AND period = %s AND source_kind = %s""",
             [company_id, period, SOURCE_KIND],
         )
         con.executemany(
@@ -161,7 +161,7 @@ def load_file(con, path: Path, base_path: Path, *,
                (company_id, period, period_type, account_code, account_name,
                 amount, currency, statement_type, source_kind, source_file,
                 row_index, loaded_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             [(company_id, period, PERIOD_TYPE, r[0], r[1], r[2], currency,
               r[3], SOURCE_KIND, rel_src, r[4], now) for r in rows],
         )
@@ -169,7 +169,7 @@ def load_file(con, path: Path, base_path: Path, *,
             """INSERT INTO load_history
                (company_id, period, source_kind, source_file, rows_loaded,
                 sum_amount, statement_type_present, status, message, loaded_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             [company_id, period, SOURCE_KIND, rel_src, len(rows), total, has_st,
              "warn" if is_warn else "ok",
              f"sum={total:.4f}" + ("" if has_st else " (utan IS/BS-flagga)"),

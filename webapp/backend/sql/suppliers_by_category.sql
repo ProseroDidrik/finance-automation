@@ -3,11 +3,11 @@
 WITH filtered AS (
     SELECT *
     FROM fact_supplier_spend
-    WHERE country = ?
+    WHERE country = %s
       AND period_kind = 'FULL'
-      AND (CAST(? AS INTEGER[]) IS NULL OR company_id IN (SELECT UNNEST(CAST(? AS INTEGER[]))))
-      AND (CAST(? AS TEXT[])    IS NULL OR segment    IN (SELECT UNNEST(CAST(? AS TEXT[]))))
-      AND (CAST(? AS BOOLEAN)   = TRUE  OR kategori IS NOT NULL)
+      AND (CAST(%s AS INTEGER[]) IS NULL OR company_id IN (SELECT UNNEST(CAST(%s AS INTEGER[]))))
+      AND (CAST(%s AS TEXT[])    IS NULL OR segment    IN (SELECT UNNEST(CAST(%s AS TEXT[]))))
+      AND (CAST(%s AS BOOLEAN)   = TRUE  OR kategori IS NOT NULL)
 )
 SELECT
     COALESCE(kategori, '(okategoriserat)') AS kategori,

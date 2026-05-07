@@ -55,7 +55,7 @@ INSERT_SQL = """
         (company_id, period, period_type, account_code, account_name,
          amount, currency, statement_type, source_kind, source_file,
          row_index, scenario, loaded_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 
@@ -180,7 +180,7 @@ def load_file(con, path: Path, base_path: Path,
     try:
         for company_id, rows in by_company.items():
             con.execute(
-                "DELETE FROM fact_balances WHERE company_id = ? AND period = ? AND source_kind = ?",
+                "DELETE FROM fact_balances WHERE company_id = %s AND period = %s AND source_kind = %s",
                 [company_id, IB_PERIOD, SOURCE_KIND],
             )
             idx = 0
@@ -198,7 +198,7 @@ def load_file(con, path: Path, base_path: Path,
             """INSERT INTO load_history
                (company_id, period, source_kind, source_file, rows_loaded,
                 sum_amount, statement_type_present, status, message, loaded_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             [None, IB_PERIOD, SOURCE_KIND, rel_src, total,
              sum(r[3] for r in filtered), True, "ok",
              f"bolag={len(by_company)} skippade={len(skip_companies)}", now],
@@ -247,7 +247,7 @@ def main() -> None:
             row[0]
             for row in con.execute(
                 """SELECT DISTINCT company_id FROM fact_balances
-                   WHERE period = ? AND source_kind IN ('SIE', 'SAFT', 'IMP')""",
+                   WHERE period = %s AND source_kind IN ('SIE', 'SAFT', 'IMP')""",
                 [IB_PERIOD],
             ).fetchall()
         }

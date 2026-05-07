@@ -16,7 +16,7 @@ Idempotens: TRUNCATE dim_account_map; INSERT … vid varje körning. Referensdat
 inte period-bunden — senaste laddning vinner totalt. En sammanfattnings-rad
 skrivs i load_history med period='REF', source_kind='ACCOUNT_MAP'.
 
-Varför direkt XML-parsning?
+Varför direkt XML-parsning%s
   openpyxl 3.1.5 kraschar på filens stylesheet (Font.fontId-attributet är inte
   godkänt) och duckdb's read_xlsx läser bara kolumn A. Direkt zip+ElementTree
   parsning är robust mot stylesheet-quirks och beror bara på stdlib.
@@ -189,14 +189,14 @@ def main() -> None:
                 """INSERT INTO dim_account_map
                    (account_id, description, description_en, is_aggregated,
                     parent_id, source, company_id, account_code, loaded_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 [(*r, now) for r in rows],
             )
             con.execute(
                 """INSERT INTO load_history
                    (company_id, period, source_kind, source_file, rows_loaded,
                     sum_amount, statement_type_present, status, message, loaded_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 [None, SENTINEL_PERIOD, SOURCE_KIND, rel_src, len(rows),
                  None, False, "ok",
                  f"group={n_group} bolag={n_bolag} other={n_other} skipped={skipped}",

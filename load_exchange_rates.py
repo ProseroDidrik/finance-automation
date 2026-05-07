@@ -123,11 +123,11 @@ def load_exchange_rates(con, *, dry_run: bool = False) -> dict[str, int]:
         con.execute("BEGIN")
         try:
             con.execute(
-                "DELETE FROM dim_exchange_rate WHERE rate_type = ?", [rate_type]
+                "DELETE FROM dim_exchange_rate WHERE rate_type = %s", [rate_type]
             )
             con.executemany(
                 """INSERT INTO dim_exchange_rate (period, currency, rate_type, rate, loaded_at)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s)""",
                 [(p, c, rate_type, r, now) for p, c, r in rows],
             )
             con.execute("COMMIT")

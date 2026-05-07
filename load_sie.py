@@ -32,8 +32,6 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-import duckdb
-
 import db
 from shared import begin_run, is_override_for, load_config, log, prev_month_period
 
@@ -239,7 +237,7 @@ def derive_period(parsed: dict) -> str | None:
     return None
 
 
-def build_orgnr_lookup(con: duckdb.DuckDBPyConnection) -> dict[str, tuple[int, str]]:
+def build_orgnr_lookup(con: db.Conn) -> dict[str, tuple[int, str]]:
     """orgnr_normalized → (company_id, name) för alla bolag med orgnr.
 
     SIE är ett svenskt format så valutan är alltid SEK; vi tar ingen valuta
@@ -346,8 +344,8 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     has_override = is_override_for(override, company_id)
     existing = con.execute(
         """SELECT COUNT(*) FROM fact_balances
-           WHERE company_id = ? AND source_kind IN (?, ?)
-             AND period >= ? AND period BETWEEN ? AND ?""",
+           WHERE company_id = %s AND source_kind IN (%s, %s)
+             AND period >= %s AND period BETWEEN %s AND %s""",
         [company_id, SOURCE_KIND, SOURCE_KIND_PSALDO, period, fy_start, fy_end],
     ).fetchone()[0]
     if existing > 0 and not has_override:
@@ -401,19 +399,19 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         if has_override and existing > 0:
             con.execute(
                 """DELETE FROM fact_balances
-                   WHERE company_id = ? AND source_kind IN (?, ?)
-                     AND period > ? AND period BETWEEN ? AND ?""",
+                   WHERE company_id = %s AND source_kind IN (%s, %s)
+                     AND period > %s AND period BETWEEN %s AND %s""",
                 [company_id, SOURCE_KIND, SOURCE_KIND_PSALDO, period, fy_start, fy_end],
             )
             con.execute(
                 """DELETE FROM fact_journal_sie
-                   WHERE company_id = ? AND period > ? AND period BETWEEN ? AND ?""",
+                   WHERE company_id = %s AND period > %s AND period BETWEEN %s AND %s""",
                 [company_id, period, fy_start, fy_end],
             )
         # SIE (UB/RES): senaste laddningen vinner per (bolag, period).
         con.execute(
             """DELETE FROM fact_balances
-               WHERE company_id = ? AND period = ? AND source_kind = ?""",
+               WHERE company_id = %s AND period = %s AND source_kind = %s""",
             [company_id, period, SOURCE_KIND],
         )
         if sie_rows:
@@ -422,7 +420,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                    (company_id, period, period_type, account_code, account_name,
                     amount, currency, statement_type, source_kind, source_file,
                     row_index, loaded_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 [(company_id, period, PERIOD_TYPE, r[0], r[1], r[2], currency,
                   r[3], SOURCE_KIND, rel_src, r[4], now) for r in sie_rows],
             )
@@ -431,10 +429,10 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # PSALDO för 202601 ersätter en ev. tidigare 202601-laddning från
         # samma eller annan SIE-fil.
         if psaldo_periods:
-            placeholders = ",".join("?" * len(psaldo_periods))
+            placeholders = ",".join(["%s"] * len(psaldo_periods))
             con.execute(
                 f"""DELETE FROM fact_balances
-                    WHERE company_id = ? AND source_kind = ?
+                    WHERE company_id = %s AND source_kind = %s
                     AND period IN ({placeholders})""",
                 [company_id, SOURCE_KIND_PSALDO, *psaldo_periods],
             )
@@ -443,7 +441,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                    (company_id, period, period_type, account_code, account_name,
                     amount, currency, statement_type, source_kind, source_file,
                     row_index, loaded_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 [(company_id, r[0], PERIOD_TYPE, r[1], r[2], r[3], currency,
                   r[4], SOURCE_KIND_PSALDO, rel_src, r[5], now)
                  for r in psaldo_rows],
@@ -454,10 +452,10 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # ev. tidigare 202601-laddning från en annan SIE.
         if journal_periods:
             jp_sorted = sorted(journal_periods)
-            placeholders = ",".join("?" * len(jp_sorted))
+            placeholders = ",".join(["%s"] * len(jp_sorted))
             con.execute(
                 f"""DELETE FROM fact_journal_sie
-                    WHERE company_id = ? AND period IN ({placeholders})""",
+                    WHERE company_id = %s AND period IN ({placeholders})""",
                 [company_id, *jp_sorted],
             )
             for i in range(0, len(journal_rows), JOURNAL_BATCH):
@@ -467,7 +465,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                         voucher_text, line_no, account_code, account_name,
                         amount, transaction_text, quantity, currency,
                         source_file, loaded_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     journal_rows[i:i + JOURNAL_BATCH],
                 )
 
@@ -475,7 +473,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             """INSERT INTO load_history
                (company_id, period, source_kind, source_file, rows_loaded,
                 sum_amount, statement_type_present, status, message, loaded_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             [company_id, period, SOURCE_KIND, rel_src,
              len(sie_rows) + len(psaldo_rows) + len(journal_rows), total, True,
              "ok",

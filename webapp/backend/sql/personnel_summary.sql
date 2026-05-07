@@ -5,11 +5,11 @@
 --
 -- Output: en rad per (company × year) med UB/Began/Slutat. Frontend pivotar.
 
-WITH years(y) AS (SELECT unnest(?::INTEGER[]) AS y),
+WITH years(y) AS (SELECT unnest(%s::INTEGER[]) AS y),
      base AS (
          SELECT *
          FROM fact_personnel
-         WHERE country = ?
+         WHERE country = %s
      )
 SELECT
     b.company_id,

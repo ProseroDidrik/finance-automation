@@ -30,8 +30,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 
-import duckdb
-
 import db
 from shared import begin_run, log
 
@@ -45,7 +43,7 @@ def _fy_range_for_period(period: str) -> tuple[str, str]:
     return f"{year}01", f"{year}12"
 
 
-def _resolve_companies(con: duckdb.DuckDBPyConnection,
+def _resolve_companies(con: db.Conn,
                        company_ids: list[int] | None,
                        country: str | None) -> list[tuple[int, str, str]]:
     """Returnerar (company_id, name, country) för bolag som matchar filter."""
@@ -53,11 +51,11 @@ def _resolve_companies(con: duckdb.DuckDBPyConnection,
     where: list[str] = []
     params: list = []
     if company_ids:
-        placeholders = ",".join("?" * len(company_ids))
+        placeholders = ",".join(["%s"] * len(company_ids))
         where.append(f"company_id IN ({placeholders})")
         params.extend(company_ids)
     if country:
-        where.append("country = ?")
+        where.append("country = %s")
         params.append(country)
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -90,41 +88,41 @@ def _delete_targets_for_company(country: str, source_kind: str, period: str
     return [("fact_balances", [source_kind], "eq")]
 
 
-def _count_rows(con: duckdb.DuckDBPyConnection, table: str,
+def _count_rows(con: db.Conn, table: str,
                 source_kinds: list[str], company_id: int,
                 period: str, fy_start: str, fy_end: str,
                 period_clause: str) -> int:
-    where = ["company_id = ?"]
+    where = ["company_id = %s"]
     params: list = [company_id]
     if source_kinds:
-        placeholders = ",".join("?" * len(source_kinds))
+        placeholders = ",".join(["%s"] * len(source_kinds))
         where.append(f"source_kind IN ({placeholders})")
         params.extend(source_kinds)
     if period_clause == "eq":
-        where.append("period = ?")
+        where.append("period = %s")
         params.append(period)
     else:  # fy
-        where.append("period BETWEEN ? AND ?")
+        where.append("period BETWEEN %s AND %s")
         params.extend([fy_start, fy_end])
     sql = f"SELECT COUNT(*) FROM {table} WHERE " + " AND ".join(where)
     return con.execute(sql, params).fetchone()[0]
 
 
-def _delete_rows(con: duckdb.DuckDBPyConnection, table: str,
+def _delete_rows(con: db.Conn, table: str,
                  source_kinds: list[str], company_id: int,
                  period: str, fy_start: str, fy_end: str,
                  period_clause: str) -> None:
-    where = ["company_id = ?"]
+    where = ["company_id = %s"]
     params: list = [company_id]
     if source_kinds:
-        placeholders = ",".join("?" * len(source_kinds))
+        placeholders = ",".join(["%s"] * len(source_kinds))
         where.append(f"source_kind IN ({placeholders})")
         params.extend(source_kinds)
     if period_clause == "eq":
-        where.append("period = ?")
+        where.append("period = %s")
         params.append(period)
     else:
-        where.append("period BETWEEN ? AND ?")
+        where.append("period BETWEEN %s AND %s")
         params.extend([fy_start, fy_end])
     sql = f"DELETE FROM {table} WHERE " + " AND ".join(where)
     con.execute(sql, params)
@@ -210,7 +208,7 @@ def main() -> None:
                         """INSERT INTO load_history
                            (company_id, period, source_kind, source_file, rows_loaded,
                             sum_amount, statement_type_present, status, message, loaded_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         [company_id, args.period, args.source_kind, "(delete_db.py)",
                          -co_total, 0.0, False, "ok",
                          f"DELETE {detail}", datetime.now()],

@@ -318,7 +318,7 @@ INSERT INTO fact_personnel (
     gender, category, salary_local,
     location, apprenticeship_end, pension_apprentice,
     snapshot_date, source_file, loaded_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 
@@ -341,14 +341,14 @@ def write_country(
     ]
     con.execute("BEGIN")
     try:
-        con.execute("DELETE FROM fact_personnel WHERE country = ?", [country])
+        con.execute("DELETE FROM fact_personnel WHERE country = %s", [country])
         if payload:
             con.executemany(INSERT_SQL, payload)
         con.execute(
             """INSERT INTO load_history
                (company_id, period, source_kind, source_file, rows_loaded, sum_amount,
                 statement_type_present, status, message, loaded_at)
-               VALUES (NULL, ?, 'PERSONNEL', ?, ?, NULL, FALSE, 'ok', ?, ?)""",
+               VALUES (NULL, %s, 'PERSONNEL', %s, %s, NULL, FALSE, 'ok', %s, %s)""",
             [snapshot_date.strftime("%Y%m"), source_file, len(payload),
              f"country={country}", now],
         )
@@ -378,8 +378,8 @@ def verify_sweden_pivot(con) -> None:
         ub = con.execute(
             """SELECT COUNT(*) FROM fact_personnel
                WHERE country='Sweden' AND company_id=160
-                 AND employed_from <= ?
-                 AND (employed_to IS NULL OR employed_to > ?)""",
+                 AND employed_from <= %s
+                 AND (employed_to IS NULL OR employed_to > %s)""",
             [end, end],
         ).fetchone()[0]
         if ub != expected["ub"]:
@@ -390,13 +390,13 @@ def verify_sweden_pivot(con) -> None:
             began = con.execute(
                 """SELECT COUNT(*) FROM fact_personnel
                    WHERE country='Sweden' AND company_id=160
-                     AND EXTRACT(year FROM employed_from) = ?""",
+                     AND EXTRACT(year FROM employed_from) = %s""",
                 [year],
             ).fetchone()[0]
             slutat = con.execute(
                 """SELECT COUNT(*) FROM fact_personnel
                    WHERE country='Sweden' AND company_id=160
-                     AND EXTRACT(year FROM employed_to) = ?""",
+                     AND EXTRACT(year FROM employed_to) = %s""",
                 [year],
             ).fetchone()[0]
             if began != expected["began"] or slutat != expected["slutat"]:

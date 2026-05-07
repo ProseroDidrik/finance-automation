@@ -1,0 +1,33 @@
+# Core data + Excel
+pandas>=2.0
+openpyxl>=3.1
+xlrd>=2.0
+msoffcrypto-tool>=5.4
+
+# Lokal dev / migrationskälla. Kvarstår även efter Postgres-cutover eftersom
+# scripts/migrate_duckdb_to_postgres.py läser data/finance.duckdb.
+duckdb>=1.0
+
+# Postgres-driver (Azure DB for PostgreSQL Flexible Server)
+psycopg[binary]>=3.2
+
+# Webapp
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.20
+sse-starlette>=2.0
+
+# Easy Auth-headerdekod (X-MS-CLIENT-PRINCIPAL)
+pyjwt>=2.8
+
+# HTTP-klienter (mcp_server, leverantörer)
+requests>=2.32
+httpx>=0.27
+
+# MCP-server (utvecklarverktyg)
+mcp>=1.0
+
+# Azure-integrationer (App Service Managed Identity, Key Vault, Blob)
+azure-identity>=1.17
+azure-keyvault-secrets>=4.8
+azure-storage-blob>=12.20
