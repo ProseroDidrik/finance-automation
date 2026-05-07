@@ -184,6 +184,13 @@ def install_auth_middleware(app) -> None:
         if not path.startswith("/api/") or path in EXEMPT_PATHS:
             return await call_next(request)
 
+        # DEV_AUTH_BYPASS=1 → släpp igenom utan Maestro-check. Bypass är
+        # tänkt för lokal dev där varken Easy Auth eller MAESTRO_GROUP_ID
+        # är konfigurerat; vägrar slå på sig om WEBSITE_SITE_NAME är satt.
+        if _bypass_enabled():
+            request.state.user = _dev_user()
+            return await call_next(request)
+
         user = current_user(request)
         if user is None:
             return JSONResponse(
