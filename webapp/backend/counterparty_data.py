@@ -46,11 +46,14 @@ def list_available_periods() -> list[dict]:
             periods.setdefault(p, {"period": p, "has_csv": False, "has_saft": False, "n_saft_files": 0})
             periods[p]["has_csv"] = True
 
-    # SAF-T-mappar
-    cfg = load_config()
-    base = Path(cfg["base_path"])
-    extracted = base / "extracted"
-    if extracted.exists():
+    # SAF-T-mappar — hoppa över om config.json saknas (t.ex. i molnet utan
+    # tillgång till lokal Dropbox-path).
+    try:
+        cfg = load_config()
+    except FileNotFoundError:
+        cfg = None
+    extracted = Path(cfg["base_path"]) / "extracted" if cfg else None
+    if extracted is not None and extracted.exists():
         for d in extracted.iterdir():
             if d.is_dir() and re.match(r"^\d{6}$", d.name):
                 p = d.name

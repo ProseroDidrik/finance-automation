@@ -43,7 +43,13 @@ from shared import load_config, log, prev_month_period
 
 # ── Konstanter ─────────────────────────────────────────────────────────────────
 _BASE = Path(__file__).resolve().parent
-GET_TESTFILES = Path(load_config()["base_path"])
+
+
+def _get_testfiles_dir() -> Path:
+    """Lazy lookup av base_path. Module-level import ska inte krascha
+    om config.json saknas (t.ex. när webapp:en importerar från oss i en container)."""
+    return Path(load_config()["base_path"])
+
 
 BRREG_URL      = "https://data.brreg.no/enhetsregisteret/api/enheter/{}"
 SANCTIONS_URL  = "https://api.sanctions.network/rpc/search_sanctions"
@@ -404,7 +410,7 @@ def main():
 
     if args.period:
         period = args.period
-        period_dir = GET_TESTFILES / "extracted" / period
+        period_dir = _get_testfiles_dir() / "extracted" / period
         files = find_saft_files(period_dir)
         if not files:
             log("ERROR", "check_counterparties",
