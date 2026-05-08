@@ -33,6 +33,7 @@ on:
       - "webapp/**"
       - "db.py"
       - "shared.py"
+      - "check_counterparties.py"
       - "requirements.txt"
       - ".dockerignore"
       - ".github/workflows/deploy.yml"

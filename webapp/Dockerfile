@@ -35,7 +35,7 @@ RUN pip install -r requirements.txt
 # Backend-källkod. _params/, _inbox/, data/, .venv etc. exkluderas via
 # .dockerignore — webapp:en läser dim_company från Postgres och master-filen
 # (om den behövs) från Blob Storage.
-COPY db.py shared.py ./
+COPY db.py shared.py check_counterparties.py ./
 COPY webapp/backend/ ./webapp/backend/
 COPY webapp/config/  ./webapp/config/
 
