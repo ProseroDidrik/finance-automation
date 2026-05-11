@@ -501,24 +501,60 @@ try {
     Remove-Item $tmpManifest -ErrorAction SilentlyContinue
 }
 
-# Skapa client secret för Easy Auth code-flow (krävs vid callback-exchange)
+# Easy Auth V2 setup. V1 hade två bevisade fallgropar i privata tenanten:
+#   1. Nonce/state-cookien blev odekryptabel vid callback ibland (RedirectCount=4 +
+#      Nonce=deleted) → 401 utan synlig anledning. V2 har stabilare cookie-hantering.
+#   2. V1 saknar per-path exempt så /api/health gick inte att proba utan auth-hack.
+# V2 stöder excludedPaths direkt.
+#
+# Kritiskt: gör config-version upgrade FÖRST (sätter upp V2-schema), sen secret +
+# provider-config. Om man gör secret/provider före upgrade så stomp:ar upgraden
+# secret-värdet (kopierar tillbaka V1:s inline clientSecret). Se separat memory.
+
+# Steg 1: Skapa secret + lagra i app setting (V2 läser via name-reference)
+Write-Info 'Skapar client secret för Easy Auth...'
 $easyAuthSecret = (Invoke-Az ad app credential reset --id $authAppId --display-name 'easy-auth' --years 2 --append --query password -o tsv).Trim()
 
-# Slå på Easy Auth (V1-syntax — default på nuvarande az CLI).
-# V2-issuer (login.microsoftonline.com/.../v2.0) eftersom moderna App Registrations
-# utfärdar V2-tokens som Easy Auth annars rejecterar med 401 vid callback.
-Write-Info 'Konfigurerar Easy Auth på webapp:en...'
+# Steg 2: Säkerställ V2-schema. Idempotent — om redan V2 är kommandot en no-op-ish.
+$configVer = (Test-Az webapp auth config-version show --name $WebApp --resource-group $RG --query configVersion -o tsv)
+if (-not $configVer -or $configVer -eq 'v1') {
+    Write-Info 'Upgrading Easy Auth-schema till V2...'
+    Invoke-Az webapp auth config-version upgrade --name $WebApp --resource-group $RG --output none
+}
+
+# Steg 3: Sätt app-setting med secret-värdet. Via fil pga eventuella ` ` `~` `.` i värdet.
+$tmpSecret = (New-TemporaryFile).FullName
+try {
+    $payload = @{ MICROSOFT_PROVIDER_AUTHENTICATION_SECRET = $easyAuthSecret } | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText($tmpSecret, $payload, [System.Text.UTF8Encoding]::new($false))
+    Invoke-Az webapp config appsettings set --name $WebApp --resource-group $RG --settings "@$tmpSecret" --output none
+} finally {
+    Remove-Item $tmpSecret -ErrorAction SilentlyContinue
+}
+Remove-Variable easyAuthSecret
+
+# Steg 4: Konfigurera Microsoft-provider mot vår App Reg.
+# V1-issuer (sts.windows.net) — token validerar med ver=1.0 från App Reg där
+# accessTokenAcceptedVersion=null (=1). audience MÅSTE vara clientId (inte callback-URL).
+Write-Info 'Konfigurerar Easy Auth V2 Microsoft-provider...'
+Invoke-Az webapp auth microsoft update `
+    --name $WebApp --resource-group $RG `
+    --client-id $authAppId `
+    --client-secret-setting-name MICROSOFT_PROVIDER_AUTHENTICATION_SECRET `
+    --issuer "https://sts.windows.net/$TenantId/" `
+    --allowed-token-audiences $authAppId `
+    --yes --output none
+
+# Steg 5: Slå på platformen + redirect + /api/health exempt
 Invoke-Az webapp auth update `
     --name $WebApp --resource-group $RG `
     --enabled true `
-    --action LoginWithAzureActiveDirectory `
-    --aad-client-id $authAppId `
-    --aad-client-secret $easyAuthSecret `
-    --aad-token-issuer-url "https://login.microsoftonline.com/$TenantId/v2.0" `
-    --aad-allowed-token-audiences $authAppId `
+    --runtime-version "~2" `
+    --action RedirectToLoginPage `
+    --redirect-provider azureactivedirectory `
+    --excluded-paths "/api/health" `
     --output none
-Remove-Variable easyAuthSecret
-Write-Ok 'Easy Auth aktiverad (Microsoft-provider, omdirigerar oinloggade)'
+Write-Ok 'Easy Auth V2 aktiverad (Microsoft-provider, /api/health exempt)'
 
 # ---------------------------------------------------------------------------
 # App Registration för GitHub Actions OIDC
