@@ -1,7 +1,12 @@
-# Warehouse-schema (`data/finance.duckdb`)
+# Warehouse-schema (Postgres)
 
-Star schema. Tre **dim**-tabeller (referensdata), tre **fact**-tabeller (rådata),
-en **load_history** för revision. All läsning/skrivning går genom `db.py`.
+Star schema i Azure Database for PostgreSQL Flexible Server. Tre **dim**-tabeller
+(referensdata), tre **fact**-tabeller (rådata), en **load_history** för revision.
+All läsning/skrivning går genom `db.py` (psycopg3).
+
+Connection: `DATABASE_URL` (lokalt: docker compose-Postgres eller direkt mot
+moln-instansen `psql-finauto-6427.postgres.database.azure.com`; från App Service
+injekterad från Key Vault `kv-finauto-6427/database-url`).
 
 ## Översikt
 
@@ -322,13 +327,15 @@ Perioder med data: 202112 (IB, 75 bolag) · 202201–202512 (historik) · 202601
 
 ## Inspektera live
 
+Via warehouse-MCP:n (rekommenderat): anropa `describe_schema` följt av `query_sql`.
+
+Direkt via psql:
 ```
-py -c "import duckdb; con=duckdb.connect('data/finance.duckdb', read_only=True); print(con.execute('DESCRIBE').df().to_string())"
+psql "$env:DATABASE_URL" -c "\dt"
+psql "$env:DATABASE_URL" -c "SELECT * FROM dim_company LIMIT 5"
 ```
 
-eller via duckdb CLI:
+Eller via Python:
 ```
-duckdb data/finance.duckdb
-> DESCRIBE;
-> SELECT * FROM dim_company LIMIT 5;
+py -c "from db import connect; c=connect(read_only=True); c.execute(\"SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY 1\"); print('\n'.join(r[0] for r in c.fetchall()))"
 ```

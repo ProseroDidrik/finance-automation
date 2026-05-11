@@ -1,31 +1,48 @@
-"""MCP-server som exponerar warehouse (data/finance.duckdb) read-only.
+"""MCP-server som exponerar warehouse (Postgres) read-only.
 
-Tools (Fas 1):
-  - describe_schema  : SCHEMA.md + live tabellöversikt
+Tools:
+  - describe_schema  : SCHEMA.md + live tabellöversikt med radantal
   - query_sql        : fri SELECT med radtak, timeout och DML-blockering
 
 Två transporter:
   - stdio  (default): startas av Claude Code via .mcp.json
   - http   (--http) : streamable-http på 127.0.0.1:8765/mcp för Claude Desktop
+
+Connection: läser ``DATABASE_URL`` från miljön. Om den saknas hämtas
+secret ``database-url`` från Azure Key Vault (``kv-finauto-6427``) via
+``DefaultAzureCredential`` — så fungerar servern transparent när
+Claude Code startar den utan att shell-env ärvs, så länge användaren
+är ``az login``-ad.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import pathlib
 import re
 import threading
 import time
 
-import duckdb
+import pandas as pd
+import psycopg
+
+# Azure SDK loggar pratigt till stderr vilket korruperar MCP stdio-protokollet.
+# Stäng allt under WARNING för azure.*-trädet.
+for _name in ("azure", "azure.identity", "azure.core", "azure.keyvault", "httpx", "httpcore", "urllib3"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+os.environ.setdefault("AZURE_LOG_LEVEL", "warning")
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import TransportSecuritySettings
 
 ROOT = pathlib.Path(__file__).parent
-DB_PATH = ROOT / "data" / "finance.duckdb"
 SCHEMA_MD = ROOT / "SCHEMA.md"
 LOG_PATH = ROOT / "_logs" / "mcp_queries.jsonl"
 TOKEN_PATH = ROOT / ".mcp_token"
+
+KEYVAULT_NAME = os.environ.get("AZURE_KEYVAULT_NAME", "kv-finauto-6427")
+KEYVAULT_SECRET_NAME = os.environ.get("AZURE_KEYVAULT_SECRET", "database-url")
 
 QUERY_TIMEOUT_SEC = 30.0
 DEFAULT_LIMIT = 1000
@@ -36,7 +53,7 @@ HTTP_PORT = 8765
 
 WRITE_PATTERN = re.compile(
     r"\b(insert|update|delete|create|drop|alter|attach|detach|"
-    r"copy|pragma|truncate|vacuum|set|export|import|use)\b",
+    r"copy|truncate|vacuum|grant|revoke)\b",
     re.IGNORECASE,
 )
 LIMIT_PATTERN = re.compile(r"\blimit\b\s+\d+", re.IGNORECASE)
@@ -51,10 +68,27 @@ mcp = FastMCP(
 )
 
 
-def _connect() -> duckdb.DuckDBPyConnection:
-    if not DB_PATH.exists():
-        raise FileNotFoundError(f"Warehouse saknas: {DB_PATH}")
-    return duckdb.connect(str(DB_PATH), read_only=True)
+def _resolve_database_url() -> str:
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.keyvault.secrets import SecretClient
+    except ImportError as exc:
+        raise RuntimeError(
+            "DATABASE_URL saknas i miljön och azure-keyvault-secrets är inte installerat. "
+            "Antingen: sätt $env:DATABASE_URL eller `pip install azure-identity azure-keyvault-secrets`."
+        ) from exc
+    vault_url = f"https://{KEYVAULT_NAME}.vault.azure.net"
+    client = SecretClient(vault_url=vault_url, credential=DefaultAzureCredential())
+    secret = client.get_secret(KEYVAULT_SECRET_NAME)
+    os.environ["DATABASE_URL"] = secret.value
+    return secret.value
+
+
+def _connect() -> psycopg.Connection:
+    return psycopg.connect(_resolve_database_url(), autocommit=True)
 
 
 def _log(entry: dict) -> None:
@@ -74,20 +108,20 @@ def describe_schema() -> str:
     else:
         parts.append("(SCHEMA.md saknas)")
 
-    with _connect() as con:
-        tables = con.execute(
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
             """
             SELECT table_name
             FROM information_schema.tables
-            WHERE table_schema = 'main'
+            WHERE table_schema = 'public'
             ORDER BY table_name
             """
-        ).fetchall()
-
+        )
+        tables = [r[0] for r in cur.fetchall()]
         rows = []
-        for (name,) in tables:
-            count = con.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
-            rows.append((name, count))
+        for name in tables:
+            cur.execute(f'SELECT COUNT(*) FROM "{name}"')
+            rows.append((name, cur.fetchone()[0]))
 
     parts.append("\n## Live snapshot\n")
     parts.append("| Tabell | Rader |")
@@ -101,7 +135,7 @@ def describe_schema() -> str:
 def query_sql(sql: str, limit: int = DEFAULT_LIMIT) -> str:
     """Kör en SELECT-query mot warehouse. Read-only.
 
-    - DML/DDL avvisas (INSERT/UPDATE/DELETE/CREATE/DROP/ATTACH/COPY/PRAGMA/...).
+    - DML/DDL avvisas (INSERT/UPDATE/DELETE/CREATE/DROP/ATTACH/COPY/TRUNCATE/...).
     - Om ingen LIMIT finns i queryn slås den på automatiskt (max `limit` rader).
     - Timeout: 30 sekunder.
     - Resultat ≤50 rader → markdown-tabell. Större → preview + summary.
@@ -118,19 +152,36 @@ def query_sql(sql: str, limit: int = DEFAULT_LIMIT) -> str:
         sql_to_run = f"SELECT * FROM ({sql_to_run}) AS _q LIMIT {int(limit)}"
 
     t0 = time.time()
-    con = _connect()
-    timer = threading.Timer(QUERY_TIMEOUT_SEC, con.interrupt)
+    conn = _connect()
+    # statement_timeout på session-nivå räcker som primär timeout-mekanism.
+    # Threading.Timer + conn.cancel() är belt-and-braces (cancel kräver
+    # secondary connection och kan ta tid att verka).
+    with conn.cursor() as cur:
+        # SET tar inte parametrar i Postgres, embedda literal.
+        cur.execute(f"SET statement_timeout = {int(QUERY_TIMEOUT_SEC * 1000)}")
+
+    def _cancel() -> None:
+        try:
+            conn.cancel()
+        except Exception:
+            pass
+
+    timer = threading.Timer(QUERY_TIMEOUT_SEC + 2, _cancel)
     timer.start()
     try:
-        df = con.execute(sql_to_run).fetchdf()
+        with conn.cursor() as cur:
+            cur.execute(sql_to_run)
+            columns = [d[0] for d in cur.description] if cur.description else []
+            rows = cur.fetchall()
+        df = pd.DataFrame(rows, columns=columns)
     except Exception as exc:
         timer.cancel()
-        con.close()
+        conn.close()
         _log({"sql": sql, "ok": False, "error": str(exc)})
         return f"ERROR: {exc}"
     finally:
         timer.cancel()
-        con.close()
+        conn.close()
 
     elapsed_ms = int((time.time() - t0) * 1000)
     n = len(df)
