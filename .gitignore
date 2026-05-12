@@ -1,5 +1,6 @@
 _params/*
 !_params/overrides.json
+!_params/facit_overrides.json
 _logs/
 _uploads/
 __pycache__/

@@ -1,0 +1,21 @@
+{
+  "_comment": "Mappar facit-filnamn-stem -> bolag_id för verify_facit.py när token-matching inte räcker (diakriter, typos, ambiguous matches).",
+  "JM Lukko mar Inl": 221,
+  "JM Lukko 202603 INL": 221,
+  "JM Lukko 202604 INL": 221,
+  "Lukkoässa 202603 INL": 166,
+  "Lukkoässa 202604 INL": 166,
+  "Lukitusteknikka-STY 202603 INL": 161,
+  "Luktitusteknikka 202604 INL": 161,
+  "Prosero Security GmbH mar Inl": 187,
+  "Prosero Gmbh 202604 INL": 187,
+  "Prosero Oy mar Inl": 145,
+  "Prosero Oy 202604 INL ny": 145,
+  "Tele-Projekti 202603 INL": 181,
+  "Tele-Projekt 202604 INL": 181,
+  "Suomen Turvalukko 202603 INL": 185,
+  "Turvalukko 202604 INL": 185,
+  "Franz Mittermeier 202603 INL": 231,
+  "SIKOM 202603 INL NY": 216,
+  "H+W Mechatronic 202603 INL": 246
+}
