@@ -92,20 +92,18 @@ jobs:
         run: |
           set -euo pipefail
           URL="https://${{ vars.APP_NAME }}.azurewebsites.net/api/health"
-          # Easy Auth (V1) blockerar /api/health med 401 för oinloggade requests
-          # — vi kan inte exempt:a path:n utan att uppgradera till V2 + globalValidation.
-          # 401 räcker som tecken på att containern är upp och svarar. 200 betyder
-          # att Easy Auth är avstängt; 302 → redirect till login (också OK).
+          # Easy Auth V2 är konfat med excludedPaths=/api/health (bootstrap.ps1),
+          # så probe:n ska svara 200 med JSON {"status":"ok"}. Allt annat (401,
+          # 302, 5xx) tyder på regression — antingen att excludedPaths fallit
+          # bort, att DB-anslutningen är trasig, eller att containern inte är upp.
           for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
             sleep 10
             code=$(curl -sk -o /dev/null -w "%{http_code}" "$URL" || true)
             echo "[$i] $URL -> $code"
-            case "$code" in
-              200|302|401)
-                echo "Health-probe OK efter ${i} försök (HTTP $code = container alive)."
-                exit 0
-                ;;
-            esac
+            if [ "$code" = "200" ]; then
+              echo "Health-probe OK efter ${i} försök."
+              exit 0
+            fi
           done
-          echo "Health-probe svarade aldrig — kolla App Service-loggarna."
+          echo "Health-probe svarade aldrig 200 — kolla App Service-loggarna."
           exit 1
