@@ -4,6 +4,9 @@ openpyxl>=3.1
 xlrd>=2.0
 msoffcrypto-tool>=5.4
 
+# .msg-mail parsing (extract.py / dry_run.py)
+extract-msg>=0.48
+
 # Lokal dev / migrationskälla. Kvarstår även efter Postgres-cutover eftersom
 # scripts/migrate_duckdb_to_postgres.py läser data/finance.duckdb.
 duckdb>=1.0
@@ -31,3 +34,6 @@ mcp>=1.0
 azure-identity>=1.17
 azure-keyvault-secrets>=4.8
 azure-storage-blob>=12.20
+
+# Lokal kontrollpanel (gui.py) — körs inte i App Service-containern
+PySide6>=6.7

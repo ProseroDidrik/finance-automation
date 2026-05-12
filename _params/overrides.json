@@ -1,6 +1,9 @@
 {
   "_comment": "Mappar tvetydiga mail/bilagor till rätt BolagsID. Läses av extract.py och dry_run.py via shared.load_overrides(). Editeras via GUI:t (Redigera overrides) eller manuellt här.",
-  "subject_overrides": {},
+  "subject_overrides": {
+    "Sikkerhet AS  pr april 2026": 104,
+    "SIst men inte minst _": 33
+  },
   "attachment_overrides": [
     {
       "msg_stem": "norrskydd",
