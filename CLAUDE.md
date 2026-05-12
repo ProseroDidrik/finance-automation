@@ -60,13 +60,13 @@ py load_inl.py  --period 202604                       # FI/DK/DE Excel
 py load_inl.py  --period 202604 --override            # global override
 py load_inl.py  --period 202604 --override 134 196    # bara dessa bolag
 
-py load_sie.py  --period 202604                       # SE (auto-period från #PSALDO)
+py load_sie.py  --period 202604                       # SE (auto-period från #PSALDO, inkl. #VER/#TRANS)
 py load_sie.py  --period 202604 --override 32         # rulla över bolag 32
-py load_sie.py  --include-journal                     # inkl. #VER/#TRANS
+py load_sie.py  --period 202604 --no-include-journal  # hoppa över journal (snabbare för stora filer)
 
-py load_saft.py --period 202604                       # NO (auto-period från header)
+py load_saft.py --period 202604                       # NO (auto-period från header, inkl. GeneralLedgerEntries)
 py load_saft.py --period 202604 --override
-py load_saft.py --include-journal                     # inkl. GeneralLedgerEntries
+py load_saft.py --period 202604 --no-include-journal  # hoppa över journal
 
 # Radera utfall — --source_kind alltid krav (lager-isolering).
 # IMP på SE/NO → hela FY (SIE+SIE_PSALDO+journal eller SAFT+journal).

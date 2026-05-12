@@ -362,7 +362,11 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # Journal: strömmande iterparse + batchad insert (5000 rader/batch).
         # Idempotens: en SAF-T-fil = ett komplett journal-set; rensa per
         # (company_id, source_file) före insert.
+        # Cutoff: om --period är satt skippas journal-rader med
+        # tx_date.period > period_override (FY-filer kan innehålla framtida
+        # tomma månader; vi vill bara ladda upp t.o.m. perioden).
         journal_rows_loaded = 0
+        journal_skipped = 0
         journal_periods: set[str] = set()
         if include_journal:
             con.execute(
@@ -374,6 +378,9 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             for j in iter_saft_journal(path):
                 tx_date = j["transaction_date"]
                 jp = f"{tx_date.year:04d}{tx_date.month:02d}" if tx_date else period
+                if period_override and jp > period_override:
+                    journal_skipped += 1
+                    continue
                 journal_periods.add(jp)
                 debit = j["debit"] or 0.0
                 credit = j["credit"] or 0.0
@@ -415,7 +422,9 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         return "error"
 
     journal_msg = f" JOURNAL={journal_rows_loaded}({len(journal_periods)} mån)" if include_journal else ""
-    log("OK", company_id, f"{path.name}  rader={len(rows)}{journal_msg} sum={total:.2f}")
+    cutoff_msg = (f"  CUTOFF<= {period_override}: skippade journal={journal_skipped}"
+                  if include_journal and period_override and journal_skipped else "")
+    log("OK", company_id, f"{path.name}  rader={len(rows)}{journal_msg} sum={total:.2f}{cutoff_msg}")
     return "ok"
 
 
@@ -447,9 +456,11 @@ def main() -> None:
     parser.add_argument("--source-dir", default=None,
                         help="Mapp att läsa från (default: extracted/{period}/Norway under base_path)")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--include-journal", action="store_true",
+    parser.add_argument("--include-journal", default=True,
+                        action=argparse.BooleanOptionalAction,
                         help="Ladda även GeneralLedgerEntries till "
-                             "fact_journal_saft (opt-in; SAF-T-filer är ofta stora)")
+                             "fact_journal_saft. Default: aktivt. "
+                             "--no-include-journal stänger av (SAF-T-filer är ofta stora).")
     parser.add_argument("--override", nargs="*", type=int, default=None, metavar="ID",
                         help="Skriv över befintlig SAFT inom FY. "
                              "--override = global; --override 134 196 = bara dessa bolag.")

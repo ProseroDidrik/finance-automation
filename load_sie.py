@@ -185,14 +185,24 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
 
 
 def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
-                             rel_src: str, now: datetime) -> tuple[list[tuple], set[str]]:
-    """Plana ut vouchers → rader för fact_journal_sie. Returnerar (rows, periods)."""
+                             rel_src: str, now: datetime,
+                             period_cutoff: str | None = None
+                             ) -> tuple[list[tuple], set[str], int]:
+    """Plana ut vouchers → rader för fact_journal_sie.
+
+    period_cutoff: om satt, skippa vouchers vars period (YYYYMM) > cutoff.
+    Returnerar (rows, periods, skipped_periods_count).
+    """
     konto = parsed["konto"]
     rows: list[tuple] = []
     periods: set[str] = set()
+    skipped = 0
     for v in parsed["vouchers"]:
         d = v["date"]  # 'YYYYMMDD'
         period = d[:6]
+        if period_cutoff and period > period_cutoff:
+            skipped += 1
+            continue
         periods.add(period)
         try:
             from datetime import date as _date
@@ -207,7 +217,7 @@ def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
                 t["amount"], t["trans_text"], t["quantity"],
                 currency, rel_src, now,
             ))
-    return rows, periods
+    return rows, periods, skipped
 
 
 def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
@@ -287,7 +297,13 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                 f"men filens data-through (#PSALDO max) är {period_derived}. "
                 "Filen saknar data för begärd period.")
             return "error"
-        period = period_derived
+        # Om --period är explicit angiven och filen sträcker sig längre fram
+        # (t.ex. PSALDO för hela FY men användaren vill bara ha t.o.m. mars),
+        # klipper vi UB/RES/PSALDO/journal till --period nedan. UB/RES får
+        # period = period_override (filen är YTD t.o.m. den månaden för de
+        # konton som har transaktioner; för 'tomma' framtida månader är UB/RES
+        # samma värde, så ingen informationsförlust).
+        period = period_override or period_derived
     elif period_override:
         period = period_override
     else:
@@ -324,9 +340,15 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         sie_rows.append((code, konto.get(code), amt, "IS", idx))
 
     # PSALDO-rader: en lane per fil; period kommer från radens egen YYYYMM.
+    # Klipps till <= period_override om sådan är satt (slipper skräp för framtida
+    # tomma månader i filer som täcker hela FY).
     psaldo_rows: list[tuple] = []
     idx_per_period: dict[str, int] = {}
+    psaldo_skipped = 0
     for p, code, amt in parsed["psaldo"]:
+        if period_override and p > period_override:
+            psaldo_skipped += 1
+            continue
         idx_per_period[p] = idx_per_period.get(p, 0) + 1
         psaldo_rows.append(
             (p, code, konto.get(code), amt, st_for(code), idx_per_period[p])
@@ -365,9 +387,11 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
 
     journal_rows: list[tuple] = []
     journal_periods: set[str] = set()
+    journal_skipped = 0
     if include_journal and parsed["vouchers"]:
-        journal_rows, journal_periods = vouchers_to_journal_rows(
+        journal_rows, journal_periods, journal_skipped = vouchers_to_journal_rows(
             parsed, company_id, currency, rel_src, now,
+            period_cutoff=period_override,
         )
 
     if dry_run:
@@ -491,8 +515,12 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
 
     psaldo_msg = f" PSALDO={len(psaldo_rows)}({len(psaldo_periods)} mån)" if psaldo_rows else ""
     journal_msg = f" JOURNAL={len(journal_rows)}({len(journal_periods)} mån)" if journal_rows else ""
+    cutoff_msg = (f"  CUTOFF<= {period_override}: skippade PSALDO={psaldo_skipped} "
+                  f"vouchers={journal_skipped}"
+                  if period_override and (psaldo_skipped or journal_skipped) else "")
     log("OK", company_id,
-        f"{path.name}  period={period}  rader={len(sie_rows)}{psaldo_msg}{journal_msg}  sum={total:.2f}")
+        f"{path.name}  period={period}  rader={len(sie_rows)}{psaldo_msg}{journal_msg}  "
+        f"sum={total:.2f}{cutoff_msg}")
     return "ok"
 
 
@@ -515,9 +543,11 @@ def main() -> None:
                         help="Mapp att läsa från "
                              "(default: extracted/{period}/Sweden under base_path)")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--include-journal", action="store_true",
-                        help="Ladda även #VER/#TRANS till fact_journal_sie "
-                             "(opt-in, kan vara tungt för stora filer)")
+    parser.add_argument("--include-journal", default=True,
+                        action=argparse.BooleanOptionalAction,
+                        help="Ladda även #VER/#TRANS till fact_journal_sie. "
+                             "Default: aktivt. --no-include-journal stänger av "
+                             "(kan vara tungt för stora filer).")
     parser.add_argument("--override", nargs="*", type=int, default=None, metavar="ID",
                         help="Skriv över befintlig SIE/SIE_PSALDO inom FY. "
                              "--override = global; --override 134 196 = bara dessa bolag.")
