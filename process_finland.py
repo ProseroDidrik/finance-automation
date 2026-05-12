@@ -139,12 +139,41 @@ def extract_period(text: str) -> str:
 
 
 def _find_period_col(rows: list, target_period: str) -> int | None:
-    """Scan the first rows for a cell whose extract_period() matches target_period."""
+    """Scan first rows for the data-column-header row and return the column whose
+    period matches target_period.
+
+    Prioriterar rader med >=2 period-celler — det är den riktiga kolumn-header-
+    raden (e.g. 'Account|01.04.2026-30.04.2026|01.04.2025-30.04.2025|...').
+    Skippar 'Date range'-rader som har period bara i en kolumn med fel offset.
+    Fallback: greedy första match (för enkla layouter med 1 period-kolumn).
+    """
+    candidate_rows: list[tuple[int, list[tuple[int, str]]]] = []
+    for r_idx, row in enumerate(rows[:10]):
+        periods_in_row: list[tuple[int, str]] = []
+        for i, cell in enumerate(row):
+            p = extract_period(str(cell).strip() if cell is not None else "")
+            if p:
+                periods_in_row.append((i, p))
+        if len(periods_in_row) >= 2:
+            candidate_rows.append((r_idx, periods_in_row))
+    if candidate_rows:
+        for i, p in candidate_rows[0][1]:
+            if p == target_period:
+                return i
+    # Fallback: greedy
     for row in rows[:10]:
         for i, cell in enumerate(row):
             if extract_period(str(cell).strip() if cell is not None else "") == target_period:
                 return i
     return None
+
+
+def _fennoa_month_range(period: str) -> str:
+    """period=202604 → '(01.04.2026-30.04.2026)'. För att glob:a månads-Fennoa-export."""
+    from calendar import monthrange
+    yyyy, mm = period[:4], period[4:6]
+    last_day = monthrange(int(yyyy), int(mm))[1]
+    return f"(01.{mm}.{yyyy}-{last_day:02d}.{mm}.{yyyy})"
 
 
 def verify_sum(is_rows, bs_rows) -> float:
@@ -190,11 +219,30 @@ def _try_glob(d: Path, *patterns: str) -> Path:
 #   encoding auto-detected (latin-1 or utf-16-le), separator ;
 # ---------------------------------------------------------------------------
 
-def read_fennoa_csv(filepath: str) -> list:
+def read_fennoa_csv(filepath: str, target_period: str | None = None) -> list:
+    """Fennoa-CSV: kolumn 0 = 'NNNN Namn', kolumn 1 = belopp default.
+
+    Vissa Fennoa-exporter har flera datum-kolumner (FY föregående år | månad |
+    YTD aktuell period). Om target_period är satt scannas header-raderna för
+    att hitta den kolumn vars period matchar (via extract_period()). Fallback
+    till kolumn 1 om ingen match.
+    """
     enc = _detect_csv_enc(filepath)
     if enc in ("utf-16-le", "utf-16"):
-        return read_csv_col_enc(filepath, col=1, encoding=enc)
+        return read_csv_col_enc(filepath, col=1, encoding=enc, target_period=target_period)
     df = pd.read_csv(filepath, header=None, encoding=enc, sep=";", dtype=str)
+    col = 1
+    if target_period:
+        # Skapa list-of-rows och delegera till _find_period_col (samma logik som
+        # för utf-16-filerna — prioriterar multi-period-header-rader framför
+        # 'Date range'-etiketter med fel kolumn-offset).
+        rows_for_scan = [
+            [df.iloc[i, j] if pd.notna(df.iloc[i, j]) else "" for j in range(len(df.columns))]
+            for i in range(min(10, len(df)))
+        ]
+        found = _find_period_col(rows_for_scan, target_period)
+        if found is not None:
+            col = found
     rows = []
     for _, row in df.iterrows():
         cell = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
@@ -202,7 +250,7 @@ def read_fennoa_csv(filepath: str) -> list:
         if parsed is None:
             continue
         acc, name = parsed
-        amt = parse_amount(row.iloc[1])
+        amt = parse_amount(row.iloc[col] if col < len(row) else None)
         if amt == 0.0:
             continue
         rows.append((acc, name, amt))
@@ -715,8 +763,8 @@ def process_company(
 def run_146(d: Path):
     return process_company(
         code="146", friendly_name="Avain-Asema", period=PERIOD,
-        bs_rows_raw=read_fennoa_csv(str(glob_one(d, "146_*Balansr*.csv"))),
-        is_rows_raw=read_fennoa_csv(str(glob_one(d, "146_*Resultatr*.csv"))),
+        bs_rows_raw=read_fennoa_csv(str(glob_one(d, "146_*Balansr*.csv")), target_period=PERIOD),
+        is_rows_raw=read_fennoa_csv(str(glob_one(d, "146_*Resultatr*.csv")), target_period=PERIOD),
     )
 
 
@@ -823,10 +871,12 @@ def run_182(d: Path):
 
 
 def run_185(d: Path):
+    # Tar månads-filen (01.MM.YYYY-DD.MM.YYYY) i stället för YTD (01.01-DD.MM).
+    month = _fennoa_month_range(PERIOD)
     return process_company(
         code="185", friendly_name="Suomen-Turvalukko", period=PERIOD,
-        bs_rows_raw=read_muutos_csv(str(glob_one(d, "185_*[Bb]alance*sheet*.csv"))),
-        is_rows_raw=read_fennoa_csv(str(glob_one(d, "185_*[Ii]ncome*statement*.csv"))),
+        bs_rows_raw=read_muutos_csv(str(glob_one(d, f"185_*[Bb]alance*sheet*{month}*.csv"))),
+        is_rows_raw=read_fennoa_csv(str(glob_one(d, f"185_*[Ii]ncome*statement*{month}*.csv")), target_period=PERIOD),
     )
 
 
@@ -844,14 +894,17 @@ def run_193(d: Path):
 
 
 def run_195(d: Path):
+    # Tar månads-filen (01.MM.YYYY-DD.MM.YYYY) i stället för YTD (01.01-DD.MM)
+    # för både Tase och Tuloslaskelma. Muutos i månadsfilen = månadsändring.
+    month = _fennoa_month_range(PERIOD)
     return process_company(
         code="195", friendly_name="Meri-Lapin", period=PERIOD,
         bs_rows_raw=read_muutos_csv_enc(
-            str(glob_one(d, "195_*[Tt]ase*.csv")), encoding="utf-16-le",
+            str(glob_one(d, f"195_*[Tt]ase*{month}*.csv")), encoding="utf-16-le",
         ),
         is_rows_raw=read_csv_col_enc(
-            str(glob_one(d, "195_Tuloslaskelma_*.csv")),
-            col=1, encoding="utf-16-le",
+            str(glob_one(d, f"195_Tuloslaskelma_*{month}*.csv")),
+            col=1, encoding="utf-16-le", target_period=PERIOD,
         ),
     )
 

@@ -68,7 +68,7 @@ COMPANY_DEFS: dict[str, dict] = {
     "187": dict(reader="monthly_value",        file_glob="187_*monthly*value*.xlsx"),
     "188": dict(reader="monthly_value",        file_glob="188_*monthly*value*.xlsx"),
     "220": dict(reader="susa_csv",             file_glob="220_Susa_*.csv"),
-    "231": dict(reader="susa_pro_monat",       file_glob="231_Susa*.xlsx"),
+    "231": dict(reader="susa_pro_monat",       file_glob="231_*Susa*.xlsx"),
     "245": dict(reader="susa_pro_monat",       file_glob="245_*SuSa*.xlsx"),
     "246": dict(reader="susa_jahresuebersicht", file_glob="246_SUSA_{period}*.xlsx"),
 }
