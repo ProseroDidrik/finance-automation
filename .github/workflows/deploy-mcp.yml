@@ -18,6 +18,7 @@ on:
       - "mcp_server.py"
       - "SCHEMA.md"
       - "webapp/Dockerfile.mcp"
+      - ".dockerignore"
       - ".github/workflows/deploy-mcp.yml"
   workflow_dispatch:
 
