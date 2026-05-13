@@ -38,6 +38,7 @@ from mcp.server.fastmcp.server import TransportSecuritySettings
 
 ROOT = pathlib.Path(__file__).parent
 SCHEMA_MD = ROOT / "SCHEMA.md"
+SEMANTICS_MD = ROOT / "docs" / "warehouse_semantics.md"
 LOG_PATH = ROOT / "_logs" / "mcp_queries.jsonl"
 TOKEN_PATH = ROOT / ".mcp_token"
 
@@ -100,8 +101,11 @@ def _log(entry: dict) -> None:
 
 @mcp.tool()
 def describe_schema() -> str:
-    """Returnera warehouse-schema (SCHEMA.md) plus live tabellöversikt
-    med radantal per tabell. Anropa detta först när du ska skriva en query."""
+    """Returnera warehouse-schema (SCHEMA.md), live tabellöversikt med radantal,
+    plus query-semantik (warehouse_semantics.md) som täcker period_type,
+    best_source-prioritet per land, scenario-filter, teckenkonvention och
+    facit-jämförelse. Anropa detta FÖRST när du ska skriva en query — utan
+    semantik-reglerna räknar du fel."""
     parts: list[str] = []
     if SCHEMA_MD.exists():
         parts.append(SCHEMA_MD.read_text(encoding="utf-8"))
@@ -128,6 +132,15 @@ def describe_schema() -> str:
     parts.append("|---|---:|")
     for name, count in rows:
         parts.append(f"| `{name}` | {count:,} |")
+
+    # Semantik-reglerna (period_type, best_source, etc.) — finns både i
+    # repo:t (docs/warehouse_semantics.md) och som lokal skill i Claude Code.
+    # Här bakas den in i tool-svaret så Claude.ai/Desktop-användare också får
+    # reglerna automatiskt vid första describe_schema-anropet.
+    if SEMANTICS_MD.exists():
+        parts.append("\n\n---\n\n# Query-semantik (läs detta innan du skriver SQL)\n")
+        parts.append(SEMANTICS_MD.read_text(encoding="utf-8"))
+
     return "\n".join(parts)
 
 

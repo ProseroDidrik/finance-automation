@@ -28,8 +28,10 @@ RUN pip install --no-cache-dir \
         "azure-identity>=1.17" \
         "azure-keyvault-secrets>=4.8"
 
-# Minimal källkod: bara mcp_server.py och SCHEMA.md (describe_schema läser den).
+# Minimal källkod: mcp_server.py + SCHEMA.md (DDL) + warehouse_semantics
+# (skill-reglerna som describe_schema appendar till sin output).
 COPY mcp_server.py SCHEMA.md ./
+COPY docs/warehouse_semantics.md ./docs/warehouse_semantics.md
 
 # Bind till alla interfaces inuti containern (App Service-routing exposear $PORT).
 ENV MCP_HTTP_HOST=0.0.0.0 \

@@ -1,0 +1,392 @@
+
+# finance-warehouse query guide
+
+Postgres-warehouse (Azure DB for PostgreSQL Flexible Server) för Prosero-
+koncernens nordiska bolag (SE/NO/FI/DK/DE + CENTR/CA). Star schema kring
+`fact_balances`. Det här dokumentet fångar **semantiken som inte syns i DDL** —
+läs `describe_schema` för aktuella tabeller, använd den här guiden för *hur*
+man läser dem utan att räkna fel.
+
+## TL;DR — workflow per fråga
+
+1. **`describe_schema` först** i nya sessioner — bekräftar tabellnamn + live radantal.
+2. Identifiera mönster: vilken tabell, vilket `period_type`, vilken source_kind-prioritet?
+3. Skriv queryn med `scenario='A'` (utfall) som default och rätt best_source per land.
+4. Vid valuta-jämförelse: konvertera via `dim_exchange_rate` med `rate_type='avg'`.
+5. Vid tveksamhet: visa SQL för användaren innan stora aggregeringar körs.
+
+## Postgres-syntax (cloud sedan 2026-05-11)
+
+- `STRING_AGG`, inte `LIST_AGG`
+- Inget `QUALIFY` — wrappa i CTE/subquery
+- `to_char(date_col, 'YYYYMM')` istället för DuckDB:s `strftime(date, '%Y%m')`
+- `DATE_TRUNC('month', ts::date)` istället för DuckDB-date-funktioner
+- Inga `USING SAMPLE`, ingen `FILTER`-syntax på `COUNT` (Postgres stödjer den
+  faktiskt, men håll det enkelt med `SUM(CASE WHEN ... THEN 1 ELSE 0 END)`)
+- I parametriserade queries: escape `%` som `%%` (psycopg-parameter-rendering)
+
+## Tabeller — quick map
+
+| Tabell | Innehåll |
+|---|---|
+| `dim_company` | bolagsregister + förvärvsdata (`closing_date`, `ev_sek_m`, `ebitda_ltm`, `sales_ltm`, `investment_currency`) |
+| `dim_period` | YYYYMM → år/månad/kvartal/datum |
+| `dim_account_map` | kontoplan + P&L-trädet (rekursivt via `parent_id`, rot = `'P&L'`) |
+| `dim_exchange_rate` | (period, currency, rate_type='avg'\|'constant') → SEK per enhet utländsk |
+| `fact_balances` | **huvudfakta**: saldon per (bolag, period, konto, källa, scenario) |
+| `fact_journal_sie` | transaktionsrader (Sverige) — opt-in via load_sie.py |
+| `fact_journal_saft` | transaktionsrader (Norge) — opt-in via load_saft.py |
+| `fact_personnel` | snapshot per anställd (en rad / person, inte tidsserie) |
+| `dim_supplier_register` | `(country, levprefix)` → `supplier_name`, `kategori`, `segment` |
+| `fact_supplier_spend` | spend per (bolag, leverantör, år, period_kind) — endast helår/H1 |
+| `backup_from_mercur` | Mercur-facit för datatäckning (se § Facit nedan) |
+| `load_history` | log över alla körningar |
+
+---
+
+## Mental model 1 — `period_type` ('ytd' vs 'monthly')
+
+`fact_balances.amount` betyder **olika saker per source_kind**:
+
+| `source_kind` | Land | `period_type` |
+|---|---|---|
+| `SIE`, `SIE_PSALDO` | Sverige + CA | `'ytd'` (ackumulerat från 1 jan) |
+| `SAFT` | Norge | `'ytd'` |
+| `IMP` | FI/DK/DE/CENTR + Mercur-historik alla | `'monthly'` (rörelse just den månaden) |
+| `IMP_ADJ`, `MAN` | Mercur-justeringar, alla länder | `'monthly'` |
+| `IB` | (ingående balans 202112) | `'monthly'` |
+
+**Aldrig `SUM(amount)` rakt över länder utan att normalisera.** Mönster:
+
+- **Månadsbelopp:** `cur.amount - prev_period.amount` om `period_type='ytd'`, annars `cur.amount`.
+- **YTD-belopp:** `cur.amount` om `period_type='ytd'`, annars `SUM(amount)` jan..valt period.
+- **Färdigt mönster** i `webapp/backend/sql/report_pnl.sql:112-143` (`balances` CTE) — kopiera direkt.
+
+YTD-konverteringen antar **kalenderår**. Bolag med brutet räkenskapsår skulle ge fel värden (inga finns idag, flagga om någon laddas).
+
+---
+
+## Mental model 2 — `best_source` (källprioritet per land)
+
+Samma (bolag, period) kan ha rader från flera source_kinds (t.ex. både `SIE`
+och `IMP` om Mercur-historik finns). **Välj högsta prioritet per land** —
+summera aldrig över alla källor.
+
+| Land | Prioritet (utfall, scenario='A') |
+|---|---|
+| Sweden | `SIE` → `SIE_PSALDO` → `IMP` → `IMP_ADJ` |
+| Norway | `SAFT` → `IMP` → `IMP_ADJ` |
+| Finland, Denmark, Germany, CENTR | `IMP` → `IMP_ADJ` |
+| CA | `SIE` → `IMP` → `IMP_ADJ` |
+
+`SIE_PSALDO` = `#PSALDO`-raderna i SIE-filen (alternativ periodsaldo-
+representation). När både `SIE` och `SIE_PSALDO` finns för samma bolag, välj
+`SIE`. När bara `SIE_PSALDO` finns (13 av 46 SE-bolag idag), använd den som
+fallback — den innehåller samma slags YTD-saldon.
+
+Färdigt mönster: `report_pnl.sql:41-81` (`best_source` CTE).
+
+**OBS — INL är borta:** sedan 2026-05-cutovern lagrar `load_inl.py` (FI/DK/DE)
+data med `source_kind='IMP'`, inte `'INL'`. Äldre dokumentation kan referera
+till `INL` — det är samma sak som `IMP` i koden idag.
+
+---
+
+## Mental model 3 — Tecken­konvention
+
+Rådata följer **SIE-konvention**: intäkt **negativ**, kostnad **positiv**,
+tillgång positiv, skuld/eget kapital negativ.
+
+**Undantag — `P_*`-konton (Mercur P-koder)** är lagrade i **Mercur-konvention**
+(intäkt positiv). `report_pnl.sql:98` flippar tecknet:
+
+```sql
+SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%' THEN -1 ELSE 1 END)
+```
+
+Frontend gör ytterligare display-flip via `pnl_kpis.yaml`. **När du frågar
+`fact_balances` direkt får du SIE-rådatat**, inte presentationen.
+
+---
+
+## Mental model 4 — Scenario-filter
+
+`fact_balances.scenario`:
+- `'A'` = utfall (Actuals) — default för rapporter
+- `'B'` = budget
+
+**Nyans för `MAN`:** Den primära användningen är budget (`scenario='B'`,
+107 bolag 202604), men det finns **också MAN-rader för utfall** (`scenario='A'`,
+47 bolag 202604) som representerar manuella justeringar på utfallssiffrorna.
+
+`report_pnl.sql`s `best_source`-CTE **exkluderar MAN helt** — manuella
+utfallsjusteringar fångas inte upp av huvudrapporten. För facit-analys eller
+audit, fråga MAN-A separat.
+
+**Default i alla utfallsfrågor:** `WHERE scenario = 'A'`. Glömmer du det dubbleras
+utfall + budget.
+
+---
+
+## Tabellspecifika anteckningar
+
+### `fact_personnel` är snapshot, inte tidsserie
+
+En rad **per anställd**, inte per (anställd, period):
+
+- `employed_from`, `employed_to` (NULL = aktiv) — räkna ut aktivitet vid valt datum själv.
+- `employment_pct` (1.0 = heltid) — **summera detta för FTE**, inte `COUNT(*)` (det blir headcount).
+- Endast SE/NO/FI har data — DK/DE saknas.
+- `salary_local` är ifyllt bara för FI (i `dim_company.currency`).
+
+```sql
+-- Aktiv FTE per ett datum:
+SELECT company_id, SUM(employment_pct) AS fte
+FROM fact_personnel
+WHERE employed_from <= DATE '2026-04-30'
+  AND (employed_to IS NULL OR employed_to > DATE '2026-04-30')
+GROUP BY company_id;
+```
+
+### `dim_company` förvärvsdata (kol K–P i Dotterbolagslistan)
+
+Sex fält som speglar bolaget **vid köptillfället** — `NULL` för CENTR/CA och
+organiska bolagsbildningar (~112/147 bolag har värde):
+
+| Kolumn | Notering |
+|---|---|
+| `closing_date` | Datum för köp (DATE) |
+| `investment_currency` | Valuta för LTM-siffrorna. I praktiken = `currency` idag |
+| `ev_sek_m` | **OBS — namnet vilseleder**. Header säger "EV (SEKm)" men värdena är råa belopp i `investment_currency`, inte miljoner SEK |
+| `ev_ebitda_ltm` | **Skalningsbug** i Excel: värdet är multipeln × 10⁶ (5,7M = 5.7x). Dela med `1e6`, eller räkna själv som `ev_sek_m / ebitda_ltm` |
+| `ebitda_ltm`, `sales_ltm` | Råa belopp i `investment_currency` |
+
+**Filtrera alltid `WHERE ev_sek_m IS NOT NULL`** vid förvärvsanalyser.
+
+```sql
+-- EV-konvertering till SEK på köpdagen (Postgres: to_char, inte strftime):
+SELECT c.company_id, c.name, c.country, c.closing_date,
+       c.ev_sek_m * COALESCE(r.rate, 1.0) AS ev_sek
+FROM dim_company c
+LEFT JOIN dim_exchange_rate r
+  ON r.currency = c.investment_currency
+ AND r.rate_type = 'avg'
+ AND r.period = to_char(c.closing_date, 'YYYYMM')
+WHERE c.ev_sek_m IS NOT NULL
+ORDER BY ev_sek DESC;
+```
+
+### `fact_supplier_spend` — inte månadsvis
+
+- `period_kind`: `'FULL'` (helår) eller `'H1'`. Inga andra värden, ingen månadsupplösning.
+- `year`: 2021..2025. **Ingen 2026-data än.**
+- `amount` i `currency` (bolagets lokala) — konvertera via `dim_exchange_rate` för cross-country jämförelse.
+- `levprefix` är joinnyckel mot `dim_supplier_register` på `(country, levprefix)`.
+- `company_id` kan vara `NULL` — använd `bolag_label` som fallback.
+- `kategori`/`segment` finns på både dim och fact (snapshot vid laddning) — föredra `dim_supplier_register` för "senaste klassificering".
+- **Bara Sverige har data** (`country='Sweden'`) idag.
+
+```sql
+-- Topp 20 leverantörer 2024:
+SELECT COALESCE(d.supplier_name, f.namn) AS supplier,
+       d.kategori, d.segment, SUM(f.amount) AS spend
+FROM fact_supplier_spend f
+LEFT JOIN dim_supplier_register d
+  ON d.country = f.country AND d.levprefix = f.levprefix
+WHERE f.country = 'Sweden' AND f.year = 2024 AND f.period_kind = 'FULL'
+GROUP BY 1, 2, 3
+ORDER BY spend DESC
+LIMIT 20;
+```
+
+### `dim_account_map` — rekursivt P&L-träd
+
+Hierarki med rot `account_id = 'P&L'` och `parent_id`-pekare uppåt.
+`(company_id, account_code)` är join-nyckeln mot `fact_balances`.
+
+Gruppkonton (`is_aggregated = TRUE`) har inga directa balances — de aggregerar
+via barnen. Vanliga rotnoder utöver `P&L`: `B` (Balans), `BUD` (Budget),
+`FTE`, `ÅRRES`.
+
+Hela trädet: `report_pnl.sql:24-35` (`accounts` CTE med `WITH RECURSIVE`).
+
+---
+
+## Facit: `backup_from_mercur`
+
+Mercur-export av samma utfall som ska hamna i `fact_balances`. Används som
+**sanity-check** för att verifiera att vår ETL fångat allt Mercur har.
+
+**Källor i tabellen** (efter 2026-05-13-laddningen av `2026 Backup.txt`):
+
+- `IMP` — FI/DK/DE-utfall (matchar fact.IMP exakt, både rader och summa)
+- `SIE` — SE-utfall (matchar fact.SIE/SIE_PSALDO på *existens*, inte summa)
+- `SAFT` — NO-utfall (matchar fact.SAFT på existens)
+- `MAN`, `IMP_ADJ` — manuella justeringar
+
+**KRITISKT — amount-mismatch är förväntat för SIE/SAFT.** Backup lagrar
+*månadsbevegelser* (M-rader), fact_balances lagrar *YTD-saldon*. Beloppen är
+inte jämförbara rakt av:
+
+| Källa | backup.amount | fact.amount | Jämförbarhet |
+|---|---|---|---|
+| `IMP`, `MAN`, `IMP_ADJ` | monthly | monthly | ✅ direkt |
+| `SIE`, `SAFT` | monthly | YTD | ❌ jämför bara existens |
+
+**Mönster för facit-coverage** (`webapp/backend/sql/compare_coverage.sql`):
+
+```sql
+-- backup-sidan: aggregera per (bolag, period, källa, scenario)
+WITH backup_agg AS (
+    SELECT company_id, period, source_kind, scenario,
+           COUNT(*) AS rows, SUM(amount) AS total
+    FROM backup_from_mercur WHERE scenario = 'A'
+    GROUP BY 1,2,3,4
+),
+-- fact-sidan SE: välj SIE > SIE_PSALDO, taggat som 'SIE' så join funkar
+sie_pick AS (
+    SELECT DISTINCT company_id, period, scenario,
+           FIRST_VALUE(source_kind) OVER (
+               PARTITION BY company_id, period, scenario
+               ORDER BY CASE source_kind WHEN 'SIE' THEN 1
+                                          WHEN 'SIE_PSALDO' THEN 2 END
+           ) AS picked_kind
+    FROM fact_balances
+    WHERE source_kind IN ('SIE', 'SIE_PSALDO') AND scenario = 'A'
+),
+fact_sie AS (
+    SELECT fb.company_id, fb.period, 'SIE' AS source_kind, fb.scenario,
+           COUNT(*)::int AS rows, SUM(fb.amount) AS total
+    FROM sie_pick p
+    JOIN fact_balances fb USING (company_id, period, scenario)
+    WHERE fb.source_kind = p.picked_kind
+    GROUP BY fb.company_id, fb.period, fb.scenario
+),
+-- IMP/SAFT/MAN/IMP_ADJ rakt av
+fact_other AS (
+    SELECT company_id, period, source_kind, scenario,
+           COUNT(*)::int AS rows, SUM(amount) AS total
+    FROM fact_balances
+    WHERE source_kind IN ('IMP', 'SAFT', 'MAN', 'IMP_ADJ') AND scenario = 'A'
+    GROUP BY 1,2,3,4
+)
+SELECT b.*, f.rows AS fact_rows, f.total AS fact_sum,
+       CASE
+           WHEN f.company_id IS NULL THEN 'missing'  -- finns i facit, inte i fact
+           WHEN b.source_kind IN ('IMP','MAN','IMP_ADJ')  -- monthly: jämför summor
+                AND ABS(b.total - f.total) > 1
+                AND ABS(b.total - f.total) > 0.01 * NULLIF(ABS(b.total), 0)
+           THEN 'mismatch'
+           ELSE 'ok'
+       END AS status
+FROM backup_agg b
+LEFT JOIN (SELECT * FROM fact_sie UNION ALL SELECT * FROM fact_other) f
+  USING (company_id, period, source_kind, scenario);
+```
+
+**Tröskel-trick:** lägg till absolut tolerans (`> 1` enhet) utöver relativa
+1 %-villkoret, annars trillar floating-point-brus runt 0 in som mismatch.
+
+---
+
+## Övriga frågemallar
+
+### Ad hoc P&L för (bolag, period)
+
+Använd helst `report_pnl.sql` via webapp-endpointen `/api/report/pnl`. För
+direkt query mot warehouse:
+
+```sql
+WITH best AS (
+  SELECT company_id, period,
+    CASE
+      WHEN MAX(CASE WHEN source_kind='SIE'        THEN 1 ELSE 0 END)=1 THEN 'SIE'
+      WHEN MAX(CASE WHEN source_kind='SIE_PSALDO' THEN 1 ELSE 0 END)=1 THEN 'SIE_PSALDO'
+      WHEN MAX(CASE WHEN source_kind='SAFT'       THEN 1 ELSE 0 END)=1 THEN 'SAFT'
+      WHEN MAX(CASE WHEN source_kind='IMP'        THEN 1 ELSE 0 END)=1 THEN 'IMP'
+      WHEN MAX(CASE WHEN source_kind='IMP_ADJ'    THEN 1 ELSE 0 END)=1 THEN 'IMP_ADJ'
+    END AS source_kind
+  FROM fact_balances
+  WHERE company_id = ? AND period = ? AND scenario = 'A'
+  GROUP BY company_id, period
+)
+SELECT fb.account_code, fb.account_name,
+       fb.amount * CASE WHEN fb.account_code LIKE 'P_%' THEN -1 ELSE 1 END AS amount
+FROM fact_balances fb
+JOIN best USING (company_id, period, source_kind)
+WHERE fb.scenario = 'A'
+ORDER BY fb.account_code;
+```
+
+För SE/NO: amount = YTD direkt. För FI/DK/DE: amount = bara den månadens
+bevegelse — för YTD jan..period måste du `SUM` över alla månader.
+
+### Valuta till SEK
+
+```sql
+SELECT fb.*, fb.amount * COALESCE(r.rate, 1.0) AS amount_sek
+FROM fact_balances fb
+JOIN dim_company c USING (company_id)
+LEFT JOIN dim_exchange_rate r
+  ON r.period = fb.period AND r.currency = c.currency AND r.rate_type = 'avg'
+WHERE c.currency != 'SEK';
+```
+
+### Vilka bolag har data för en period?
+
+```sql
+SELECT period, c.country, COUNT(DISTINCT fb.company_id) AS bolag
+FROM fact_balances fb
+JOIN dim_company c USING (company_id)
+WHERE fb.scenario = 'A' AND fb.source_kind IN ('SIE','SIE_PSALDO','SAFT','IMP')
+GROUP BY 1, 2 ORDER BY 1, 2;
+```
+
+---
+
+## Anti-mönster — gör inte detta
+
+❌ `SELECT SUM(amount) FROM fact_balances WHERE period = ?`
+   — blandar YTD/monthly + dubblar källor.
+
+❌ Jämför `amount` mellan SE och DK utan period_type-normalisering.
+
+❌ Använd `fact_balances.amount` direkt som "intäkt" utan teckenflip för
+   `P_*`-koder eller utan att veta att SIE-tecken är default.
+
+❌ `COUNT(*) FROM fact_personnel` ≠ FTE. FTE = `SUM(employment_pct)` med
+   `employed_to`-filter. `COUNT(*)` är headcount inkl. avslutade.
+
+❌ `SELECT * FROM fact_supplier_spend WHERE period = '202604'` — kolumnen
+   heter inte `period`, det finns bara `(year, period_kind='FULL'|'H1')`.
+
+❌ Glöm `WHERE scenario = 'A'` i utfallsfrågor → får med MAN-budget.
+
+❌ Jämför `backup_from_mercur.amount` mot `fact_balances.amount` rakt för
+   SE-SIE eller NO-SAFT — backup är monthly, fact är YTD. Jämför existens,
+   inte summor, för dessa källor.
+
+❌ `strftime(date, '%Y%m')` är DuckDB-syntax. Postgres: `to_char(date, 'YYYYMM')`.
+
+❌ `INL` som source_kind — sedan 2026-05-cutovern är det `IMP` även för
+   FI/DK/DE. Äldre dokumentation kan referera till `INL`.
+
+---
+
+## Live snapshot — radantal per tabell
+
+Kör `describe_schema` i början av varje session för aktuella siffror. Som
+referens (2026-05-13):
+
+| Tabell | Rader |
+|---|---:|
+| `dim_company` | 147 |
+| `dim_account_map` | ~80 700 |
+| `fact_balances` | ~430 000 |
+| `backup_from_mercur` | ~430 000 (efter 2026-facit-laddning) |
+| `fact_journal_sie` | ~820 000 |
+| `fact_journal_saft` | ~910 000 |
+| `fact_personnel` | ~3 070 |
+| `fact_supplier_spend` | ~47 700 |
+
+Bolag per land: SE 61 · NO 42 · FI 21 · CENTR 8 · DK 8 · DE 5 · CA 2.

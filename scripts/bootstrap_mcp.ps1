@@ -1,4 +1,4 @@
-# bootstrap_mcp.ps1 — provisar MCP-serverns App Service ovanpå befintlig infra.
+﻿# bootstrap_mcp.ps1 — provisar MCP-serverns App Service ovanpå befintlig infra.
 #
 # Kräver att scripts/bootstrap.ps1 redan körts. Återanvänder samma RG, ASP, ACR
 # och Key Vault. Skapar en EGEN App Service (app-finauto-mcp-$Suffix) som kör
