@@ -30,10 +30,12 @@ webapp/frontend/node_modules
 webapp/frontend/dist
 webapp/frontend/.vite
 
-# Tooling som inte behövs i container
+# Tooling som inte behövs i container.
+# (mcp_server.py finns med — den kopieras explicit i webapp/Dockerfile.mcp.
+#  Den tas inte upp av webapp/Dockerfile som bara COPY:ar namngivna filer,
+#  så den hamnar inte i webapp-imagen heller — ingen läckage.)
 gui.py
 gui_*.py
-mcp_server.py
 start-mcp.ps1
 *.log
 *.tmp
