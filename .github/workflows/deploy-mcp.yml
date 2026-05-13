@@ -1,0 +1,89 @@
+name: Build & deploy MCP-server
+
+# Bygger MCP-server-containern (finance-mcp), pushar till ACR och pekar
+# App Service "app-finauto-mcp-6427" på nya image-tagen. Skild från deploy.yml
+# (webapp:en) så MCP kan deployas oberoende.
+#
+# Engångs-setup (kör scripts/bootstrap_mcp.ps1):
+#   - skapar App Service app-finauto-mcp-6427 i samma RG som webapp:en
+#   - tilldelar SystemAssigned MI med AcrPull och Key Vault Secrets User
+#   - lägger app-setting MCP_BEARER_TOKEN @KV(mcp-bearer-token) + DATABASE_URL
+#
+# Repo vars som måste finnas: ACR_NAME, MCP_APP_NAME, RESOURCE_GROUP.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mcp_server.py"
+      - "SCHEMA.md"
+      - "webapp/Dockerfile.mcp"
+      - ".github/workflows/deploy-mcp.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-mcp
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login till Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login till ACR
+        run: az acr login --name "${{ vars.ACR_NAME }}"
+
+      - name: Build & push MCP-image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ vars.ACR_NAME }}.azurecr.io/finance-mcp:${IMAGE_TAG}"
+          IMAGE_LATEST="${{ vars.ACR_NAME }}.azurecr.io/finance-mcp:latest"
+          docker build -f webapp/Dockerfile.mcp -t "$IMAGE" -t "$IMAGE_LATEST" .
+          docker push "$IMAGE"
+          docker push "$IMAGE_LATEST"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Peka App Service mot nya image-tagen
+        run: |
+          set -euo pipefail
+          az webapp config container set \
+            --name "${{ vars.MCP_APP_NAME }}" \
+            --resource-group "${{ vars.RESOURCE_GROUP }}" \
+            --container-image-name "${IMAGE}"
+          az webapp restart \
+            --name "${{ vars.MCP_APP_NAME }}" \
+            --resource-group "${{ vars.RESOURCE_GROUP }}"
+
+      - name: Vänta på health-probe
+        run: |
+          set -euo pipefail
+          URL="https://${{ vars.MCP_APP_NAME }}.azurewebsites.net/healthz"
+          # /healthz är public (ingen bearer-token) — bearer-middleware släpper
+          # förbi den så Azure App Service liveness-probe kan svara 200.
+          # 401/302/5xx tyder på regression: token-config trasig, container
+          # inte upp, eller MCP_BEARER_TOKEN inte injekterad.
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            sleep 10
+            code=$(curl -sk -o /dev/null -w "%{http_code}" "$URL" || true)
+            echo "[$i] $URL -> $code"
+            if [ "$code" = "200" ]; then
+              echo "Health-probe OK efter ${i} försök."
+              exit 0
+            fi
+          done
+          echo "Health-probe svarade aldrig 200 — kolla App Service-loggarna."
+          exit 1

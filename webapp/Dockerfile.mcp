@@ -1,0 +1,44 @@
+# MCP-server container för App Service for Containers.
+#
+# Exponerar warehouse:t som remote MCP-server (streamable-http) med
+# bearer-token-auth. Tänkt för delning med kollegor som lägger till
+# servern som Custom Connector i Claude.ai.
+#
+# Build-context = repo-rot (samma som webapp/Dockerfile). Bygg lokalt:
+#   docker build -f webapp/Dockerfile.mcp -t finance-mcp:dev .
+
+FROM python:3.12-slim AS app
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# Bara det som mcp_server.py importerar — håll image:n liten.
+# (Slipper openpyxl/extract-msg/PySide6/duckdb från fulla requirements.txt.)
+RUN pip install --no-cache-dir \
+        "psycopg[binary]>=3.2" \
+        "pandas>=2.0" \
+        "tabulate>=0.9" \
+        "mcp>=1.0" \
+        "uvicorn[standard]>=0.30" \
+        "starlette>=0.40" \
+        "azure-identity>=1.17" \
+        "azure-keyvault-secrets>=4.8"
+
+# Minimal källkod: bara mcp_server.py och SCHEMA.md (describe_schema läser den).
+COPY mcp_server.py SCHEMA.md ./
+
+# Bind till alla interfaces inuti containern (App Service-routing exposear $PORT).
+ENV MCP_HTTP_HOST=0.0.0.0 \
+    PORT=8080
+
+EXPOSE 8080
+
+RUN useradd --create-home --uid 10001 mcpuser \
+    && chown -R mcpuser:mcpuser /app
+USER mcpuser
+
+CMD ["python", "mcp_server.py", "--http"]

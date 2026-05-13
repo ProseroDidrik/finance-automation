@@ -48,8 +48,8 @@ QUERY_TIMEOUT_SEC = 30.0
 DEFAULT_LIMIT = 1000
 PREVIEW_ROWS = 50
 
-HTTP_HOST = "127.0.0.1"
-HTTP_PORT = 8765
+HTTP_HOST = os.environ.get("MCP_HTTP_HOST", "127.0.0.1")
+HTTP_PORT = int(os.environ.get("PORT", os.environ.get("MCP_HTTP_PORT", "8765")))
 
 WRITE_PATTERN = re.compile(
     r"\b(insert|update|delete|create|drop|alter|attach|detach|"
@@ -201,10 +201,19 @@ def query_sql(sql: str, limit: int = DEFAULT_LIMIT) -> str:
 
 
 def _load_token() -> str:
+    """Token-prio: MCP_BEARER_TOKEN env → .mcp_token-fil (lokal dev).
+
+    I Azure App Service sätts ``MCP_BEARER_TOKEN`` som @Microsoft.KeyVault-ref
+    mot ``kv-finauto-6427/mcp-bearer-token``. Lokalt kör vi mot .mcp_token-filen
+    så stdio-läget och http-läget delar mönster utan att kräva env.
+    """
+    env_token = os.environ.get("MCP_BEARER_TOKEN", "").strip()
+    if env_token:
+        return env_token
     if not TOKEN_PATH.exists():
         raise SystemExit(
-            f"Token saknas: {TOKEN_PATH}\n"
-            "Generera en med:\n"
+            f"Token saknas: varken MCP_BEARER_TOKEN-env eller {TOKEN_PATH} hittades.\n"
+            "Generera en lokal med:\n"
             '  py -c "import secrets; print(secrets.token_urlsafe(32))" > .mcp_token'
         )
     return TOKEN_PATH.read_text(encoding="utf-8").strip()
@@ -216,15 +225,21 @@ def _run_http() -> None:
     Accepterar token i två former:
       - Authorization: Bearer <token>   (primärt)
       - ?token=<token>                  (fallback för UI:er som inte har headers-fält)
+
+    /healthz är ALLTID public — Azure App Service liveness-probe pingar den utan
+    Authorization-header och skulle annars få 401 → unhealthy.
     """
     import uvicorn
     from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, PlainTextResponse
+    from starlette.routing import Route
 
     expected = _load_token()
 
     class BearerAuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
+            if request.url.path == "/healthz":
+                return await call_next(request)
             header = request.headers.get("authorization", "")
             token = header[7:] if header.lower().startswith("bearer ") else ""
             if not token:
@@ -235,10 +250,18 @@ def _run_http() -> None:
                 )
             return await call_next(request)
 
+    async def _healthz(_request):
+        return PlainTextResponse("ok")
+
     app = mcp.streamable_http_app()
     app.add_middleware(BearerAuthMiddleware)
+    app.router.routes.append(Route("/healthz", _healthz, methods=["GET"]))
     print(f"Startar streamable-http på http://{HTTP_HOST}:{HTTP_PORT}/mcp")
-    print(f"Token (kopiera till Connector): {expected}")
+    # Logga bara hash av token, inte token:en själv — containerloggar i Azure är
+    # ofta synliga för fler ögon än vi vill.
+    import hashlib
+    token_hash = hashlib.sha256(expected.encode()).hexdigest()[:12]
+    print(f"Token-hash (sha256[:12]): {token_hash}")
     uvicorn.run(app, host=HTTP_HOST, port=HTTP_PORT, log_level="info")
 
 
