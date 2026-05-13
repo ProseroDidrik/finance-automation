@@ -1,39 +1,84 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
-import { CheckCircle2, XCircle, AlertTriangle, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
+import {
+  CheckCircle2, XCircle, AlertTriangle,
+  ChevronUp, ChevronDown, ChevronsUpDown,
+} from "lucide-react";
 import { CoverageRow, fetchCoverage } from "../api";
 import { fmtCurrency, fmtPeriod } from "../lib/format";
 
-type StatusFilter = "all" | "missing" | "mismatch";
+// ----- Typer ---------------------------------------------------------------
+
+type StatusFilter = "all" | "missing" | "mismatch" | "ok";
 type SortKey = "period" | "company_name" | "source_kind" | "status" | "backup_rows" | "backup_sum";
 type SortDir = "asc" | "desc";
+
+interface CellAggregate {
+  ok: number;
+  missing: number;
+  mismatch: number;
+  extra: number;
+  total: number;
+}
+
+interface DrillSelection {
+  country: string;
+  source_kind: string;
+  period?: string;  // om undefined: alla månader
+}
+
+// ----- Konstanter ----------------------------------------------------------
 
 const STATUS_LABEL: Record<CoverageRow["status"], string> = {
   missing:  "Saknas",
   mismatch: "Avvikelse",
   ok:       "OK",
+  extra:    "Extra",
 };
 
 const STATUS_ICON: Record<CoverageRow["status"], ReactElement> = {
   missing:  <XCircle size={12} className="shrink-0" aria-hidden />,
   mismatch: <AlertTriangle size={12} className="shrink-0" aria-hidden />,
   ok:       <CheckCircle2 size={12} className="shrink-0" aria-hidden />,
+  extra:    <AlertTriangle size={12} className="shrink-0" aria-hidden />,
 };
 
 const STATUS_CLS: Record<CoverageRow["status"], string> = {
   missing:  "bg-negative/15 text-negative",
   mismatch: "bg-warn/15 text-warn",
   ok:       "text-positive",
+  extra:    "bg-warn/15 text-warn",
 };
 
 const ROW_CLS: Record<CoverageRow["status"], string> = {
   missing:  "bg-negative/5 hover:bg-negative/10",
   mismatch: "bg-warn/5 hover:bg-warn/10",
   ok:       "hover:bg-elevated",
+  extra:    "bg-warn/5 hover:bg-warn/10",
 };
 
 const STATUS_SORT_ORDER: Record<CoverageRow["status"], number> = {
-  missing: 0, mismatch: 1, ok: 2,
+  missing: 0, mismatch: 1, extra: 2, ok: 3,
 };
+
+const MONTHS_2026 = ["202601","202602","202603","202604","202605","202606",
+                     "202607","202608","202609","202610","202611","202612"];
+
+const COUNTRY_ORDER = ["Sweden", "Norway", "Finland", "Denmark", "Germany", "CENTR", "CA"];
+
+// ----- Hjälpare ------------------------------------------------------------
+
+function emptyAgg(): CellAggregate {
+  return { ok: 0, missing: 0, mismatch: 0, extra: 0, total: 0 };
+}
+
+function cellColor(agg: CellAggregate): string {
+  if (agg.total === 0) return "bg-surface text-fg-muted/60";
+  if (agg.missing === 0 && agg.mismatch === 0 && agg.extra === 0) {
+    return "bg-positive/15 text-positive hover:bg-positive/25";
+  }
+  if (agg.ok === 0) return "bg-negative/20 text-negative hover:bg-negative/30";
+  return "bg-warn/15 text-warn hover:bg-warn/25";
+}
 
 function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; sortDir: SortDir }) {
   if (col !== sortKey) return <ChevronsUpDown size={12} className="text-fg-muted/50" aria-hidden />;
@@ -42,40 +87,81 @@ function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; s
     : <ChevronDown size={12} className="text-accent" aria-hidden />;
 }
 
+// ----- Komponenten --------------------------------------------------------
+
 export function CoverageReport() {
   const [rows, setRows]       = useState<CoverageRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
-  const [filter, setFilter]   = useState<StatusFilter>("missing");
-  const [country, setCountry] = useState<string>("all");
+  const [drill, setDrill]     = useState<DrillSelection | null>(null);
+  const [filter, setFilter]   = useState<StatusFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("period");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
   useEffect(() => {
     setLoading(true);
-    fetchCoverage()
+    fetchCoverage({ periodFrom: "202601" })
       .then(setRows)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, []);
 
-  const countries = useMemo(() =>
-    ["all", ...Array.from(new Set(rows.map((r) => r.country).filter(Boolean))).sort()],
-    [rows]
-  );
+  // Bygg matrisen: { country | source_kind | period -> CellAggregate }
+  const matrix = useMemo(() => {
+    const m = new Map<string, Map<string, Map<string, CellAggregate>>>();
+    for (const r of rows) {
+      const country = r.country || "—";
+      const sk = r.source_kind;
+      if (!m.has(country)) m.set(country, new Map());
+      const skMap = m.get(country)!;
+      if (!skMap.has(sk)) skMap.set(sk, new Map());
+      const pMap = skMap.get(sk)!;
+      if (!pMap.has(r.period)) pMap.set(r.period, emptyAgg());
+      const agg = pMap.get(r.period)!;
+      agg.total += 1;
+      agg[r.status] += 1;
+    }
+    return m;
+  }, [rows]);
 
-  const counts = useMemo(() => ({
-    missing:  rows.filter((r) => r.status === "missing").length,
-    mismatch: rows.filter((r) => r.status === "mismatch").length,
-    ok:       rows.filter((r) => r.status === "ok").length,
-  }), [rows]);
-
-  const visible = useMemo(() => {
-    let out = rows.filter((r) => {
-      const statusOk  = filter === "all" || r.status === filter;
-      const countryOk = country === "all" || r.country === country;
-      return statusOk && countryOk;
+  // Sortera rader för matrix-rendering: land enligt COUNTRY_ORDER, sedan source_kind
+  const matrixRows = useMemo(() => {
+    const result: { country: string; source_kind: string }[] = [];
+    const countries = Array.from(matrix.keys()).sort((a, b) => {
+      const ia = COUNTRY_ORDER.indexOf(a); const ib = COUNTRY_ORDER.indexOf(b);
+      if (ia === -1 && ib === -1) return a.localeCompare(b);
+      if (ia === -1) return 1;
+      if (ib === -1) return -1;
+      return ia - ib;
     });
+    for (const c of countries) {
+      const sks = Array.from(matrix.get(c)!.keys()).sort();
+      for (const sk of sks) result.push({ country: c, source_kind: sk });
+    }
+    return result;
+  }, [matrix]);
+
+  // Total per kolumn (alla länder, alla källor)
+  const colTotals = useMemo(() => {
+    const t = new Map<string, CellAggregate>();
+    for (const r of rows) {
+      if (!t.has(r.period)) t.set(r.period, emptyAgg());
+      const agg = t.get(r.period)!;
+      agg.total += 1;
+      agg[r.status] += 1;
+    }
+    return t;
+  }, [rows]);
+
+  // Drill-down: filtrera till valda (country, source_kind, [period])
+  const drillRows = useMemo(() => {
+    if (!drill) return [] as CoverageRow[];
+    let out = rows.filter((r) =>
+      r.country === drill.country &&
+      r.source_kind === drill.source_kind &&
+      (drill.period === undefined || r.period === drill.period)
+    );
+    if (filter !== "all") out = out.filter((r) => r.status === filter);
     out = [...out].sort((a, b) => {
       let va: string | number, vb: string | number;
       switch (sortKey) {
@@ -91,7 +177,14 @@ export function CoverageReport() {
       return sortDir === "asc" ? cmp : -cmp;
     });
     return out;
-  }, [rows, filter, country, sortKey, sortDir]);
+  }, [rows, drill, filter, sortKey, sortDir]);
+
+  // Övergripande summa
+  const grand = useMemo(() => {
+    const g = emptyAgg();
+    for (const r of rows) { g.total += 1; g[r.status] += 1; }
+    return g;
+  }, [rows]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -124,128 +217,227 @@ export function CoverageReport() {
   );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold">Datatäckning</h1>
-        <p className="text-sm text-fg-muted mt-0.5">Backup (Mercur) jämfört mot fact_balances — MAN / IMP / IMP_ADJ</p>
+        <h1 className="text-xl font-semibold">Datatäckning 2026</h1>
+        <p className="text-sm text-fg-muted mt-0.5">
+          Mercur-facit ({grand.total} förväntade kombinationer) jämfört mot fact_balances.
+          Klicka en cell för att se de bolag som matchar/saknas.
+        </p>
       </div>
 
-      {/* Sammanfattning */}
+      {/* Total-sammanfattning */}
       <div className="flex flex-wrap items-center gap-5 text-sm">
-        <span className="flex items-center gap-1.5 text-negative font-semibold">
-          <XCircle size={14} aria-hidden /> {counts.missing} saknade
+        <span className="flex items-center gap-1.5 text-positive">
+          <CheckCircle2 size={14} aria-hidden /> {grand.ok} ok
         </span>
         <span className="flex items-center gap-1.5 text-warn font-semibold">
-          <AlertTriangle size={14} aria-hidden /> {counts.mismatch} avvikelser
+          <AlertTriangle size={14} aria-hidden /> {grand.mismatch} avvikelser
         </span>
-        <span className="flex items-center gap-1.5 text-positive">
-          <CheckCircle2 size={14} aria-hidden /> {counts.ok} ok
+        <span className="flex items-center gap-1.5 text-negative font-semibold">
+          <XCircle size={14} aria-hidden /> {grand.missing} saknade
         </span>
+        {grand.extra > 0 && (
+          <span className="flex items-center gap-1.5 text-warn">
+            <AlertTriangle size={14} aria-hidden /> {grand.extra} extra (utanför facit)
+          </span>
+        )}
       </div>
 
-      {/* Filter-rad */}
-      <div className="flex flex-wrap gap-2 items-center">
-        {/* Status-filter */}
-        <div className="flex rounded-md border border-border overflow-hidden text-xs" role="group" aria-label="Filtrera på status">
-          {(["missing", "mismatch", "all"] as StatusFilter[]).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              aria-pressed={filter === f}
-              className={`px-3 py-1.5 cursor-pointer transition-colors ${
-                filter === f
-                  ? "bg-accent text-white"
-                  : "bg-surface text-fg-muted hover:bg-elevated"
-              }`}
-            >
-              {f === "all" ? "Alla" : f === "missing" ? "Saknade" : "Avvikelser"}
-            </button>
-          ))}
-        </div>
-
-        {/* Land-filter */}
-        <select
-          value={country}
-          onChange={(e) => setCountry(e.target.value)}
-          aria-label="Filtrera på land"
-          className="bg-surface border border-border rounded-md px-2 py-1.5 text-xs cursor-pointer
-            focus:outline-none focus:ring-2 focus:ring-accent/50 text-fg"
-        >
-          {countries.map((c) => (
-            <option key={c} value={c}>{c === "all" ? "Alla länder" : c}</option>
-          ))}
-        </select>
-      </div>
-
-      {/* Tabell */}
+      {/* Matrix: land × period --------------------------------------- */}
       <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full text-xs" aria-label="Täckningsrapport">
+        <table className="w-full text-xs" aria-label="Täckningsmatris">
           <thead>
             <tr className="border-b border-border bg-surface">
-              <th {...thProps("period", "Period")} />
-              <th {...thProps("company_name", "Bolag")} />
-              <th className="px-3 py-2 text-left font-medium text-fg-muted whitespace-nowrap">Land</th>
-              <th {...thProps("source_kind", "Källa")} />
-              <th className="px-3 py-2 text-center font-medium text-fg-muted">Scen</th>
-              <th {...thProps("backup_rows", "Backup-rader", "right")} />
-              <th className="px-3 py-2 text-right font-medium text-fg-muted whitespace-nowrap">Fact-rader</th>
-              <th {...thProps("backup_sum", "Backup-summa (k)", "right")} />
-              <th className="px-3 py-2 text-right font-medium text-fg-muted whitespace-nowrap">Fact-summa (k)</th>
-              <th {...thProps("status", "Status")} />
+              <th className="px-3 py-2 text-left font-medium text-fg-muted">Land</th>
+              <th className="px-3 py-2 text-left font-medium text-fg-muted">Källa</th>
+              {MONTHS_2026.map((p) => (
+                <th key={p} className="px-2 py-2 text-center font-medium text-fg-muted whitespace-nowrap">
+                  {p.slice(4)}
+                </th>
+              ))}
+              <th className="px-3 py-2 text-right font-medium text-fg-muted">Σ</th>
             </tr>
           </thead>
           <tbody>
-            {visible.length === 0 && (
-              <tr>
-                <td colSpan={10} className="px-3 py-8 text-center text-fg-muted">
-                  Inga rader matchar filtret
-                </td>
-              </tr>
-            )}
-            {visible.map((r, i) => (
-              <tr
-                key={i}
-                className={`border-b border-border/50 transition-colors ${ROW_CLS[r.status]}`}
-              >
-                <td className="px-3 py-1.5 tabular-nums whitespace-nowrap">{fmtPeriod(r.period)}</td>
-                <td className="px-3 py-1.5 whitespace-nowrap">
-                  <span className="text-fg-muted">{r.company_id} · </span>
-                  {r.company_name ?? "—"}
-                </td>
-                <td className="px-3 py-1.5 text-fg-muted whitespace-nowrap">{r.country ?? "—"}</td>
-                <td className="px-3 py-1.5 font-mono">{r.source_kind}</td>
-                <td className="px-3 py-1.5 text-center">{r.scenario}</td>
-                <td className="px-3 py-1.5 text-right tabular-nums text-fg-muted">
-                  {r.backup_rows ?? "—"}
-                </td>
-                <td className="px-3 py-1.5 text-right tabular-nums text-fg-muted">
-                  {r.fact_rows ?? "—"}
-                </td>
-                <td className="px-3 py-1.5 text-right tabular-nums">
-                  {fmtCurrency(r.backup_sum)}
-                </td>
-                <td className="px-3 py-1.5 text-right tabular-nums">
-                  {fmtCurrency(r.fact_sum)}
-                </td>
-                <td className="px-3 py-1.5">
-                  <span
-                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium ${STATUS_CLS[r.status]}`}
-                    aria-label={STATUS_LABEL[r.status]}
-                  >
-                    {STATUS_ICON[r.status]}
-                    {STATUS_LABEL[r.status]}
-                  </span>
-                </td>
-              </tr>
-            ))}
+            {matrixRows.map(({ country, source_kind }) => {
+              const skMap = matrix.get(country)!.get(source_kind)!;
+              let rowOk = 0, rowMiss = 0, rowMis = 0, rowExtra = 0;
+              return (
+                <tr key={`${country}|${source_kind}`} className="border-b border-border/50">
+                  <td className="px-3 py-1.5 whitespace-nowrap text-fg">{country}</td>
+                  <td className="px-3 py-1.5 font-mono text-fg-muted">{source_kind}</td>
+                  {MONTHS_2026.map((p) => {
+                    const agg = skMap.get(p) ?? emptyAgg();
+                    rowOk += agg.ok;
+                    rowMiss += agg.missing;
+                    rowMis += agg.mismatch;
+                    rowExtra += agg.extra;
+                    const cls = cellColor(agg);
+                    const isActive = drill?.country === country
+                      && drill?.source_kind === source_kind && drill?.period === p;
+                    return (
+                      <td key={p} className="p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setDrill({ country, source_kind, period: p })}
+                          disabled={agg.total === 0}
+                          aria-label={`${country} ${source_kind} ${p}: ${agg.ok} ok, ${agg.missing} saknas, ${agg.mismatch} avvikelse`}
+                          className={`w-full px-2 py-1 rounded text-center tabular-nums transition-colors
+                            ${cls} ${isActive ? "ring-2 ring-accent" : ""}
+                            ${agg.total > 0 ? "cursor-pointer" : "cursor-default"}`}
+                          title={
+                            agg.total === 0 ? "Inget i facit"
+                            : `${agg.ok}/${agg.total} ok${agg.missing ? ` · ${agg.missing} saknas` : ""}${agg.mismatch ? ` · ${agg.mismatch} avvikelse` : ""}`
+                          }
+                        >
+                          {agg.total === 0 ? "—" : `${agg.ok}/${agg.total}`}
+                        </button>
+                      </td>
+                    );
+                  })}
+                  <td className="px-3 py-1.5 text-right tabular-nums">
+                    <button
+                      type="button"
+                      onClick={() => setDrill({ country, source_kind })}
+                      className={`px-2 py-1 rounded hover:bg-elevated
+                        ${drill?.country === country && drill?.source_kind === source_kind && drill?.period === undefined ? "ring-2 ring-accent" : ""}`}
+                      title="Alla månader"
+                    >
+                      <span className="text-positive">{rowOk}</span>
+                      {rowMis > 0 && <span className="text-warn"> · {rowMis}</span>}
+                      {rowMiss > 0 && <span className="text-negative"> · {rowMiss}</span>}
+                      {rowExtra > 0 && <span className="text-warn"> · {rowExtra}e</span>}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
+          <tfoot>
+            <tr className="border-t border-border bg-surface">
+              <td colSpan={2} className="px-3 py-2 text-fg-muted font-medium">Σ alla länder</td>
+              {MONTHS_2026.map((p) => {
+                const agg = colTotals.get(p) ?? emptyAgg();
+                return (
+                  <td key={p} className="px-2 py-2 text-center tabular-nums text-fg-muted">
+                    {agg.total === 0 ? "—" : `${agg.ok}/${agg.total}`}
+                  </td>
+                );
+              })}
+              <td className="px-3 py-2 text-right text-fg-muted tabular-nums">{grand.ok}/{grand.total}</td>
+            </tr>
+          </tfoot>
         </table>
       </div>
 
       <div className="text-2xs text-fg-muted">
-        {visible.length} av {rows.length} rader · Summor i tusental (k) i bolagets valuta ·
-        Klicka kolumnhuvud för sortering
+        Färgkodning: <span className="text-positive">grön = allt ok</span> ·{" "}
+        <span className="text-warn">gul = någon avvikelse/extra</span> ·{" "}
+        <span className="text-negative">röd = inget i fact_balances</span> ·{" "}
+        grå = inget i facit
       </div>
+
+      {/* Drill-down --------------------------------------------------- */}
+      {drill && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">
+              Detaljer: {drill.country} · {drill.source_kind}
+              {drill.period ? ` · ${fmtPeriod(drill.period)}` : " · alla månader"}
+              <span className="text-fg-muted font-normal"> ({drillRows.length} rader)</span>
+            </h2>
+            <button
+              type="button"
+              onClick={() => { setDrill(null); setFilter("all"); }}
+              className="text-xs text-accent hover:underline cursor-pointer"
+            >
+              Stäng
+            </button>
+          </div>
+
+          {/* Status-filter */}
+          <div className="flex rounded-md border border-border overflow-hidden text-xs w-fit" role="group" aria-label="Filtrera på status">
+            {(["all", "missing", "mismatch", "ok"] as StatusFilter[]).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                aria-pressed={filter === f}
+                className={`px-3 py-1.5 cursor-pointer transition-colors ${
+                  filter === f
+                    ? "bg-accent text-white"
+                    : "bg-surface text-fg-muted hover:bg-elevated"
+                }`}
+              >
+                {f === "all" ? "Alla" : f === "missing" ? "Saknade" : f === "mismatch" ? "Avvikelser" : "OK"}
+              </button>
+            ))}
+          </div>
+
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full text-xs" aria-label="Täckning detaljer">
+              <thead>
+                <tr className="border-b border-border bg-surface">
+                  <th {...thProps("period", "Period")} />
+                  <th {...thProps("company_name", "Bolag")} />
+                  <th {...thProps("source_kind", "Källa")} />
+                  <th {...thProps("backup_rows", "Facit-rader", "right")} />
+                  <th className="px-3 py-2 text-right font-medium text-fg-muted whitespace-nowrap">Fact-rader</th>
+                  <th {...thProps("backup_sum", "Facit-summa (k)", "right")} />
+                  <th className="px-3 py-2 text-right font-medium text-fg-muted whitespace-nowrap">Fact-summa (k)</th>
+                  <th {...thProps("status", "Status")} />
+                </tr>
+              </thead>
+              <tbody>
+                {drillRows.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="px-3 py-8 text-center text-fg-muted">
+                      Inga rader matchar filtret
+                    </td>
+                  </tr>
+                )}
+                {drillRows.map((r, i) => (
+                  <tr
+                    key={i}
+                    className={`border-b border-border/50 transition-colors ${ROW_CLS[r.status]}`}
+                  >
+                    <td className="px-3 py-1.5 tabular-nums whitespace-nowrap">{fmtPeriod(r.period)}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap">
+                      <span className="text-fg-muted">{r.company_id} · </span>
+                      {r.company_name ?? "—"}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono">{r.source_kind}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-fg-muted">
+                      {r.backup_rows ?? "—"}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums text-fg-muted">
+                      {r.fact_rows ?? "—"}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">
+                      {fmtCurrency(r.backup_sum)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">
+                      {fmtCurrency(r.fact_sum)}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <span
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium ${STATUS_CLS[r.status]}`}
+                        aria-label={STATUS_LABEL[r.status]}
+                      >
+                        {STATUS_ICON[r.status]}
+                        {STATUS_LABEL[r.status]}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="text-2xs text-fg-muted">
+            Summor i tusental (k) i bolagets valuta · Klicka kolumnhuvud för sortering
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,50 +1,65 @@
--- Jämförelse backup_from_mercur vs fact_balances per (bolag, period, källa, scenario).
--- Status: 'missing' = finns i backup, saknas i fact_balances
---         'mismatch' = finns i båda men summor avviker >1%
---         'ok'       = finns i båda och summor matchar
+-- Jämförelse Mercur-facit (`backup_from_mercur`) vs `fact_balances` per
+-- (bolag, period, källa, scenario).
 --
--- Källa-normalisering: backup_from_mercur använder Mercurs benämning (IMP = utfall),
--- medan fact_balances märker utfallsdata efter filformat (IMP/SIE/SAFT/SIE_PSALDO).
--- För jämförelse väljer vi en kanonisk utfalls-källa per (bolag, period, scenario) i
--- prio-ordning IMP > SIE > SAFT > SIE_PSALDO och taggar den 'IMP' så att den
--- joinar mot backup. IMP täcker både Mercur-historikens IMP och nya FI/DK/DE
--- Excel-imports (samma source_kind sedan migreringen INL→IMP).
+-- Status:
+--   'missing'  — facit har rader, fact_balances har inga
+--   'extra'    — fact_balances har rader, facit har inga (utanför facit-scope)
+--   'mismatch' — båda har rader men beloppen avviker
+--                (>1 procent OCH >1 enhet absolut — det andra villkoret tar bort FP-brus)
+--   'ok'       — båda har rader, beloppen matchar
+--
+-- OBS: för SE-SIE / NO-SAFT är beloppen *inte* jämförbara rakt av eftersom
+-- fact_balances lagrar YTD-saldon medan backup_from_mercur (M-rader) lagrar
+-- månadsbevegelser. Mismatch-statusen är därför oftast meningslös för SIE/SAFT.
+-- För IMP / MAN / IMP_ADJ stämmer båda sidor som monthly och då är beloppen
+-- direkt jämförbara.
+--
+-- Normalisering: fact_balances har SE-data som både SIE (transaktioner) och
+-- SIE_PSALDO (periodsaldon från samma fil). Vi väljer SIE om den finns,
+-- annars SIE_PSALDO. På så vis matchar backup.SIE direkt mot fact-SIE.
+-- Begränsa till utfall (scenario='A') — budget (B) ligger utanför facit.
 WITH backup_agg AS (
     SELECT company_id, period, source_kind, scenario,
            COUNT(*)    AS rows,
            SUM(amount) AS total
     FROM backup_from_mercur
+    WHERE scenario = 'A'
     GROUP BY 1, 2, 3, 4
 ),
-fact_actual_grouped AS (
-    SELECT company_id, period, source_kind, scenario,
-           COUNT(*)    AS rows,
-           SUM(amount) AS total,
-           CASE source_kind
-               WHEN 'IMP'        THEN 1
-               WHEN 'SIE'        THEN 2
-               WHEN 'SAFT'       THEN 3
-               WHEN 'SIE_PSALDO' THEN 4
-           END AS prio
+sie_pick AS (
+    SELECT DISTINCT company_id, period, scenario,
+           FIRST_VALUE(source_kind) OVER (
+               PARTITION BY company_id, period, scenario
+               ORDER BY CASE source_kind WHEN 'SIE' THEN 1
+                                          WHEN 'SIE_PSALDO' THEN 2 END
+           ) AS picked_kind
     FROM fact_balances
-    WHERE source_kind IN ('IMP','SIE','SAFT','SIE_PSALDO')
-    GROUP BY company_id, period, source_kind, scenario
+    WHERE source_kind IN ('SIE', 'SIE_PSALDO') AND scenario = 'A'
 ),
-fact_actual_picked AS (
-    SELECT company_id, period, scenario, rows, total,
-           ROW_NUMBER() OVER (PARTITION BY company_id, period, scenario ORDER BY prio) AS rn
-    FROM fact_actual_grouped
+fact_sie AS (
+    SELECT fb.company_id, fb.period, 'SIE' AS source_kind, fb.scenario,
+           COUNT(*)::int  AS rows,
+           SUM(fb.amount) AS total
+    FROM sie_pick p
+    JOIN fact_balances fb
+      ON fb.company_id  = p.company_id
+     AND fb.period      = p.period
+     AND fb.scenario    = p.scenario
+     AND fb.source_kind = p.picked_kind
+    GROUP BY fb.company_id, fb.period, fb.scenario
+),
+fact_other AS (
+    SELECT company_id, period, source_kind, scenario,
+           COUNT(*)::int AS rows,
+           SUM(amount)   AS total
+    FROM fact_balances
+    WHERE source_kind IN ('IMP', 'SAFT', 'MAN', 'IMP_ADJ') AND scenario = 'A'
+    GROUP BY 1, 2, 3, 4
 ),
 fact_agg AS (
-    SELECT company_id, period, 'IMP' AS source_kind, scenario, rows, total
-    FROM fact_actual_picked
-    WHERE rn = 1
+    SELECT * FROM fact_sie
     UNION ALL
-    SELECT company_id, period, source_kind, scenario,
-           COUNT(*) AS rows, SUM(amount) AS total
-    FROM fact_balances
-    WHERE source_kind IN ('MAN', 'IMP_ADJ')
-    GROUP BY company_id, period, source_kind, scenario
+    SELECT * FROM fact_other
 )
 SELECT
     COALESCE(b.company_id,   f.company_id)   AS company_id,
@@ -59,8 +74,14 @@ SELECT
     f.total  AS fact_sum,
     CASE
         WHEN f.company_id IS NULL THEN 'missing'
-        WHEN ABS(COALESCE(b.total, 0) - COALESCE(f.total, 0))
-             > 0.01 * NULLIF(ABS(COALESCE(b.total, 0)), 0) THEN 'mismatch'
+        WHEN b.company_id IS NULL THEN 'extra'
+        -- Belopp-mismatch flaggas bara när monthly↔monthly är jämförbart
+        -- (IMP/MAN/IMP_ADJ). SIE/SAFT skiljer per definition (YTD vs M).
+        WHEN COALESCE(b.source_kind, f.source_kind) IN ('IMP', 'MAN', 'IMP_ADJ')
+             AND ABS(COALESCE(b.total, 0) - COALESCE(f.total, 0)) > 1
+             AND ABS(COALESCE(b.total, 0) - COALESCE(f.total, 0))
+                 > 0.01 * NULLIF(ABS(COALESCE(b.total, 0)), 0)
+        THEN 'mismatch'
         ELSE 'ok'
     END AS status
 FROM backup_agg b

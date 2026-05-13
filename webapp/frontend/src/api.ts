@@ -130,11 +130,15 @@ export interface CoverageRow {
   fact_rows: number | null;
   backup_sum: number | null;
   fact_sum: number | null;
-  status: "missing" | "mismatch" | "ok";
+  status: "missing" | "mismatch" | "ok" | "extra";
 }
 
-export async function fetchCoverage(): Promise<CoverageRow[]> {
-  return getJSON<CoverageRow[]>("/api/compare/coverage");
+export async function fetchCoverage(opts: { periodFrom?: string; periodTo?: string } = {}): Promise<CoverageRow[]> {
+  const p = new URLSearchParams();
+  if (opts.periodFrom) p.append("period_from", opts.periodFrom);
+  if (opts.periodTo) p.append("period_to", opts.periodTo);
+  const qs = p.toString();
+  return getJSON<CoverageRow[]>(`/api/compare/coverage${qs ? `?${qs}` : ""}`);
 }
 
 // ----- Personnel (FTE) -------------------------------------------------------

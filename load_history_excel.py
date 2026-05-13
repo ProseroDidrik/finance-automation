@@ -41,7 +41,11 @@ import openpyxl
 import db
 from shared import begin_run, load_config, log
 
-SOURCE_KIND_VALID = {"MAN", "IMP", "IMP_ADJ"}
+SOURCE_KIND_VALID = {"MAN", "IMP", "IMP_ADJ", "SIE", "SAFT"}
+# backup-laddning tar emot fler källor än fact_balances eftersom Mercur-facit
+# (2026 Backup.txt) speglar SE som SIE och NO som SAFT. SOURCE_KIND_FACT är
+# delmängden som får skrivas till fact_balances via denna laddare.
+SOURCE_KIND_FACT  = {"MAN", "IMP", "IMP_ADJ"}
 PERIOD_TYPE = "monthly"
 
 INSERT_SQL = """
@@ -93,6 +97,8 @@ def parse_amount(val) -> float | None:
 def iter_excel_rows(path: Path):
     """Yield tuples (konto, kalla, scenario, period, bolag_str, currency, amount_raw)
     för varje datarad i en Excel-fil (hoppar över header-raden).
+    OB-rader (ingående balans, kol B Värdetyp='OB') skippas — vi vill bara ha
+    månadsbevegelser (M).
     """
     wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
     ws = wb.active
@@ -102,6 +108,9 @@ def iter_excel_rows(path: Path):
             first = False
             continue  # header-rad
         if not row or row[0] is None:
+            continue
+        vardetyp = str(row[1]).strip().upper() if len(row) > 1 and row[1] else ""
+        if vardetyp == "OB":
             continue
         yield (
             str(row[0]).strip() if row[0] else "",   # Konto
@@ -116,11 +125,15 @@ def iter_excel_rows(path: Path):
 
 
 def iter_txt_rows(path: Path):
-    """Yield samma tuple-format från semikolon-CSV utan header."""
+    """Yield samma tuple-format från semikolon-CSV utan header.
+    OB-rader (kol B Värdetyp='OB') skippas — facit-jämförelsen gäller bara M.
+    """
     text = path.read_bytes().decode("utf-8-sig", errors="replace")
     reader = csv.reader(io.StringIO(text), delimiter=";", quotechar='"')
     for row in reader:
         if len(row) < 13:
+            continue
+        if row[1].strip().upper() == "OB":
             continue
         yield (
             row[0].strip(),   # Konto
@@ -165,9 +178,15 @@ def load_file(con, path: Path, base_path: Path,
         if filter_scenario and scenario != filter_scenario:
             continue
 
-        # Validera källa
-        kalla_upper = kalla.upper().replace("-", "_").replace(" ", "_")
-        if kalla_upper not in SOURCE_KIND_VALID:
+        # Normalisera källa: "SAF-T" → "SAFT" (matchar fact_balances.source_kind),
+        # mellanslag → underscore, övriga bindestreck → underscore.
+        kalla_upper = kalla.upper().replace(" ", "_")
+        if kalla_upper in ("SAF-T", "SAF_T"):
+            kalla_upper = "SAFT"
+        else:
+            kalla_upper = kalla_upper.replace("-", "_")
+        valid = SOURCE_KIND_VALID if is_backup else SOURCE_KIND_FACT
+        if kalla_upper not in valid:
             skipped += 1
             continue
 
@@ -297,6 +316,7 @@ def main() -> None:
     TXT_FILES = [
         "SE Backup 2022 to 2026 march.txt",
         "NO DE FI DK Other Backup 2022 to 2026 March.txt",
+        "2026 Backup.txt",
     ]
 
     # (path, is_backup) — txt-filer går till backup_from_mercur

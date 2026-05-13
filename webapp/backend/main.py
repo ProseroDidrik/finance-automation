@@ -304,11 +304,29 @@ async def pnl_report(
 
 
 @app.get("/api/compare/coverage")
-async def compare_coverage():
-    """Jämförelse backup_from_mercur vs fact_balances per (bolag, period, källa, scenario)."""
-    sql = SQL_COVERAGE.read_text(encoding="utf-8")
+async def compare_coverage(
+    period_from: str | None = Query(None, pattern=r"^\d{6}$"),
+    period_to:   str | None = Query(None, pattern=r"^\d{6}$"),
+):
+    """Facit (backup_from_mercur) vs fact_balances per (bolag, period, källa).
+
+    Default: returnerar bara perioder ≥ 202601 (facit-fasen 2026). Sätt
+    period_from=202201 för full historik.
+    """
+    sql_body = SQL_COVERAGE.read_text(encoding="utf-8")
+    # SQL:en slutar med ORDER BY — wrappa i sub-query och filtrera ovanpå.
+    filters = []
+    params: list = []
+    pf = period_from or "202601"
+    filters.append("period >= %s")
+    params.append(pf)
+    if period_to:
+        filters.append("period <= %s")
+        params.append(period_to)
+    where = " AND ".join(filters)
+    sql = f"SELECT * FROM (\n{sql_body}\n) cov WHERE {where} ORDER BY period, country, company_id"
     with open_db() as con:
-        rows = con.fetch_dicts(sql)
+        rows = con.fetch_dicts(sql, params)
     return [
         {
             "company_id":   int(r["company_id"]) if r["company_id"] is not None else None,
