@@ -511,6 +511,113 @@ def _collect_kausi_df(df: pd.DataFrame) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Format N  –  SpreadsheetML XML 2003 (134 Arvolukko jan-2026 övergångsformat)
+#   .xls-fil men faktiskt XML. Kolumner: 1=konto, 2=namn, 3=Kausi (period),
+#   4=Tilikausi (fiscal year balance), 5=Edellinen tilikausi (prev year), 6=%.
+#   Använder col 3 (Kausi) — månadens bevegelse.
+# ---------------------------------------------------------------------------
+
+def read_spreadsheetml_xls(filepath: str, amount_col: int = 3) -> list:
+    import xml.etree.ElementTree as ET
+    ns = {"ss": "urn:schemas-microsoft-com:office:spreadsheet"}
+    INDEX = "{urn:schemas-microsoft-com:office:spreadsheet}Index"
+    STYLE = "{urn:schemas-microsoft-com:office:spreadsheet}StyleID"
+    tree = ET.parse(filepath)
+    root = tree.getroot()
+
+    # Bygg en bold-karta: style_id → True om Font[ss:Bold='1'] (eller om
+    # föräldra-stilen är bold, t.ex. B3 utan egen Bold men ärver från ss:Parent).
+    bold_styles: set[str] = set()
+    style_parents: dict[str, str] = {}
+    for s in root.findall("ss:Styles/ss:Style", ns):
+        sid = s.get("{urn:schemas-microsoft-com:office:spreadsheet}ID")
+        if not sid:
+            continue
+        parent = s.get("{urn:schemas-microsoft-com:office:spreadsheet}Parent")
+        if parent:
+            style_parents[sid] = parent
+        font = s.find("ss:Font", ns)
+        if font is not None and font.get(
+            "{urn:schemas-microsoft-com:office:spreadsheet}Bold") == "1":
+            bold_styles.add(sid)
+
+    def _is_bold(style_id: str | None) -> bool:
+        cur = style_id
+        seen: set[str] = set()
+        while cur and cur not in seen:
+            if cur in bold_styles:
+                return True
+            seen.add(cur)
+            cur = style_parents.get(cur)
+        return False
+
+    rows_out: list = []
+    for r in root.findall(".//ss:Row", ns):
+        col = 0
+        by_col: dict[int, str] = {}
+        first_style: str | None = None
+        for c in r.findall("ss:Cell", ns):
+            idx = c.get(INDEX)
+            col = int(idx) if idx else col + 1
+            if first_style is None:
+                first_style = c.get(STYLE)
+            data = c.find("ss:Data", ns)
+            if data is not None and data.text:
+                by_col[col] = data.text
+        # Hoppa över bold-rader (summa-rader som "LIIKEVAIHTO YHTEENSÄ" är
+        # styled B3 → ärver bold från sin parent).
+        if _is_bold(first_style):
+            continue
+        acc_raw = (by_col.get(1) or "").strip()
+        if not acc_raw or not acc_raw.isdigit():
+            continue
+        try:
+            acc = int(acc_raw)
+        except ValueError:
+            continue
+        name = (by_col.get(2) or "").strip()
+        amt = parse_amount(by_col.get(amount_col))
+        if amt == 0.0:
+            continue
+        rows_out.append((acc, name, amt))
+    return rows_out
+
+
+# ---------------------------------------------------------------------------
+# Format M  –  "Sparse-row XLSX" (182 jan-2026 övergångsformat)
+#   col 0 = 'NNNN[N]  Name', de flesta cellerna tomma + en eller flera beloppsceller.
+#   pick='first' tar första numeriska värdet (rätt för IS-filer som bara har en
+#   periodkolumn). pick='last' tar sista numeriska (rätt för BS-filer där sista
+#   kolumnen är muutos = månadsändring; tidigare kolumner är period-balanser).
+# ---------------------------------------------------------------------------
+
+def read_sparse_row_xlsx(filepath: str, *, pick: str = "first") -> list:
+    df = pd.read_excel(filepath, header=None, dtype=object)
+    rows = []
+    for _, row in df.iterrows():
+        cell = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
+        parsed = split_account(cell)
+        if parsed is None:
+            continue
+        acc, name = parsed
+        cells = row.iloc[1:]
+        iter_cells = reversed(list(cells)) if pick == "last" else list(cells)
+        amt = 0.0
+        for v in iter_cells:
+            if isinstance(v, (int, float)) and not pd.isna(v):
+                amt = float(v)
+                break
+            parsed_amt = parse_amount(v)
+            if parsed_amt != 0.0:
+                amt = parsed_amt
+                break
+        if amt == 0.0:
+            continue
+        rows.append((acc, name, amt))
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Format H  –  "Avaava CSV UTF-8"  (199)
 #   Semicolon separated, UTF-8 BOM, amounts may have spaces (thousands sep)
 #   BS: col 2 = Jakson muutos,  IS: col 1 = period amount
@@ -629,12 +736,20 @@ def read_emsec_pl_xlsx(filepath: str) -> list:
 
 # ---------------------------------------------------------------------------
 # Format K  –  JM Lukko combined BS+IS XLSX  (221)
-#   Single sheet; col 0 = 'NNNN Name', col 1 = YTD, col 2 = monthly.
+#   Single sheet; col 0 = 'NNNN Name'.
+#   Layouts varierar per månad:
+#     - Jan (period 1): bara YTD-kolumn (col 1 = monthly = YTD).
+#     - Feb+ : col 1 = YTD, col 2 = månadsändring → använd col 2.
 #   Filter by 4-digit account prefix: 1000-2999 → BS, 3000-9999 → IS.
 # ---------------------------------------------------------------------------
 
 def read_combined_xlsx_col2(filepath: str, acc_min_4d: int = 0, acc_max_4d: int = 9999) -> list:
     df = pd.read_excel(filepath, header=None, dtype=str)
+    # Auto-detect column: föredra col 2 (månadsändring) om den finns,
+    # fallback till col 1 (jan-fil med bara YTD). _find_period_col() funkar inte
+    # här eftersom JM:s header har datumintervall ("1.1.2026 - 31.1.2026"), inte
+    # period-format som extract_period() känner igen direkt.
+    amt_col = 2 if df.shape[1] > 2 else 1
     rows = []
     for _, row in df.iterrows():
         cell = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
@@ -644,7 +759,7 @@ def read_combined_xlsx_col2(filepath: str, acc_min_4d: int = 0, acc_max_4d: int 
         acc, name = parsed
         if not (acc_min_4d <= _normalize4(acc) <= acc_max_4d):
             continue
-        amt = parse_amount(row.iloc[2] if len(row) > 2 else None)
+        amt = parse_amount(row.iloc[amt_col] if len(row) > amt_col else None)
         if amt == 0.0:
             continue
         rows.append((acc, name, amt))
@@ -769,17 +884,35 @@ def run_146(d: Path):
 
 
 def run_134(d: Path):
+    # 134 har två filformat under 2026:
+    #   - Standard .xls (xlrd): finska namn ("tase", "tuloslaskelma")
+    #   - SpreadsheetML XML (.xls med XML-innehåll): engelska namn (jan-2026)
+    # Detekteras via filhuvud (b'<?xml ...').
+    def _is_xml(p: Path) -> bool:
+        with open(p, "rb") as fh:
+            return fh.read(5).startswith(b"<?xml")
+
+    bs_f = _try_glob(d, "134_*tase*.xls",
+                     "134_*[Bb]alance*[Ss]heet*.xls")
+    is_f = _try_glob(d, "134_*tuloslaskelma*.xls",
+                     "134_*[Ii]ncome*statement*.xls")
+    bs_raw = (read_spreadsheetml_xls(str(bs_f)) if _is_xml(bs_f)
+              else read_kausi_xls(str(bs_f), skip_bold=True))
+    is_raw = (read_spreadsheetml_xls(str(is_f)) if _is_xml(is_f)
+              else read_kausi_xls(str(is_f), skip_bold=True))
     return process_company(
         code="134", friendly_name="Arvolukko", period=PERIOD,
-        bs_rows_raw=read_kausi_xls(str(glob_one(d, "134_*tase*.xls")), skip_bold=True),
-        is_rows_raw=read_kausi_xls(str(glob_one(d, "134_*tuloslaskelma*.xls")), skip_bold=True),
+        bs_rows_raw=bs_raw, is_rows_raw=is_raw,
     )
 
 
 def run_153(d: Path):
+    # 153 har växlat mellan "Balans" (svenskt namn, t.o.m. 202603) och "Balance"
+    # (engelskt namn, fr.o.m. 202604) i BS-filen.
     return process_company(
         code="153", friendly_name="Turvatalo", period=PERIOD,
-        bs_rows_raw=read_turvatalo_xlsx(str(glob_one(d, "153_*[Bb]alans*.xlsx"))),
+        bs_rows_raw=read_turvatalo_xlsx(str(_try_glob(d,
+            "153_*[Bb]alans*.xlsx", "153_*[Bb]alance*.xlsx"))),
         is_rows_raw=read_turvatalo_xlsx(str(glob_one(d, "153_*[Ii]ncome*.xlsx"))),
     )
 
@@ -828,9 +961,13 @@ def run_181(d: Path):
 
 
 def run_196(d: Path):
+    # ST Hälytys-filerna har växlat mellan finskt namn (tase) och engelskt
+    # (balance sheet). IS-glob:en matchade redan "profit & loss statement"
+    # eftersom * mellan profit och loss matchar valfri text inkl. "& ".
     return process_company(
         code="196", friendly_name="ST-Halytys", period=PERIOD,
-        bs_rows_raw=read_kausi_xls(str(glob_one(d, "196_*tase*.xlsm")), skip_bold=True),
+        bs_rows_raw=read_kausi_xls(str(_try_glob(d,
+            "196_*tase*.xlsm", "196_*[Bb]alance*[Ss]heet*.xlsm")), skip_bold=True),
         is_rows_raw=read_kausi_xls(str(glob_one(d, "196_*profit*loss*.xlsm")), skip_bold=True),
     )
 
@@ -863,10 +1000,17 @@ def run_177(d: Path):
 
 
 def run_182(d: Path):
+    # 202602+ använder Fennoa-CSV; jan-2026 övergångsformat var sparse XLSX
+    # (en numerisk cell per rad; BS = muutos sist, IS = period först).
+    bs_f = _try_glob(d, "182_*[Tt]ase*.csv", "182_*[Tt]ase*.xlsx")
+    is_f = _try_glob(d, "182_*[Tt]uloslaskelma*.csv", "182_*[Tt]uloslaskelma*.xlsx")
+    bs_raw = (read_muutos_csv(str(bs_f)) if bs_f.suffix.lower() == ".csv"
+              else read_sparse_row_xlsx(str(bs_f), pick="last"))
+    is_raw = (read_fennoa_csv(str(is_f)) if is_f.suffix.lower() == ".csv"
+              else read_sparse_row_xlsx(str(is_f), pick="first"))
     return process_company(
         code="182", friendly_name="THV", period=PERIOD,
-        bs_rows_raw=read_muutos_csv(str(glob_one(d, "182_*[Tt]ase*.csv"))),
-        is_rows_raw=read_fennoa_csv(str(glob_one(d, "182_*[Tt]uloslaskelma*.csv"))),
+        bs_rows_raw=bs_raw, is_rows_raw=is_raw,
     )
 
 
@@ -935,10 +1079,38 @@ def run_238(d: Path):
 
 
 def run_145(d: Path):
+    # 145 (Prosero Security Oy) växlar filformat per månad:
+    #   - 202601: utf-16-le CSV (Tase / Tuloslaskelma)
+    #   - 202602/03: binär XLS, finskt namn
+    #   - 202604: XLSX med engelska namn (Balance_sheet / Income_statement)
+    # Mailen bifogar dessutom helår-2025-referensfiler — filtrera per
+    # period-månadsintervall så vi inte plockar fel.
+    month = _fennoa_month_range(PERIOD)
+    bs_f = _try_glob(
+        d,
+        f"145_*[Tt]ase*{month}*.xls*",
+        f"145_*[Tt]ase*{month}*.csv",
+        f"145_*[Bb]alance*[Ss]heet*.xls*",
+        f"145_*[Bb]alance*[Ss]heet*.csv",
+    )
+    is_f = _try_glob(
+        d,
+        f"145_*[Tt]uloslaskelma*{month}*.xls*",
+        f"145_*[Tt]uloslaskelma*{month}*.csv",
+        f"145_*[Ii]ncome*[Ss]tatement*{month}*.xls*",
+        f"145_*[Ii]ncome*[Ss]tatement*.xls*",
+    )
+    bs_raw = (read_muutos_csv_enc(str(bs_f), encoding="utf-16-le")
+              if bs_f.suffix.lower() == ".csv" else read_muutos_xlsx(str(bs_f)))
+    # 145:s IS-csv har bara ETT period-värde i header (col 2 har "Päivämääräväli"
+    # och visar månadsintervallet — det är bara en metadata-cell, inte en
+    # kolumnetikett). _find_period_col-skannern skulle annars välja fel kolumn.
+    is_raw = (read_csv_col_enc(str(is_f), col=1, encoding="utf-16-le")
+              if is_f.suffix.lower() == ".csv"
+              else read_income_only_xlsx(str(is_f)))
     return process_company(
         code="145", friendly_name="Prosero Security Oy", period=PERIOD,
-        bs_rows_raw=read_muutos_xlsx(str(glob_one(d, "145_*[Tt]ase*.xls*"))),
-        is_rows_raw=read_income_only_xlsx(str(glob_one(d, "145_*[Tt]uloslaskelma*.xls*"))),
+        bs_rows_raw=bs_raw, is_rows_raw=is_raw,
     )
 
 

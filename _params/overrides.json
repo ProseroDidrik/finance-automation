@@ -2,7 +2,15 @@
   "_comment": "Mappar tvetydiga mail/bilagor till rätt BolagsID. Läses av extract.py och dry_run.py via shared.load_overrides(). Editeras via GUI:t (Redigera overrides) eller manuellt här.",
   "subject_overrides": {
     "Sikkerhet AS  pr april 2026": 104,
-    "SIst men inte minst _": 33
+    "SIst men inte minst _": 33,
+    "VS_ Prosero_January": 145,
+    "VB_ Prosero": 145,
+    "VB_ Prosero Securityu Oy": 145,
+    "VB_ Prosero Security GmbH reporting 01 2026": 187,
+    "VB_ Prosero Security GmbH reporting 02 2026": 187,
+    "VB_ Prosero Security GmbH reporting 03 2026": 187,
+    "VB_ ANV numbers 1_2026": 238,
+    "VB_ ANV numbers 22026": 238
   },
   "sender_overrides": {
     "norrbottenslarm.com": 172
@@ -47,6 +55,16 @@
       "msg_stem": "nbv as og dsn",
       "attachment_substr": "norsk brannvern",
       "bolag_id": 107
+    },
+    {
+      "msg_stem": "Regnskap pr 30_04_26 - Norsk Brannvern As og Din Sikkerhet Norge AS",
+      "attachment_substr": "nbv",
+      "bolag_id": 107
+    },
+    {
+      "msg_stem": "Regnskap pr 30_04_26 - Norsk Brannvern As og Din Sikkerhet Norge AS",
+      "attachment_substr": "dsn",
+      "bolag_id": 106
     },
     {
       "msg_stem": "sie-filer för låsbolagen i dalarna",

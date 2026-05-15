@@ -67,10 +67,17 @@ DOTTERBOLAG  = _BASE / "_params" / "Dotterbolagslista.xlsx"
 COMPANY_DEFS: dict[str, dict] = {
     "187": dict(reader="monthly_value",        file_glob="187_*monthly*value*.xlsx"),
     "188": dict(reader="monthly_value",        file_glob="188_*monthly*value*.xlsx"),
-    "220": dict(reader="susa_csv",             file_glob="220_Susa_*.csv"),
-    "231": dict(reader="susa_pro_monat",       file_glob="231_*Susa*.xlsx"),
+    "220": dict(reader="susa_csv",             file_glob="220_*Susa_*.csv"),
+    # 231 Mittermeier: byter mellan "Susa MM.YYYY" och "Auswertung M-YYYY" (jan).
+    "231": dict(reader="susa_pro_monat",       file_glob="231_*Susa*.xlsx",
+                fallback_glob="231_Auswertung*.xlsx"),
     "245": dict(reader="susa_pro_monat",       file_glob="245_*SuSa*.xlsx"),
-    "246": dict(reader="susa_jahresuebersicht", file_glob="246_SUSA_{period}*.xlsx"),
+    # 246 HW Mechatronic: SUSA-format för 202603, sedan Fennoa-fi-csv från 202604
+    # (de bytte bokföringssystem). file_glob försöker SUSA först; om saknad,
+    # process_company faller tillbaka till fennoa-csv via reader-namnet.
+    "246": dict(reader="fennoa_fi_or_susa",
+                file_glob="246_SUSA_{period}*.xlsx",
+                fallback_glob="246_tase-kk_*.csv"),
 }
 
 # ── Period helpers ─────────────────────────────────────────────────────────────
@@ -337,6 +344,107 @@ def read_susa_jahresuebersicht(
     return is_rows, bs_rows
 
 
+# ── Reader: Fennoa period-CSV (246 fr.o.m. 2026)  ─────────────────────────────
+# 246 HW Mechatronic migrerade till finsk bokföring under 2026. Filerna är samma
+# format som 238 ANV i process_finland: ";202601;202602;..." header, finska
+# kontonamn, cp1252-encoding, semikolon-separator, kommadecimal med space-tusental.
+#
+# BS-fil (tase-kk): periodbalanser → månadsändring = col[period] - col[prev_period].
+# IS-fil (tuloslaskelma-kk): månadsbelopp direkt i col[period]. Yhteensä-kolumn
+# ignoreras.
+# Använder finska "tilikartta"-tecken: revenue negativ, expense positiv (SIE-konv.).
+
+import re as _re
+
+_ACC_RE_FI = _re.compile(r"^(\d+)[\s,]+(.+)$")
+
+
+def _parse_fi_account(text: str):
+    text = text.strip()
+    m = _ACC_RE_FI.match(text)
+    if m:
+        return int(m.group(1)), m.group(2).strip()
+    return None
+
+
+def _classify_fi(acc: int) -> str | None:
+    """Finska konton: 1–2999 = BS, 3–9 = IS (med samma 9000-cutoff för
+    sub-ledger som SuSa)."""
+    if acc >= 9000:
+        return None
+    if 1000 <= acc <= 2999:
+        return "BS"
+    return "IS"
+
+
+def _read_fi_csv_rows(filepath: Path) -> list[list[str]]:
+    import csv
+    with open(filepath, encoding="cp1252", newline="") as fh:
+        return [row for row in csv.reader(fh, delimiter=";")]
+
+
+def _find_period_col_fi(rows: list[list[str]], period: str) -> int:
+    """Header row 0 is ';202601;202602;...'. Returnerar kolumn-index för
+    target period."""
+    if not rows:
+        raise ValueError("Tom fil")
+    header = rows[0]
+    for i, cell in enumerate(header):
+        if cell.strip() == period:
+            return i
+    raise ValueError(f"Period {period} hittades ej i headern {header}")
+
+
+def read_fennoa_fi_csv(filepath: Path, period: str, *, kind: str) -> list:
+    """kind = 'BS' (period_csv_diff) eller 'IS' (period_csv_col)."""
+    rows = _read_fi_csv_rows(filepath)
+    period_col = _find_period_col_fi(rows, period)
+    prev_col = period_col - 1
+    out: list = []
+    for row in rows[1:]:
+        if not row:
+            continue
+        parsed = _parse_fi_account(row[0])
+        if parsed is None:
+            continue
+        acc, name = parsed
+        cls = _classify_fi(acc)
+        # För BS-fil läses BS-konton, för IS-fil läses IS-konton — om filen
+        # blandar (vissa Fennoa-filer gör det) hoppa över felfacet.
+        if cls != kind:
+            continue
+        if kind == "BS":
+            # Månadsändring = col[period] - col[period-1]. För första kolumnen
+            # (period 1) är "previous" inte i filen — anta opening = 0.
+            curr = parse_amount(row[period_col] if len(row) > period_col else None)
+            prev = (parse_amount(row[prev_col]) if prev_col >= 1 and len(row) > prev_col
+                    else 0.0)
+            amt = round(curr - prev, 2)
+            # Spegla SIE-tecken: tillgång ökning = negativ förändring i kredit
+            # men positiv i debet → SIE har asset-konton positiva (men ökning
+            # ger positivt belopp på debit-sidan). Här gör Finland-238 inget
+            # specifikt — vi matchar deras logik.
+            if 1 <= acc <= 1999:
+                amt = -amt  # asset-flip (matchar process_finland.should_flip)
+        else:
+            amt = parse_amount(row[period_col] if len(row) > period_col else None)
+        if amt == 0.0:
+            continue
+        out.append((acc, name, amt))
+    return out
+
+
+def read_fennoa_fi_pair(d: Path, period: str) -> tuple[list, list]:
+    """Hittar bolagets tase- och tuloslaskelma-csv i d och returnerar (IS, BS)."""
+    bs_files = sorted(d.glob("246_tase-kk_*.csv"))
+    is_files = sorted(d.glob("246_tuloslaskelma-kk_*.csv"))
+    if not bs_files or not is_files:
+        raise FileNotFoundError(f"saknar tase-kk/tuloslaskelma-kk csv i {d}")
+    bs = read_fennoa_fi_csv(bs_files[0], period, kind="BS")
+    is_ = read_fennoa_fi_csv(is_files[0], period, kind="IS")
+    return is_, bs
+
+
 # ── Reader: SuSa CSV (220) ────────────────────────────────────────────────────
 def read_susa_csv(filepath: Path) -> tuple[list, list]:
     """
@@ -420,6 +528,13 @@ def process_company(
             is_rows, bs_rows = read_susa_jahresuebersicht(filepath, period)
         elif reader == "susa_csv":
             is_rows, bs_rows = read_susa_csv(filepath)
+        elif reader == "fennoa_fi_or_susa":
+            # Dispatch på filtyp: SUSA-xlsx → susa_jahresuebersicht; tase-kk-csv →
+            # fennoa-fi-läsaren som plockar period-kolumnen från ;202601;202602;... .
+            if filepath.suffix.lower() == ".csv":
+                is_rows, bs_rows = read_fennoa_fi_pair(filepath.parent, period)
+            else:
+                is_rows, bs_rows = read_susa_jahresuebersicht(filepath, period)
         else:
             log("ERROR", code, f"Okänd reader: {reader}")
             return "error"
@@ -507,9 +622,19 @@ def main() -> None:
         try:
             filepath = glob_one(GERMANY_DIR, glob_pattern)
         except FileNotFoundError:
-            log("SKIP", code, "Källfil saknas (redan i Referens?)")
-            stats["skip"] += 1
-            continue
+            # Stöd för fallback-glob (t.ex. 246 som bytt filformat mitt under året)
+            fallback = cfg.get("fallback_glob")
+            if fallback:
+                try:
+                    filepath = glob_one(GERMANY_DIR, fallback.format(period=period))
+                except FileNotFoundError:
+                    log("SKIP", code, "Källfil saknas (redan i Referens?)")
+                    stats["skip"] += 1
+                    continue
+            else:
+                log("SKIP", code, "Källfil saknas (redan i Referens?)")
+                stats["skip"] += 1
+                continue
 
         status = process_company(code, friendly, period, filepath, cfg, args.dry_run)
         stats[status] = stats.get(status, 0) + 1
