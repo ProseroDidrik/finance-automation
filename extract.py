@@ -242,6 +242,10 @@ def match_msg(msg_path, companies, id_index):
 
 _UPLOAD_VALID_EXT = {".se", ".si", ".sie", ".xml", ".zip", ".xlsx", ".xls", ".csv"}
 _UPLOAD_ID_RE = re.compile(r"^(\d+)_")
+# Färdigbearbetade INL.xlsx från _uploads (när sändaren inte ger användbara
+# källfiler) ska direkt till {Country}/output/ där load_inl letar — inte till
+# {Country}/ där process_*.py letar efter råkällor.
+_INL_FILENAME_RE = re.compile(r"^\d+_.+_\d{6}_INL\.xlsx$", re.IGNORECASE)
 
 
 def process_uploads(period: str, id_index: dict) -> tuple[int, int, list[str]]:
@@ -251,6 +255,12 @@ def process_uploads(period: str, id_index: dict) -> tuple[int, int, list[str]]:
     av bolagets `country` (eller COUNTRY_OVERRIDES). Inga score-beräkningar —
     detta är manuellt uppladdade filer där prefixet är ground truth.
 
+    _uploads har prioritet över msg-extraherade filer: för varje bolag som har
+    en fil i _uploads arkiveras ev. msg-extraherade källor till Referens/
+    INNAN _uploads-filen placeras. Pre-bearbetade INL.xlsx (matchar mönstret
+    {ID}_{Name}_{YYYYMM}_INL.xlsx) routas till {Country}/output/ för att hittas
+    av load_inl, övriga filer hamnar i {Country}/ som råkällor.
+
     Returns (saved, skipped, failed).
     """
     upload_dir = GET_TESTFILES / "_uploads" / period
@@ -259,6 +269,41 @@ def process_uploads(period: str, id_index: dict) -> tuple[int, int, list[str]]:
     files = sorted(p for p in upload_dir.iterdir() if p.is_file())
     if not files:
         return (0, 0, [])
+
+    # Steg 1: identifiera vilka bolag som har _uploads-filer, så vi kan arkivera
+    # eventuella tidigare msg-extraherade källor för dem.
+    upload_ids: set[int] = set()
+    for src in files:
+        m = _UPLOAD_ID_RE.match(src.name)
+        if m and src.suffix.lower() in _UPLOAD_VALID_EXT:
+            upload_ids.add(int(m.group(1)))
+
+    # Steg 2: arkivera msg-extraherade {ID}_*-filer i {Country}/ till Referens/
+    # för varje bolag som har _uploads. Påverkar inte output/-mappen.
+    archived = 0
+    for bolag_id in sorted(upload_ids):
+        company = id_index.get(bolag_id)
+        if not company:
+            continue
+        country = COUNTRY_OVERRIDES.get(bolag_id) or company.get("country") or "Other"
+        country_dir = OUT_DIR / period / country
+        if not country_dir.exists():
+            continue
+        referens_dir = country_dir / "Referens"
+        prefix = f"{bolag_id:03d}_"
+        for f in list(country_dir.glob(f"{prefix}*")):
+            if not f.is_file():
+                continue
+            referens_dir.mkdir(exist_ok=True)
+            dest = unique_path(referens_dir / f.name)
+            try:
+                f.rename(dest)
+                archived += 1
+            except OSError:
+                pass
+    if archived:
+        print()
+        print("_uploads-prioritet: arkiverade {} msg-extraherad(e) fil(er) → Referens/".format(archived))
 
     print()
     print("_uploads/{}/ — {} fil(er)".format(period, len(files)))
@@ -283,7 +328,13 @@ def process_uploads(period: str, id_index: dict) -> tuple[int, int, list[str]]:
             failed.append(src.name)
             continue
         country = COUNTRY_OVERRIDES.get(bolag_id) or company.get("country") or "Other"
-        out_subdir = OUT_DIR / period / country
+        # Pre-bearbetade INL.xlsx → output/; allt annat → Country/-rot (råkällor)
+        if _INL_FILENAME_RE.match(src.name):
+            out_subdir = OUT_DIR / period / country / "output"
+            dest_label = f"{country}/output"
+        else:
+            out_subdir = OUT_DIR / period / country
+            dest_label = country
         out_subdir.mkdir(parents=True, exist_ok=True)
         target = unique_path(out_subdir / src.name)
         try:
@@ -294,7 +345,7 @@ def process_uploads(period: str, id_index: dict) -> tuple[int, int, list[str]]:
             continue
         label = (company.get("friendly") or company.get("namn") or "")[:28]
         print("  OK     {:03d} {:<28}  ->  {}/{}".format(
-            bolag_id, label, country, target.name))
+            bolag_id, label, dest_label, target.name))
         saved += 1
     return (saved, skipped, failed)
 

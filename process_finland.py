@@ -1196,6 +1196,14 @@ if __name__ == "__main__":
             log("ERROR", code, "Okänd bolagskod")
             stats["error"] += 1
             continue
+        # Pre-bearbetad INL från _uploads har prioritet — om INL.xlsx redan finns
+        # i output/ (placerad där av extract.py:process_uploads) så ska vi inte
+        # försöka köra runner:n över råkällor som ändå har arkiverats till Referens.
+        existing_inl = list(OUTPUT_DIR.glob(f"{int(code):03d}_*_{PERIOD}_INL.xlsx"))
+        if existing_inl:
+            log("SKIP", code, f"INL redan i output/ (pre-bearbetad upload): {existing_inl[0].name}")
+            stats["skip"] += 1
+            continue
         try:
             status = RUNNERS[code](FINLAND_DIR)
             stats[status] = stats.get(status, 0) + 1
