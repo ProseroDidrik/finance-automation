@@ -240,7 +240,7 @@ def match_msg(msg_path, companies, id_index):
             pass
 
 
-_UPLOAD_VALID_EXT = {".se", ".si", ".sie", ".xml", ".zip", ".xlsx", ".xls"}
+_UPLOAD_VALID_EXT = {".se", ".si", ".sie", ".xml", ".zip", ".xlsx", ".xls", ".csv"}
 _UPLOAD_ID_RE = re.compile(r"^(\d+)_")
 
 

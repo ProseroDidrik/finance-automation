@@ -1,0 +1,113 @@
+WARNING: The behavior of this command has been altered by the following extension: authV2
+{
+  "id": "/subscriptions/53b64d95-9acb-4f46-a53c-3e99b5008004/resourceGroups/rg-finauto-6427/providers/Microsoft.Web/sites/app-finauto-6427/config/authsettingsV2",
+  "location": "Sweden Central",
+  "name": "authsettingsV2",
+  "properties": {
+    "clearInboundClaimsMapping": "false",
+    "globalValidation": {
+      "excludedPaths": [
+        "/api/health"
+      ],
+      "redirectToProvider": "azureactivedirectory",
+      "requireAuthentication": true,
+      "unauthenticatedClientAction": "RedirectToLoginPage"
+    },
+    "httpSettings": {
+      "forwardProxy": {
+        "convention": "NoProxy"
+      },
+      "requireHttps": true,
+      "routes": {
+        "apiPrefix": "/.auth"
+      }
+    },
+    "identityProviders": {
+      "apple": {
+        "enabled": true,
+        "login": {},
+        "registration": {}
+      },
+      "azureActiveDirectory": {
+        "enabled": true,
+        "login": {
+          "disableWWWAuthenticate": false
+        },
+        "registration": {
+          "clientId": "b1dc7946-a511-4e99-afdf-b7ea55643246",
+          "clientSecretSettingName": "MICROSOFT_PROVIDER_AUTHENTICATION_SECRET",
+          "openIdIssuer": "https://sts.windows.net/39a78e1d-6240-4af0-a5ae-2d539a6a2e48/"
+        },
+        "validation": {
+          "allowedAudiences": [
+            "b1dc7946-a511-4e99-afdf-b7ea55643246"
+          ],
+          "defaultAuthorizationPolicy": {
+            "allowedPrincipals": {}
+          },
+          "jwtClaimChecks": {}
+        }
+      },
+      "facebook": {
+        "enabled": true,
+        "login": {},
+        "registration": {}
+      },
+      "gitHub": {
+        "enabled": true,
+        "login": {},
+        "registration": {}
+      },
+      "google": {
+        "enabled": true,
+        "login": {},
+        "registration": {},
+        "validation": {
+          "allowedAudiences": [
+            "b1dc7946-a511-4e99-afdf-b7ea55643246"
+          ]
+        }
+      },
+      "legacyMicrosoftAccount": {
+        "enabled": true,
+        "login": {},
+        "registration": {},
+        "validation": {
+          "allowedAudiences": [
+            "b1dc7946-a511-4e99-afdf-b7ea55643246"
+          ]
+        }
+      },
+      "twitter": {
+        "enabled": true,
+        "registration": {}
+      }
+    },
+    "login": {
+      "cookieExpiration": {
+        "convention": "FixedTime",
+        "timeToExpiration": "08:00:00"
+      },
+      "nonce": {
+        "nonceExpirationInterval": "00:05:00",
+        "validateNonce": true
+      },
+      "preserveUrlFragmentsForLogins": false,
+      "routes": {
+        "logoutEndpoint": "/.auth/logout"
+      },
+      "tokenStore": {
+        "azureBlobStorage": {},
+        "enabled": false,
+        "fileSystem": {},
+        "tokenRefreshExtensionHours": 72.0
+      }
+    },
+    "platform": {
+      "enabled": true,
+      "runtimeVersion": "~2"
+    }
+  },
+  "resourceGroup": "rg-finauto-6427",
+  "type": "Microsoft.Web/sites/config"
+}
