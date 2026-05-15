@@ -64,7 +64,8 @@ py load_sie.py  --period 202604                       # SE (auto-period från #P
 py load_sie.py  --period 202604 --override 32         # rulla över bolag 32
 py load_sie.py  --period 202604 --no-include-journal  # hoppa över journal (snabbare för stora filer)
 
-py load_saft.py --period 202604                       # NO (auto-period från header, inkl. GeneralLedgerEntries)
+py load_saft.py --period 202604                       # NO + DK (auto-period från header, inkl. GeneralLedgerEntries)
+py load_saft.py --period 202604 --country DK          # bara Danmark (NO/DK; default = båda)
 py load_saft.py --period 202604 --override
 py load_saft.py --period 202604 --no-include-journal  # hoppa över journal
 
@@ -135,7 +136,7 @@ INL.xlsx layout: empty row 1, then IS rows, then BS rows (col A=account, B=name,
 
 - **Sweden** (`process_sweden.py`): parses SIE files (encoding fallback: utf-8-sig → cp437 → latin-1), resolves correct BolagsID via OrgNr lookup, validates `#RAR 0` for YTD period, renames, moves non-SIE files to `Referens/`.
 - **Norway** (`process_norway.py`): handles both raw `.xml` and zipped `.zip` SAF-T; extracts from zip to renamed `.xml`. Uses `SOFTWARE_MAP` to abbreviate `SoftwareID` XML field.
-- **Denmark** (`process_denmark.py`): `COMPANY_DEFS` dict configures each company's IS/BS account boundary (`is_max`, `bs_min` as 4-digit prefixes), filename, and extra files to move. Company 216 is IS-only (no BS). Company 178 skips bold+underline summary rows. Company 190 (Actas) is SAF-T-only, not INL.xlsx.
+- **Denmark** (`process_denmark.py`): `COMPANY_DEFS` dict configures each company's IS/BS account boundary (`is_max`, `bs_min` as 4-digit prefixes), filename, and extra files to move. Company 216 is IS-only (no BS). Company 178 skips bold+underline summary rows. Bolag 081 (Actas) levererar SAF-T XML och laddas av `load_saft.py` (inte INL.xlsx). Bolag 190 (Sikring Nord) hanteras här via XLSX; en eventuell SAF-T-export från E-Komplet saknar GL-konton och bara WARN:as i `load_saft.py`.
 - **Finland** (`process_finland.py`): each company has its own `run_NNN()` function registered in `RUNNERS` dict. Multiple reader formats (A–L) handle the variety of Finnish accounting software exports (Fennoa CSV, Muutos CSV/XLSX, period XLS, etc.). BS accounts 1–1999 (4-digit prefix) have sign flipped. Accounts `237X` (årets resultat) are excluded to avoid double-counting.
 - **Germany** (`process_germany.py`): `COMPANY_DEFS` dict with three readers: `monthly_value` (188 Bofferding — English-DATEV XLSX, negate all amounts), `susa_pro_monat` (231/245 — Haben−Soll at cols 8–9), `susa_jahresuebersicht` (246 — dynamic month column with S/H indicators), `susa_csv` (220 Weckbacher — cp1252 semicolon CSV, amount=−(Soll+Haben)). All exclude accounts ≥9000 (sub-ledger/statistical). Period detected dynamically via `prev_month_period()`.
 

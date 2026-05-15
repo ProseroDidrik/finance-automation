@@ -1,16 +1,26 @@
-"""Ladda SAF-T-filer (Norge) till fact_balances i DuckDB.
+"""Ladda SAF-T-filer (Norge + Danmark) till fact_balances i Postgres.
 
 SAF-T är YTD-baserat. För varje Account-element i MasterFiles:
   AccountID            → account_code
   AccountDescription   → account_name
   ClosingDebitBalance  / ClosingCreditBalance  → amount (debit - credit)
-  AccountID-prefix     → statement_type (1/2 = BS, 3–9 = IS)
+  AccountID-prefix     → statement_type (NO: 1/2=BS, 3-9=IS;
+                                          DK: 4-siffrigt prefix ≤4999=IS, ≥5000=BS)
 
-Period härleds från Header/SelectionCriteria (PeriodEndYear + PeriodEnd).
-Bolag matchas via Header/Company/RegistrationNumber mot dim_company.orgnr.
+Namespace detekteras automatiskt från XML-roten:
+  urn:StandardAuditFile-Taxation-Financial:NO  → NO (default-valuta NOK)
+  urn:StandardAuditFile-Taxation-Financial:DK  → DK (default-valuta DKK)
 
-Filer kan vara stora (20–50 MB); använder iterparse och stoppar efter
-MasterFiles så att GeneralLedgerEntries (verifikat) inte läses in.
+Period härleds från Header/SelectionCriteria:
+  - PeriodEndYear + PeriodEnd (NO, DK E-Komplet)
+  - SelectionEndDate (DK Visma Business, ISO-datum)
+
+Bolag matchas via Header/Company/RegistrationNumber mot dim_company.orgnr
+(blanksteg/icke-siffror normaliseras bort — DK Visma skriver "29 14 36 25").
+
+Filer kan vara stora (NO: 20–50 MB; DK Actas: 280+ MB); använder iterparse.
+För balance-parsen stoppas läsningen vid GeneralLedgerEntries så att
+verifikat (separat iter) inte läses in en gång till.
 
 Idempotens: rader för (company_id, period, source_kind) tas bort innan nya
 skrivs — flera SAF-T-filer för samma bolag/period överskriver varandra.
@@ -25,20 +35,39 @@ from pathlib import Path
 import db
 from shared import begin_run, is_override_for, load_config, log, prev_month_period
 
-NS = "urn:StandardAuditFile-Taxation-Financial:NO"
+NS_BY_COUNTRY = {
+    "NO": "urn:StandardAuditFile-Taxation-Financial:NO",
+    "DK": "urn:StandardAuditFile-Taxation-Financial:DK",
+}
+NS_TO_COUNTRY = {v: k for k, v in NS_BY_COUNTRY.items()}
+DEFAULT_CURRENCY = {"NO": "NOK", "DK": "DKK"}
+
 SOURCE_KIND = "SAFT"
 PERIOD_TYPE = "ytd"
 JOURNAL_BATCH = 5000
 
+# Underkataloger (under extracted/{period}/) som scannas för SAF-T-XML
+COUNTRY_DIRS = {"NO": "Norway", "DK": "Denmark"}
+
 # SAF-T-filer som saknar RegistrationNumber i Header: filnamnssubsträng → company_id
+# (Säkerhetsnät — normalt löses Actas via orgnr-lookup på "29 14 36 25".)
 FILENAME_OVERRIDES: dict[str, int] = {
-    "081_Actas": 81,  # Actas DK — RegistrationNumber saknas i filen
+    "081_Actas": 81,  # Actas DK
 }
 
 
-def _t(elem: ET.Element, tag: str) -> str | None:
+def _detect_namespace(path: Path) -> str | None:
+    """Läs första elementet och returnera dess namespace-URI ('' om saknas)."""
+    for event, elem in ET.iterparse(str(path), events=("start",)):
+        if "}" in elem.tag:
+            return elem.tag.split("}", 1)[0][1:]
+        return ""
+    return None
+
+
+def _t(elem: ET.Element, tag: str, ns: str) -> str | None:
     """Hämta text från ett namespacad child-element, eller None."""
-    found = elem.find(f"{{{NS}}}{tag}")
+    found = elem.find(f"{{{ns}}}{tag}")
     return found.text if found is not None else None
 
 
@@ -54,30 +83,55 @@ def _amount(s: str | None) -> float:
 def normalize_orgnr(orgnr: str) -> str:
     """Strip allt utom siffror.
 
-    Hanterar svenska '556071-2340', norska '916059701', och norska
-    moms-format som 'NO818488262MVA' eller '920595359MVA'.
+    Hanterar svenska '556071-2340', norska '916059701', norska
+    moms-format som 'NO818488262MVA' / '920595359MVA', och danska
+    Visma-formatet med blanksteg '29 14 36 25'.
     """
     import re
     return re.sub(r"[^0-9]", "", str(orgnr).strip())
 
 
-def statement_type_from_code(account_code: str) -> str | None:
-    """Norsk standard kontoplan: 1, 2 = BS; 3–9 = IS."""
+def statement_type_from_code(account_code: str, country: str) -> str | None:
+    """Kontotyp → statement_type per land.
+
+    NO: norsk standard kontoplan — 1, 2 = BS; 3–9 = IS.
+    DK: 4-siffrigt prefix (Visma Business / dansk SKAT-konvention) —
+        ≤ 4999 = IS, ≥ 5000 = BS. Längre kontonummer (5-6 siffror)
+        klassificeras på sina första 4 siffror (motsvarar
+        process_denmark.py:normalize4()).
+    """
     c = (account_code or "").strip()
     if not c or not c[0].isdigit():
         return None
+    if country == "DK":
+        digits = "".join(ch for ch in c if ch.isdigit())
+        try:
+            prefix4 = int(digits[:4]) if len(digits) > 4 else int(digits)
+        except ValueError:
+            return None
+        return "IS" if prefix4 <= 4999 else "BS"
+    # NO (default)
     return "BS" if c[0] in ("1", "2") else "IS"
 
 
 def parse_saft(path: Path) -> dict:
-    """Returnera {orgnr, name, currency, period_start_year/month, period_end_year/month, accounts}.
+    """Returnera dict med metadata + accounts från SAF-T-filen.
 
-    accounts: list of (account_code, account_name, amount, statement_type, row_index)
+    Nycklar:
+      ns, country, orgnr, name, currency,
+      period_start_year/month, period_end_year/month,
+      selection_start_date, selection_end_date,
+      accounts: list of (account_code, account_name, amount, statement_type, row_index)
     """
+    ns = _detect_namespace(path) or ""
+    country = NS_TO_COUNTRY.get(ns)
+
     out: dict = {
+        "ns": ns, "country": country,
         "orgnr": None, "name": None, "currency": None,
         "period_start_year": None, "period_start_month": None,
         "period_end_year": None, "period_end_month": None,
+        "selection_start_date": None, "selection_end_date": None,
         "accounts": [],
     }
     accounts: list[tuple] = []
@@ -88,26 +142,28 @@ def parse_saft(path: Path) -> dict:
         tag = elem.tag.split("}", 1)[-1] if "}" in elem.tag else elem.tag
 
         if tag == "Header":
-            company = elem.find(f"{{{NS}}}Company")
+            company = elem.find(f"{{{ns}}}Company")
             if company is not None:
-                out["orgnr"] = _t(company, "RegistrationNumber")
-                out["name"] = _t(company, "Name")
-            out["currency"] = _t(elem, "DefaultCurrencyCode")
-            sc = elem.find(f"{{{NS}}}SelectionCriteria")
+                out["orgnr"] = _t(company, "RegistrationNumber", ns)
+                out["name"] = _t(company, "Name", ns)
+            out["currency"] = _t(elem, "DefaultCurrencyCode", ns)
+            sc = elem.find(f"{{{ns}}}SelectionCriteria")
             if sc is not None:
-                out["period_start_month"] = _t(sc, "PeriodStart")
-                out["period_start_year"] = _t(sc, "PeriodStartYear")
-                out["period_end_month"] = _t(sc, "PeriodEnd")
-                out["period_end_year"] = _t(sc, "PeriodEndYear")
+                out["period_start_month"] = _t(sc, "PeriodStart", ns)
+                out["period_start_year"] = _t(sc, "PeriodStartYear", ns)
+                out["period_end_month"] = _t(sc, "PeriodEnd", ns)
+                out["period_end_year"] = _t(sc, "PeriodEndYear", ns)
+                out["selection_start_date"] = _t(sc, "SelectionStartDate", ns)
+                out["selection_end_date"] = _t(sc, "SelectionEndDate", ns)
             elem.clear()
 
         elif tag == "Account":
-            code = _t(elem, "AccountID")
-            name = _t(elem, "AccountDescription")
-            cdb = _amount(_t(elem, "ClosingDebitBalance"))
-            ccb = _amount(_t(elem, "ClosingCreditBalance"))
+            code = _t(elem, "AccountID", ns)
+            name = _t(elem, "AccountDescription", ns)
+            cdb = _amount(_t(elem, "ClosingDebitBalance", ns))
+            ccb = _amount(_t(elem, "ClosingCreditBalance", ns))
             amt = cdb - ccb
-            st = statement_type_from_code(code) if code else None
+            st = statement_type_from_code(code, country) if code else None
             idx += 1
             accounts.append((code, name, amt, st, idx))
             elem.clear()
@@ -133,13 +189,20 @@ def _parse_iso_date(s: str | None):
         return None
 
 
-def iter_saft_journal(path: Path):
+def iter_saft_journal(path: Path, ns: str | None = None):
     """Yield en dict per Line under GeneralLedgerEntries.
 
     Strömmande iterparse — clearar varje Journal efter bearbetning så att
     minnet hålls bundet till en Journal i taget. För monatliga norska
-    SAF-T-filer rymms detta enkelt; för stora årsfiler skalar det.
+    SAF-T-filer rymms detta enkelt; för stora danska årsfiler (Actas
+    ~300 MB) skalar det också.
+
+    ns kan skickas in om den redan är känd, annars detekteras den från
+    rotelementet.
     """
+    if ns is None:
+        ns = _detect_namespace(path) or ""
+
     ctx = ET.iterparse(str(path), events=("end",))
     in_gle = False
     for event, elem in ctx:
@@ -155,22 +218,22 @@ def iter_saft_journal(path: Path):
 
         if tag == "Journal":
             in_gle = True
-            j_id = _t(elem, "JournalID")
-            j_desc = _t(elem, "Description")
-            for tx in elem.findall(f"{{{NS}}}Transaction"):
-                tx_id = _t(tx, "TransactionID")
-                tx_date = _parse_iso_date(_t(tx, "TransactionDate"))
-                tx_desc = _t(tx, "Description")
+            j_id = _t(elem, "JournalID", ns)
+            j_desc = _t(elem, "Description", ns)
+            for tx in elem.findall(f"{{{ns}}}Transaction"):
+                tx_id = _t(tx, "TransactionID", ns)
+                tx_date = _parse_iso_date(_t(tx, "TransactionDate", ns))
+                tx_desc = _t(tx, "Description", ns)
                 line_no = 0
-                for line in tx.findall(f"{{{NS}}}Line"):
+                for line in tx.findall(f"{{{ns}}}Line"):
                     line_no += 1
-                    rec_id = _t(line, "RecordID")
-                    acc = _t(line, "AccountID")
-                    line_desc = _t(line, "Description")
-                    debit_elem = line.find(f"{{{NS}}}DebitAmount")
-                    credit_elem = line.find(f"{{{NS}}}CreditAmount")
-                    debit = _amount(_t(debit_elem, "Amount")) if debit_elem is not None else 0.0
-                    credit = _amount(_t(credit_elem, "Amount")) if credit_elem is not None else 0.0
+                    rec_id = _t(line, "RecordID", ns)
+                    acc = _t(line, "AccountID", ns)
+                    line_desc = _t(line, "Description", ns)
+                    debit_elem = line.find(f"{{{ns}}}DebitAmount")
+                    credit_elem = line.find(f"{{{ns}}}CreditAmount")
+                    debit = _amount(_t(debit_elem, "Amount", ns)) if debit_elem is not None else 0.0
+                    credit = _amount(_t(credit_elem, "Amount", ns)) if credit_elem is not None else 0.0
                     yield {
                         "journal_id": j_id, "journal_desc": j_desc,
                         "transaction_id": tx_id, "transaction_date": tx_date,
@@ -185,11 +248,24 @@ def iter_saft_journal(path: Path):
         return
 
 
+def _yyyymm_from_iso(date_str: str | None) -> str | None:
+    """'2026-04-30' → '202604'. Returnerar None vid ogiltigt format."""
+    if not date_str or len(date_str) < 7:
+        return None
+    try:
+        return f"{int(date_str[:4]):04d}{int(date_str[5:7]):02d}"
+    except ValueError:
+        return None
+
+
 def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
     """Räkenskapsårets (start_period, end_period) som 'YYYYMM'.
 
-    Härleds från SelectionCriteria.PeriodStartYear/PeriodEndYear i headern.
-    Fallback: kalenderår från period:t självt.
+    Försök i tur och ordning:
+      1. SelectionCriteria.PeriodStartYear+PeriodStart / PeriodEndYear+PeriodEnd
+         (NO + DK E-Komplet)
+      2. SelectionCriteria.SelectionStartDate / SelectionEndDate (DK Visma)
+      3. Kalenderår från period:t självt (fallback)
     """
     sy = parsed.get("period_start_year")
     sm = parsed.get("period_start_month")
@@ -202,12 +278,20 @@ def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
             return start, end
     except ValueError:
         pass
+
+    start = _yyyymm_from_iso(parsed.get("selection_start_date"))
+    end = _yyyymm_from_iso(parsed.get("selection_end_date"))
+    if start and end:
+        return start, end
+
     year = period[:4]
     return f"{year}01", f"{year}12"
 
 
 def derive_period(parsed: dict, override: str | None) -> str | None:
-    """YYYYMM från SelectionCriteria.PeriodEndYear + PeriodEnd, eller override."""
+    """YYYYMM via (i) --period override, (ii) PeriodEndYear+PeriodEnd,
+    (iii) SelectionEndDate ISO. Sista chansen — annars None.
+    """
     if override:
         return override
     y = parsed.get("period_end_year")
@@ -216,8 +300,8 @@ def derive_period(parsed: dict, override: str | None) -> str | None:
         try:
             return f"{int(y):04d}{int(m):02d}"
         except ValueError:
-            return None
-    return None
+            pass
+    return _yyyymm_from_iso(parsed.get("selection_end_date"))
 
 
 def build_orgnr_lookup(con: db.Conn) -> dict[str, tuple[int, str]]:
@@ -246,6 +330,13 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         log("ERROR", path.name, f"Läsfel: {e}")
         return "error"
 
+    country = parsed.get("country")
+    if country not in NS_BY_COUNTRY:
+        log("ERROR", path.name,
+            f"Okänd/avsaknad SAF-T-namespace ({parsed.get('ns')!r}); "
+            f"stödda: {list(NS_BY_COUNTRY)}")
+        return "error"
+
     orgnr_raw = parsed.get("orgnr")
     company_id: int | None = None
     if not orgnr_raw:
@@ -266,15 +357,20 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             return "error"
         company_id, _name = hit
 
+    rows = parsed["accounts"]
+    if not rows:
+        # DK E-Komplet skickar ibland SAF-T-export utan GeneralLedgerAccounts
+        # (bara Customers/Suppliers). Loggas som WARN och skippas — vi har
+        # ingen balance att ladda och vill inte felklassa det som ERROR.
+        log("WARN", company_id,
+            f"{path.name}: inga GL-konton (country={country}). "
+            "SAF-T-export saknar GeneralLedgerAccounts — skippar balance-load.")
+        return "warn"
+
     period = derive_period(parsed, period_override)
     if not period:
         log("ERROR", company_id, f"Kunde inte härleda period från {path.name}")
         return "error"
-
-    rows = parsed["accounts"]
-    if not rows:
-        log("WARN", company_id, f"Inga Account-rader i {path.name}")
-        return "warn"
 
     # Konfliktkoll: finns redan SAFT för perioder >= filens period inom FY?
     fy_start, fy_end = derive_fy_range(parsed, period)
@@ -292,7 +388,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             "Kör med --override för att skriva över.")
         return "skip"
 
-    currency = parsed.get("currency") or "NOK"
+    currency = parsed.get("currency") or DEFAULT_CURRENCY[country]
     total_bs = sum(r[2] for r in rows if r[3] == "BS")
     total_is = sum(r[2] for r in rows if r[3] == "IS")
     total = total_bs + total_is
@@ -306,7 +402,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         if include_journal:
             # Räkna i dry-run för synlighet (extra pass — endast vid --dry-run)
             try:
-                jcount = sum(1 for _ in iter_saft_journal(path))
+                jcount = sum(1 for _ in iter_saft_journal(path, parsed["ns"]))
                 journal_msg = f"  JOURNAL≈{jcount}"
             except Exception as e:
                 journal_msg = f"  JOURNAL=läsfel ({e})"
@@ -375,7 +471,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                 [company_id, rel_src],
             )
             batch: list[tuple] = []
-            for j in iter_saft_journal(path):
+            for j in iter_saft_journal(path, parsed["ns"]):
                 tx_date = j["transaction_date"]
                 jp = f"{tx_date.year:04d}{tx_date.month:02d}" if tx_date else period
                 if period_override and jp > period_override:
@@ -447,14 +543,30 @@ def discover_files(source_dir: Path) -> list[Path]:
                   if f.is_file() and f.suffix.lower() == ".xml")
 
 
+def discover_files_for_period(base_path: Path, period: str,
+                              countries: list[str] | None = None) -> list[Path]:
+    """Hitta alla SAF-T XML-filer för perioden under extracted/{period}/{Country}/."""
+    countries = countries or list(COUNTRY_DIRS)
+    found: list[Path] = []
+    for cc in countries:
+        sub = COUNTRY_DIRS.get(cc)
+        if not sub:
+            continue
+        found.extend(discover_files(base_path / "extracted" / period / sub))
+    return found
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Ladda SAF-T XML (Norge) till DuckDB (fact_balances)."
+        description="Ladda SAF-T XML (Norge + Danmark) till Postgres (fact_balances)."
     )
     parser.add_argument("--period", default=None,
                         help="YYYYMM. Override för period (default: härleds från XML-Header)")
     parser.add_argument("--source-dir", default=None,
-                        help="Mapp att läsa från (default: extracted/{period}/Norway under base_path)")
+                        help="Mapp att läsa från (default: scanna både "
+                             "extracted/{period}/Norway och .../Denmark under base_path)")
+    parser.add_argument("--country", choices=sorted(NS_BY_COUNTRY), default=None,
+                        help="Begränsa till ett land (NO eller DK). Default: båda.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--include-journal", default=True,
                         action=argparse.BooleanOptionalAction,
@@ -469,18 +581,26 @@ def main() -> None:
     period_for_log = args.period or prev_month_period()
     begin_run("load_saft.py", period_for_log)
     log("START", "load_saft.py",
-        f"period={args.period or '(auto)'} dry_run={args.dry_run} "
-        f"journal={args.include_journal}")
+        f"period={args.period or '(auto)'} country={args.country or 'NO+DK'} "
+        f"dry_run={args.dry_run} journal={args.include_journal}")
 
     cfg = load_config()
     base_path = Path(cfg["base_path"])
-    source_dir = Path(args.source_dir) if args.source_dir else \
-        base_path / "extracted" / period_for_log / "Norway"
-    log("INFO", "scan", f"Söker SAF-T i {source_dir}")
 
-    files = discover_files(source_dir)
+    if args.source_dir:
+        source_dir = Path(args.source_dir)
+        log("INFO", "scan", f"Söker SAF-T i {source_dir}")
+        files = discover_files(source_dir)
+    else:
+        countries = [args.country] if args.country else None
+        country_label = args.country or "NO+DK"
+        log("INFO", "scan",
+            f"Söker SAF-T i extracted/{period_for_log}/{{Norway,Denmark}} "
+            f"(filter: {country_label})")
+        files = discover_files_for_period(base_path, period_for_log, countries)
+
     if not files:
-        log("WARN", "scan", f"Inga .xml-filer hittades i {source_dir}")
+        log("WARN", "scan", "Inga .xml-filer hittades")
         log("DONE", "load_saft.py", "0 OK  0 WARN  0 SKIP  0 ERROR")
         return
 
