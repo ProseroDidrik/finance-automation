@@ -70,6 +70,11 @@ const MONTHS_2026 = ["202601","202602","202603","202604","202605","202606",
 
 const COUNTRY_ORDER = ["Sweden", "Norway", "Finland", "Denmark", "Germany", "CENTR", "CA"];
 
+// Källor som inte är intressanta för täckningsöversikten:
+// - MAN: Mercur-manuella poster (allokeringar, ej riktig ETL-källa)
+// - IMP_ADJ: justeringslager ovanpå IMP, inte ETL-täckning per se
+const HIDDEN_SOURCE_KINDS = new Set(["MAN", "IMP_ADJ"]);
+
 // ----- Hjälpare ------------------------------------------------------------
 
 function emptyAgg(): CellAggregate {
@@ -114,10 +119,17 @@ export function CoverageReport() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Filtrera bort ointressanta lager (MAN/IMP_ADJ) — de ska inte påverka
+  // matrisen, kolumnsummorna eller den övergripande sammanfattningen.
+  const visibleRows = useMemo(
+    () => rows.filter((r) => !HIDDEN_SOURCE_KINDS.has(r.source_kind)),
+    [rows],
+  );
+
   // Bygg matrisen: { country | source_kind | period -> CellAggregate }
   const matrix = useMemo(() => {
     const m = new Map<string, Map<string, Map<string, CellAggregate>>>();
-    for (const r of rows) {
+    for (const r of visibleRows) {
       const country = r.country || "—";
       const sk = r.source_kind;
       if (!m.has(country)) m.set(country, new Map());
@@ -130,7 +142,7 @@ export function CoverageReport() {
       agg[r.status] += 1;
     }
     return m;
-  }, [rows]);
+  }, [visibleRows]);
 
   // Sortera rader för matrix-rendering: land enligt COUNTRY_ORDER, sedan source_kind
   const matrixRows = useMemo(() => {
@@ -152,19 +164,19 @@ export function CoverageReport() {
   // Total per kolumn (alla länder, alla källor)
   const colTotals = useMemo(() => {
     const t = new Map<string, CellAggregate>();
-    for (const r of rows) {
+    for (const r of visibleRows) {
       if (!t.has(r.period)) t.set(r.period, emptyAgg());
       const agg = t.get(r.period)!;
       agg.total += 1;
       agg[r.status] += 1;
     }
     return t;
-  }, [rows]);
+  }, [visibleRows]);
 
   // Drill-down: filtrera till valda (country, source_kind, [period])
   const drillRows = useMemo(() => {
     if (!drill) return [] as CoverageRow[];
-    let out = rows.filter((r) =>
+    let out = visibleRows.filter((r) =>
       r.country === drill.country &&
       r.source_kind === drill.source_kind &&
       (drill.period === undefined || r.period === drill.period)
@@ -185,14 +197,14 @@ export function CoverageReport() {
       return sortDir === "asc" ? cmp : -cmp;
     });
     return out;
-  }, [rows, drill, filter, sortKey, sortDir]);
+  }, [visibleRows, drill, filter, sortKey, sortDir]);
 
   // Övergripande summa
   const grand = useMemo(() => {
     const g = emptyAgg();
-    for (const r of rows) { g.total += 1; g[r.status] += 1; }
+    for (const r of visibleRows) { g.total += 1; g[r.status] += 1; }
     return g;
-  }, [rows]);
+  }, [visibleRows]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
