@@ -12,3 +12,7 @@ config.json
 *.xml
 data/
 .mcp_token
+
+# Windows-temp auth-tokens (colon-encoded paths)
+*Temp*auth.json
+CUsersDidWac*
