@@ -529,12 +529,17 @@ def process_company(
         elif reader == "susa_csv":
             is_rows, bs_rows = read_susa_csv(filepath)
         elif reader == "fennoa_fi_or_susa":
-            # Dispatch på filtyp: SUSA-xlsx → susa_jahresuebersicht; tase-kk-csv →
-            # fennoa-fi-läsaren som plockar period-kolumnen från ;202601;202602;... .
+            # Dispatch på filtyp: tase-kk-csv → fennoa-fi; xlsx → SUSA i endera
+            # "Jahresübersicht" eller "pro Monat"-format (HW Mechatronic levererar
+            # båda i olika månader). Jahres försöks först; om månadskolumnen inte
+            # hittas faller vi tillbaka till pro_monat-läsaren.
             if filepath.suffix.lower() == ".csv":
                 is_rows, bs_rows = read_fennoa_fi_pair(filepath.parent, period)
             else:
-                is_rows, bs_rows = read_susa_jahresuebersicht(filepath, period)
+                try:
+                    is_rows, bs_rows = read_susa_jahresuebersicht(filepath, period)
+                except ValueError:
+                    is_rows, bs_rows = read_susa_pro_monat(filepath)
         else:
             log("ERROR", code, f"Okänd reader: {reader}")
             return "error"

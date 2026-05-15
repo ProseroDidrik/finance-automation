@@ -360,12 +360,19 @@ def process_norway(prefix_filter, dry_run: bool):
                 renames.append((src_path.name, target_name))
                 continue
 
+            if target_path.exists():
+                log("SKIP", prefix_str, f"Mål finns redan: {target_name}")
+                renames.append((src_path.name, target_name))
+                continue
+
             if src_path.suffix.lower() == ".zip":
                 xml_bytes, _ = read_xml_bytes(src_path)
                 if xml_bytes is None:
                     log("ERROR", prefix_str, "Kunde inte läsa XML ur ZIP")
                     continue
                 tmp_path = target_path.with_suffix(".tmp")
+                if tmp_path.exists():
+                    tmp_path.unlink()
                 tmp_path.write_bytes(xml_bytes)
                 try:
                     tmp_path.rename(target_path)
