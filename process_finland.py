@@ -90,6 +90,14 @@ def is_237x(account: int) -> bool:
     return 2370 <= _normalize4(account) <= 2379
 
 
+def is_22xx(account: int) -> bool:
+    """True for edellisten tilikausien voitto/tappio (retained earnings from prior
+    periods, 22XX-familjen). Bokförda av redovisaren som carry-over-poster och
+    saknar offset i innevarande periods IS/BS-rörelser — exkluderas analogt med
+    237X för att INL.xlsx ska summera till 0."""
+    return 2200 <= _normalize4(account) <= 2299
+
+
 def should_flip(account: int) -> bool:
     """BS asset accounts (1–1999 in 4-digit space) need sign flip."""
     return 1 <= _normalize4(account) <= 1999
@@ -834,7 +842,7 @@ def read_period_csv_col(filepath: str, target_period: str) -> list:
 def post_process(raw_rows: list, flip: bool = True) -> list:
     result = []
     for acc, name, amt in raw_rows:
-        if is_237x(acc):
+        if is_237x(acc) or is_22xx(acc):
             continue
         if flip:
             amt = apply_flip(amt, acc)
