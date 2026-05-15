@@ -48,7 +48,7 @@ DOTTERBOLAG  = _BASE / "_params" / "Dotterbolagslista.xlsx"
 SWEDEN_DIR   = GET_TESTFILES / "extracted" / "Sweden"
 REFERENS_DIR = SWEDEN_DIR / "Referens"
 
-SIE_EXTENSIONS = {".se", ".sie"}
+SIE_EXTENSIONS = {".se", ".si", ".sie"}
 
 
 # ── SIE-läsning ────────────────────────────────────────────────────────────────

@@ -525,11 +525,15 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
 
 
 def discover_files(source_dir: Path) -> list[Path]:
-    """Hitta SIE-filer direkt i source_dir (inte i Referens/)."""
+    """Hitta SIE-filer direkt i source_dir (inte i Referens/).
+
+    Accepterar .SE/.se (vanlig) samt .SI/.si (Hogia-export). .sie hade aldrig
+    fallit in i denna pipeline eftersom process_sweden.py:s output har en av
+    de två första formaten, men inkluderas för robusthet."""
     if not source_dir.exists():
         return []
     return sorted(f for f in source_dir.iterdir()
-                  if f.is_file() and f.suffix.upper() == ".SE")
+                  if f.is_file() and f.suffix.upper() in {".SE", ".SI", ".SIE"})
 
 
 def main() -> None:
@@ -567,7 +571,7 @@ def main() -> None:
 
     files = discover_files(source_dir)
     if not files:
-        log("WARN", "scan", f"Inga .SE-filer hittades i {source_dir}")
+        log("WARN", "scan", f"Inga SIE-filer (.SE/.SI/.SIE) hittades i {source_dir}")
         log("DONE", "load_sie.py", "0 OK  0 WARN  0 SKIP  0 ERROR")
         return
 

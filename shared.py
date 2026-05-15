@@ -229,10 +229,14 @@ def load_dotterbolag_full(path: Path) -> dict[int, dict]:
 
 
 def load_overrides() -> dict:
-    """Load _params/overrides.json (subject/attachment/country/alias overrides for extract).
+    """Load _params/overrides.json (subject/attachment/sender/country/alias overrides for extract).
 
     Returns a dict with keys: subject_overrides (dict[str, int]),
     attachment_overrides (list of {msg_stem, attachment_substr, bolag_id}),
+    sender_overrides (dict[str, int] — sender domain or email substring → bolag_id;
+    triggar när delsträngen finns i mailets sender-fält, FÖRE scoring. Användbart
+    för bolag med korta/generiska subject som annars förlorar mot starkare
+    attachment-träffar),
     country_overrides (dict[str, str]),
     aliases (dict[str, list[str]] — bolag_id → phrases that score full weight when
     found as substring in any haystack source),
@@ -243,12 +247,14 @@ def load_overrides() -> dict:
     if not p.exists():
         return {
             "subject_overrides": {}, "attachment_overrides": [],
-            "country_overrides": {}, "aliases": {}, "excluded": [],
+            "sender_overrides": {}, "country_overrides": {}, "aliases": {},
+            "excluded": [],
         }
     with open(p, encoding="utf-8") as f:
         data = json.load(f)
     data.setdefault("subject_overrides", {})
     data.setdefault("attachment_overrides", [])
+    data.setdefault("sender_overrides", {})
     data.setdefault("country_overrides", {})
     data.setdefault("aliases", {})
     data.setdefault("excluded", [])

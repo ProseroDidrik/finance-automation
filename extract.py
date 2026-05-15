@@ -6,6 +6,7 @@ Output: extracted/{Country}/{ID:03d}_{originalname}
 from __future__ import annotations
 import argparse
 import re
+import shutil
 import sys
 from datetime import date
 from pathlib import Path
@@ -38,6 +39,8 @@ KNOWN_COUNTRIES = ("Sweden", "Norway", "Finland", "Denmark", "Germany")
 # Overrides läses från _params/overrides.json (editerbar via GUI:t).
 # OVERRIDES: msg_path.stem → bolag_id (subject-level)
 # ATTACHMENT_OVERRIDES: (msg_stem, lowercase-delsträng i bilagans filnamn) → bolag_id
+# SENDER_OVERRIDES: lowercase-delsträng i sender-fältet → bolag_id (för bolag
+#   med korta/generiska subject som annars förlorar mot starkare attachment-träffar)
 # COUNTRY_OVERRIDES: bolag_id → land (för interna bolag vars Market-kolumn inte matchar)
 _OV = _load_overrides()
 OVERRIDES: dict[str, int] = {k: int(v) for k, v in _OV["subject_overrides"].items()}
@@ -45,6 +48,7 @@ ATTACHMENT_OVERRIDES: dict[tuple[str, str], int] = {
     (item["msg_stem"], item["attachment_substr"]): int(item["bolag_id"])
     for item in _OV["attachment_overrides"]
 }
+SENDER_OVERRIDES: dict[str, int] = {k.lower(): int(v) for k, v in _OV["sender_overrides"].items()}
 COUNTRY_OVERRIDES: dict[int, str] = {int(k): v for k, v in _OV["country_overrides"].items()}
 
 
@@ -201,6 +205,16 @@ def match_msg(msg_path, companies, id_index):
             "sender": msg.sender or "",
             "body": (msg.body or "")[:1500],
         }
+        # Sender-override: kicks in om någon registrerad delsträng (typiskt
+        # mail-domän) finns i sender-fältet. Går före scoring så svaga
+        # konkurrenter (kort generisk subject + stark attachment) inte vinner.
+        sender_low = (haystacks["sender"] or "").lower()
+        for needle, bolag_id in SENDER_OVERRIDES.items():
+            if needle in sender_low:
+                return id_index.get(bolag_id, {
+                    "id": bolag_id, "friendly": "", "namn": "ID {}".format(bolag_id),
+                    "country": "Other", "tokens": [], "doman": "",
+                }), 999
         allowed = _country_constraint(haystacks)
         eligible = (
             [c for c in companies if c["country"] in allowed]
@@ -224,6 +238,65 @@ def match_msg(msg_path, companies, id_index):
             msg.close()
         except Exception:
             pass
+
+
+_UPLOAD_VALID_EXT = {".se", ".si", ".sie", ".xml", ".zip", ".xlsx", ".xls"}
+_UPLOAD_ID_RE = re.compile(r"^(\d+)_")
+
+
+def process_uploads(period: str, id_index: dict) -> tuple[int, int, list[str]]:
+    """Kopiera filer från _uploads/{period}/ till extracted/{period}/{Country}/.
+
+    Filnamn ska börja med {ID:03d}_ (ID från Dotterbolagslistan). Land avgörs
+    av bolagets `country` (eller COUNTRY_OVERRIDES). Inga score-beräkningar —
+    detta är manuellt uppladdade filer där prefixet är ground truth.
+
+    Returns (saved, skipped, failed).
+    """
+    upload_dir = GET_TESTFILES / "_uploads" / period
+    if not upload_dir.exists():
+        return (0, 0, [])
+    files = sorted(p for p in upload_dir.iterdir() if p.is_file())
+    if not files:
+        return (0, 0, [])
+
+    print()
+    print("_uploads/{}/ — {} fil(er)".format(period, len(files)))
+    saved = 0
+    skipped = 0
+    failed: list[str] = []
+    for src in files:
+        ext = src.suffix.lower()
+        if ext not in _UPLOAD_VALID_EXT:
+            print("  SKIP   {}  (filtyp {} ej stödd)".format(src.name, ext))
+            skipped += 1
+            continue
+        m = _UPLOAD_ID_RE.match(src.name)
+        if not m:
+            print("  SKIP   {}  (saknar {{ID}}_-prefix, t.ex. '018_Rikstvåan_202604.SE')".format(src.name))
+            skipped += 1
+            continue
+        bolag_id = int(m.group(1))
+        company = id_index.get(bolag_id)
+        if not company:
+            print("  FAIL   {}  (okänt bolag-ID {})".format(src.name, bolag_id))
+            failed.append(src.name)
+            continue
+        country = COUNTRY_OVERRIDES.get(bolag_id) or company.get("country") or "Other"
+        out_subdir = OUT_DIR / period / country
+        out_subdir.mkdir(parents=True, exist_ok=True)
+        target = unique_path(out_subdir / src.name)
+        try:
+            shutil.copy2(str(src), str(target))
+        except Exception as e:
+            print("  FAIL   {}  ({})".format(src.name, e))
+            failed.append(src.name)
+            continue
+        label = (company.get("friendly") or company.get("namn") or "")[:28]
+        print("  OK     {:03d} {:<28}  ->  {}/{}".format(
+            bolag_id, label, country, target.name))
+        saved += 1
+    return (saved, skipped, failed)
 
 
 def main():
@@ -334,6 +407,8 @@ def main():
             except Exception:
                 pass
 
+    up_saved, up_skipped, up_failed = process_uploads(period, id_index)
+
     print()
     print("=" * 80)
     print("  Emails processed : {}".format(len(msg_files)))
@@ -343,6 +418,11 @@ def main():
     print("  Failed           : {}".format(len(failed)))
     for f in failed:
         print("    - {}".format(f))
+    if up_saved or up_skipped or up_failed:
+        print("  Uploaded files saved : {}  (skipped: {}, failed: {})".format(
+            up_saved, up_skipped, len(up_failed)))
+        for f in up_failed:
+            print("    - {}".format(f))
     print()
     print("Done. Files are in: {}".format(OUT_DIR))
 

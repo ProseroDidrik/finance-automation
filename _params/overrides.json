@@ -4,6 +4,9 @@
     "Sikkerhet AS  pr april 2026": 104,
     "SIst men inte minst _": 33
   },
+  "sender_overrides": {
+    "norrbottenslarm.com": 172
+  },
   "attachment_overrides": [
     {
       "msg_stem": "norrskydd",
@@ -44,6 +47,16 @@
       "msg_stem": "nbv as og dsn",
       "attachment_substr": "norsk brannvern",
       "bolag_id": 107
+    },
+    {
+      "msg_stem": "sie-filer för låsbolagen i dalarna",
+      "attachment_substr": "ludvika",
+      "bolag_id": 73
+    },
+    {
+      "msg_stem": "sie-filer för låsbolagen i dalarna",
+      "attachment_substr": "falu",
+      "bolag_id": 74
     }
   ],
   "country_overrides": {

@@ -36,6 +36,7 @@ ATTACHMENT_OVERRIDES: dict[tuple[str, str], int] = {
     (item["msg_stem"], item["attachment_substr"]): int(item["bolag_id"])
     for item in _OV["attachment_overrides"]
 }
+SENDER_OVERRIDES: dict[str, int] = {k.lower(): int(v) for k, v in _OV["sender_overrides"].items()}
 
 
 def _build_alias_index(raw: dict) -> dict[int, list[str]]:
@@ -213,6 +214,17 @@ def match_msg(msg_path, companies, id_index):
             "body": (msg.body or "")[:1500],
         }
         splits = _attachment_splits(msg, msg_path, id_index)
+        # Sender-override (samma logik som extract.py): mappa kända sender-
+        # delsträngar direkt till bolag innan scoring.
+        sender_low = (haystacks["sender"] or "").lower()
+        for needle, bolag_id in SENDER_OVERRIDES.items():
+            if needle in sender_low:
+                company = id_index.get(bolag_id, {
+                    "id": bolag_id, "namn": "ID {}".format(bolag_id),
+                    "friendly": "ID {}".format(bolag_id), "country": "Other",
+                    "tokens": [], "doman": "",
+                })
+                return company, 999, "sender override: {}".format(needle), splits
         allowed = _country_constraint(haystacks)
         eligible = (
             [c for c in companies if c["country"] in allowed]
