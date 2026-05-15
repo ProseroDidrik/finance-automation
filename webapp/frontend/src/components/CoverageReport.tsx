@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import {
-  CheckCircle2, XCircle, AlertTriangle,
+  CheckCircle2, XCircle, CircleSlash, AlertTriangle,
   ChevronUp, ChevronDown, ChevronsUpDown,
 } from "lucide-react";
 import { CoverageRow, fetchCoverage } from "../api";
@@ -8,13 +8,14 @@ import { fmtCurrency, fmtPeriod } from "../lib/format";
 
 // ----- Typer ---------------------------------------------------------------
 
-type StatusFilter = "all" | "missing" | "mismatch" | "ok";
+type StatusFilter = "all" | "missing" | "missing_zero" | "mismatch" | "ok";
 type SortKey = "period" | "company_name" | "source_kind" | "status" | "backup_rows" | "backup_sum";
 type SortDir = "asc" | "desc";
 
 interface CellAggregate {
   ok: number;
   missing: number;
+  missing_zero: number;
   mismatch: number;
   extra: number;
   total: number;
@@ -29,35 +30,39 @@ interface DrillSelection {
 // ----- Konstanter ----------------------------------------------------------
 
 const STATUS_LABEL: Record<CoverageRow["status"], string> = {
-  missing:  "Saknas",
-  mismatch: "Avvikelse",
-  ok:       "OK",
-  extra:    "Extra",
+  missing:      "Saknas",
+  missing_zero: "Saknas (noll)",
+  mismatch:     "Avvikelse",
+  ok:           "OK",
+  extra:        "Extra",
 };
 
 const STATUS_ICON: Record<CoverageRow["status"], ReactElement> = {
-  missing:  <XCircle size={12} className="shrink-0" aria-hidden />,
-  mismatch: <AlertTriangle size={12} className="shrink-0" aria-hidden />,
-  ok:       <CheckCircle2 size={12} className="shrink-0" aria-hidden />,
-  extra:    <AlertTriangle size={12} className="shrink-0" aria-hidden />,
+  missing:      <XCircle size={12} className="shrink-0" aria-hidden />,
+  missing_zero: <CircleSlash size={12} className="shrink-0" aria-hidden />,
+  mismatch:     <AlertTriangle size={12} className="shrink-0" aria-hidden />,
+  ok:           <CheckCircle2 size={12} className="shrink-0" aria-hidden />,
+  extra:        <AlertTriangle size={12} className="shrink-0" aria-hidden />,
 };
 
 const STATUS_CLS: Record<CoverageRow["status"], string> = {
-  missing:  "bg-negative/15 text-negative",
-  mismatch: "bg-warn/15 text-warn",
-  ok:       "text-positive",
-  extra:    "bg-warn/15 text-warn",
+  missing:      "bg-negative/15 text-negative",
+  missing_zero: "bg-fg-muted/10 text-fg-muted",
+  mismatch:     "bg-warn/15 text-warn",
+  ok:           "text-positive",
+  extra:        "bg-warn/15 text-warn",
 };
 
 const ROW_CLS: Record<CoverageRow["status"], string> = {
-  missing:  "bg-negative/5 hover:bg-negative/10",
-  mismatch: "bg-warn/5 hover:bg-warn/10",
-  ok:       "hover:bg-elevated",
-  extra:    "bg-warn/5 hover:bg-warn/10",
+  missing:      "bg-negative/5 hover:bg-negative/10",
+  missing_zero: "hover:bg-elevated",
+  mismatch:     "bg-warn/5 hover:bg-warn/10",
+  ok:           "hover:bg-elevated",
+  extra:        "bg-warn/5 hover:bg-warn/10",
 };
 
 const STATUS_SORT_ORDER: Record<CoverageRow["status"], number> = {
-  missing: 0, mismatch: 1, extra: 2, ok: 3,
+  missing: 0, mismatch: 1, extra: 2, missing_zero: 3, ok: 4,
 };
 
 const MONTHS_2026 = ["202601","202602","202603","202604","202605","202606",
@@ -68,15 +73,18 @@ const COUNTRY_ORDER = ["Sweden", "Norway", "Finland", "Denmark", "Germany", "CEN
 // ----- Hjälpare ------------------------------------------------------------
 
 function emptyAgg(): CellAggregate {
-  return { ok: 0, missing: 0, mismatch: 0, extra: 0, total: 0 };
+  return { ok: 0, missing: 0, missing_zero: 0, mismatch: 0, extra: 0, total: 0 };
 }
 
 function cellColor(agg: CellAggregate): string {
   if (agg.total === 0) return "bg-surface text-fg-muted/60";
+  // Räkna missing_zero som "ok" för cellfärgen — pre-allokerade tomma rader är
+  // inte ett fel utan en harmlös konsekvens av hur Mercur strukturerar backupen.
+  const effectiveOk = agg.ok + agg.missing_zero;
   if (agg.missing === 0 && agg.mismatch === 0 && agg.extra === 0) {
     return "bg-positive/15 text-positive hover:bg-positive/25";
   }
-  if (agg.ok === 0) return "bg-negative/20 text-negative hover:bg-negative/30";
+  if (effectiveOk === 0) return "bg-negative/20 text-negative hover:bg-negative/30";
   return "bg-warn/15 text-warn hover:bg-warn/25";
 }
 
@@ -237,6 +245,11 @@ export function CoverageReport() {
         <span className="flex items-center gap-1.5 text-negative font-semibold">
           <XCircle size={14} aria-hidden /> {grand.missing} saknade
         </span>
+        {grand.missing_zero > 0 && (
+          <span className="flex items-center gap-1.5 text-fg-muted">
+            <CircleSlash size={14} aria-hidden /> {grand.missing_zero} noll-rader
+          </span>
+        )}
         {grand.extra > 0 && (
           <span className="flex items-center gap-1.5 text-warn">
             <AlertTriangle size={14} aria-hidden /> {grand.extra} extra (utanför facit)
@@ -262,7 +275,7 @@ export function CoverageReport() {
           <tbody>
             {matrixRows.map(({ country, source_kind }) => {
               const skMap = matrix.get(country)!.get(source_kind)!;
-              let rowOk = 0, rowMiss = 0, rowMis = 0, rowExtra = 0;
+              let rowOk = 0, rowMiss = 0, rowMisZero = 0, rowMis = 0, rowExtra = 0;
               return (
                 <tr key={`${country}|${source_kind}`} className="border-b border-border/50">
                   <td className="px-3 py-1.5 whitespace-nowrap text-fg">{country}</td>
@@ -271,8 +284,12 @@ export function CoverageReport() {
                     const agg = skMap.get(p) ?? emptyAgg();
                     rowOk += agg.ok;
                     rowMiss += agg.missing;
+                    rowMisZero += agg.missing_zero;
                     rowMis += agg.mismatch;
                     rowExtra += agg.extra;
+                    // missing_zero räknas som "ok" i celldisplayen — det är harmlös
+                    // pre-allokering i Mercur, inte riktig saknad data.
+                    const okEff = agg.ok + agg.missing_zero;
                     const cls = cellColor(agg);
                     const isActive = drill?.country === country
                       && drill?.source_kind === source_kind && drill?.period === p;
@@ -282,16 +299,16 @@ export function CoverageReport() {
                           type="button"
                           onClick={() => setDrill({ country, source_kind, period: p })}
                           disabled={agg.total === 0}
-                          aria-label={`${country} ${source_kind} ${p}: ${agg.ok} ok, ${agg.missing} saknas, ${agg.mismatch} avvikelse`}
+                          aria-label={`${country} ${source_kind} ${p}: ${okEff} ok, ${agg.missing} saknas, ${agg.mismatch} avvikelse`}
                           className={`w-full px-2 py-1 rounded text-center tabular-nums transition-colors
                             ${cls} ${isActive ? "ring-2 ring-accent" : ""}
                             ${agg.total > 0 ? "cursor-pointer" : "cursor-default"}`}
                           title={
                             agg.total === 0 ? "Inget i facit"
-                            : `${agg.ok}/${agg.total} ok${agg.missing ? ` · ${agg.missing} saknas` : ""}${agg.mismatch ? ` · ${agg.mismatch} avvikelse` : ""}`
+                            : `${okEff}/${agg.total} ok${agg.missing_zero ? ` (varav ${agg.missing_zero} noll-rader)` : ""}${agg.missing ? ` · ${agg.missing} saknas` : ""}${agg.mismatch ? ` · ${agg.mismatch} avvikelse` : ""}`
                           }
                         >
-                          {agg.total === 0 ? "—" : `${agg.ok}/${agg.total}`}
+                          {agg.total === 0 ? "—" : `${okEff}/${agg.total}`}
                         </button>
                       </td>
                     );
@@ -304,7 +321,7 @@ export function CoverageReport() {
                         ${drill?.country === country && drill?.source_kind === source_kind && drill?.period === undefined ? "ring-2 ring-accent" : ""}`}
                       title="Alla månader"
                     >
-                      <span className="text-positive">{rowOk}</span>
+                      <span className="text-positive">{rowOk + rowMisZero}</span>
                       {rowMis > 0 && <span className="text-warn"> · {rowMis}</span>}
                       {rowMiss > 0 && <span className="text-negative"> · {rowMiss}</span>}
                       {rowExtra > 0 && <span className="text-warn"> · {rowExtra}e</span>}
@@ -319,13 +336,14 @@ export function CoverageReport() {
               <td colSpan={2} className="px-3 py-2 text-fg-muted font-medium">Σ alla länder</td>
               {MONTHS_2026.map((p) => {
                 const agg = colTotals.get(p) ?? emptyAgg();
+                const okEff = agg.ok + agg.missing_zero;
                 return (
                   <td key={p} className="px-2 py-2 text-center tabular-nums text-fg-muted">
-                    {agg.total === 0 ? "—" : `${agg.ok}/${agg.total}`}
+                    {agg.total === 0 ? "—" : `${okEff}/${agg.total}`}
                   </td>
                 );
               })}
-              <td className="px-3 py-2 text-right text-fg-muted tabular-nums">{grand.ok}/{grand.total}</td>
+              <td className="px-3 py-2 text-right text-fg-muted tabular-nums">{grand.ok + grand.missing_zero}/{grand.total}</td>
             </tr>
           </tfoot>
         </table>
@@ -335,7 +353,9 @@ export function CoverageReport() {
         Färgkodning: <span className="text-positive">grön = allt ok</span> ·{" "}
         <span className="text-warn">gul = någon avvikelse/extra</span> ·{" "}
         <span className="text-negative">röd = inget i fact_balances</span> ·{" "}
-        grå = inget i facit
+        grå = inget i facit. <CircleSlash size={10} className="inline align-text-bottom" aria-hidden />{" "}
+        noll-rader (SIE/SAFT med backup-summa ≈ 0) räknas som ok eftersom Mercur
+        pre-allokerar dem för bolag utan månadsbevegelse.
       </div>
 
       {/* Drill-down --------------------------------------------------- */}
@@ -358,7 +378,7 @@ export function CoverageReport() {
 
           {/* Status-filter */}
           <div className="flex rounded-md border border-border overflow-hidden text-xs w-fit" role="group" aria-label="Filtrera på status">
-            {(["all", "missing", "mismatch", "ok"] as StatusFilter[]).map((f) => (
+            {(["all", "missing", "missing_zero", "mismatch", "ok"] as StatusFilter[]).map((f) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
@@ -369,7 +389,11 @@ export function CoverageReport() {
                     : "bg-surface text-fg-muted hover:bg-elevated"
                 }`}
               >
-                {f === "all" ? "Alla" : f === "missing" ? "Saknade" : f === "mismatch" ? "Avvikelser" : "OK"}
+                {f === "all"          ? "Alla"
+                  : f === "missing"      ? "Saknade"
+                  : f === "missing_zero" ? "Noll-rader"
+                  : f === "mismatch"     ? "Avvikelser"
+                  : "OK"}
               </button>
             ))}
           </div>

@@ -2,11 +2,14 @@
 -- (bolag, period, källa, scenario).
 --
 -- Status:
---   'missing'  — facit har rader, fact_balances har inga
---   'extra'    — fact_balances har rader, facit har inga (utanför facit-scope)
---   'mismatch' — båda har rader men beloppen avviker
---                (>1 procent OCH >1 enhet absolut — det andra villkoret tar bort FP-brus)
---   'ok'       — båda har rader, beloppen matchar
+--   'missing'      — facit har rader, fact_balances har inga (riktigt saknad data)
+--   'missing_zero' — facit har rader men summan ≈ 0 för SIE/SAFT (Mercur har
+--                    pre-allokerat tomma noll-rader för bolag utan månadsbevegelse;
+--                    ingen riktig data saknas, bara harmlös pre-allokering)
+--   'extra'        — fact_balances har rader, facit har inga (utanför facit-scope)
+--   'mismatch'     — båda har rader men beloppen avviker
+--                    (>1 procent OCH >1 enhet absolut — det andra villkoret tar bort FP-brus)
+--   'ok'           — båda har rader, beloppen matchar
 --
 -- OBS: för SE-SIE / NO-SAFT är beloppen *inte* jämförbara rakt av eftersom
 -- fact_balances lagrar YTD-saldon medan backup_from_mercur (M-rader) lagrar
@@ -73,6 +76,13 @@ SELECT
     b.total  AS backup_sum,
     f.total  AS fact_sum,
     CASE
+        -- Pre-allokerade noll-rader i Mercur-backup för SIE/SAFT — harmlöst.
+        -- IMP behåller "missing" trots bk_sum≈0 (IMP balanserar till 0 per design,
+        -- så summan särskiljer inte tomma rader från riktigt saknade).
+        WHEN f.company_id IS NULL
+             AND b.source_kind IN ('SIE', 'SAFT')
+             AND ABS(COALESCE(b.total, 0)) < 1
+        THEN 'missing_zero'
         WHEN f.company_id IS NULL THEN 'missing'
         WHEN b.company_id IS NULL THEN 'extra'
         -- Belopp-mismatch flaggas bara när monthly↔monthly är jämförbart

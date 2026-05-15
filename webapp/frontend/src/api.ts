@@ -130,7 +130,7 @@ export interface CoverageRow {
   fact_rows: number | null;
   backup_sum: number | null;
   fact_sum: number | null;
-  status: "missing" | "mismatch" | "ok" | "extra";
+  status: "missing" | "missing_zero" | "mismatch" | "ok" | "extra";
 }
 
 export async function fetchCoverage(opts: { periodFrom?: string; periodTo?: string } = {}): Promise<CoverageRow[]> {
