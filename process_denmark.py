@@ -64,8 +64,12 @@ COMPANY_DEFS: dict[str, dict] = {
         is_max=4999, bs_min=5000, skip_formatting=False,
         file_glob="190_*.xlsx",
     ),
+    # 216 SIKOM: 5-siffriga konton (0XXXX=IS, 1XXXX-2XXXX=BS, normalize4 ger
+    # acc4=0XXX för IS, 1000-2599 för BS). Filen innehåller bold subtotaler
+    # ("I ALT", "RESULTAT FØR ...") som skapar dubbelräkning — skip_bold=True
+    # filtrerar bort dem (oavsett underline, till skillnad från 178).
     "216": dict(
-        is_max=9999, bs_min=None, skip_formatting=False,
+        is_max=999, bs_min=1000, skip_formatting=False, skip_bold=True,
         file_glob="216_*.xlsx",
     ),
     "229": dict(
@@ -192,6 +196,7 @@ def read_saldobalance(
     is_max_4d: int,
     bs_min_4d: int | None,
     skip_formatting: bool = False,
+    skip_bold: bool = False,
     exclude: list[int] | None = None,
 ) -> tuple[list, list]:
     """
@@ -267,6 +272,16 @@ def read_saldobalance(
             for cell in row[:3]:
                 f = cell.font
                 if f and f.bold and f.underline:
+                    acc = -1
+                    break
+            if acc == -1:
+                continue
+
+        # Skip bold-only summary rows (216: "I ALT"/"RESULTAT FØR..." subtotaler)
+        if skip_bold:
+            for cell in row[:3]:
+                f = cell.font
+                if f and f.bold:
                     acc = -1
                     break
             if acc == -1:
@@ -417,6 +432,7 @@ def process_company(
     dry_run: bool,
     exclude: list[int] | None = None,
     ytd_filepath: Path | None = None,
+    skip_bold: bool = False,
 ) -> str:
     log("INFO", code, f"{friendly}  Fil: {filepath.name}")
 
@@ -425,7 +441,10 @@ def process_company(
         return "skip"
 
     try:
-        is_rows, bs_rows = read_saldobalance(filepath, is_max_4d, bs_min_4d, skip_formatting, exclude)
+        is_rows, bs_rows = read_saldobalance(
+            filepath, is_max_4d, bs_min_4d,
+            skip_formatting=skip_formatting, skip_bold=skip_bold, exclude=exclude,
+        )
         if ytd_filepath is not None and bs_min_4d is not None:
             if ytd_filepath.exists():
                 bs_rows = read_bs_from_ytd(ytd_filepath, bs_min_4d)
@@ -526,6 +545,7 @@ def main() -> None:
             dry_run=args.dry_run,
             exclude=cfg.get("exclude"),
             ytd_filepath=ytd_filepath if cfg.get("use_ytd_bs") else None,
+            skip_bold=cfg.get("skip_bold", False),
         )
         stats[status] = stats.get(status, 0) + 1
 
