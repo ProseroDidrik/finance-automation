@@ -27,21 +27,41 @@ Två tools blir tillgängliga i Claude.ai-konversationen så fort connectorn är
 
 ## Lägg till i Claude Desktop
 
-`%APPDATA%\Claude\claude_desktop_config.json` (Windows) eller
-`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
+Claude Desktop's JSON-config stöder **bara stdio-transport** (`command`/`args`),
+inte direkt `url`-format. Vi använder `mcp-remote` som stdio-↔-HTTP-brygga.
+**Kräver Node.js** på maskinen (`winget install OpenJS.NodeJS` på Windows,
+eller https://nodejs.org/).
+
+Öppna config-filen via **Settings → Developer → Edit Config** (eller direkt):
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+Klistra in (eller merge `mcpServers`-blocket med befintliga inställningar):
 
 ```json
 {
   "mcpServers": {
     "finance-warehouse": {
-      "url": "https://app-finauto-mcp-6427.azurewebsites.net/mcp",
-      "headers": { "Authorization": "Bearer <din-token>" }
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://app-finauto-mcp-6427.azurewebsites.net/mcp",
+        "--header",
+        "Authorization:Bearer <din-token>"
+      ]
     }
   }
 }
 ```
 
-Starta om Claude Desktop. Tools-ikonen (klippet) ska visa de två verktygen.
+Spara, **avsluta Claude Desktop helt från system tray** (inte bara stäng
+fönstret), starta igen. Första starten tar ~30 s extra medan `npx -y` hämtar
+`mcp-remote`-paketet. Sedan ska tools-ikonen (klippet/skiftnyckeln) i chatten
+visa de två verktygen.
+
+**Connectors-UI:n i Settings stöder inte vår bearer-token** (den kräver OAuth
+2.0 discovery). Den UI-vägen fungerar inte än — använd JSON-configen ovan.
 
 ## Använda
 
