@@ -4,7 +4,14 @@
 -- Används av /api/compare/coverage/accounts som drilldown-data från
 -- täckningssidans matris.
 --
--- Parametrar (%%s × 3):
+-- Spec: docs/superpowers/specs/2026-05-17-coverage-quality-design.md.
+-- Empirically discovered constraints i Addendum A1/A2/A3 motiverar sign-flip
+-- för SIE/SAFT, no_baseline-status för BS-konton, och grövre Mercur-kontoplan
+-- som förklarar varför only_fact är förväntat för SIE/SAFT.
+--
+-- Parametrar (%%s × 3 — OBS dubbel-%% i kommentarer eftersom psycopg scannar
+-- HELA SQL-strängen för %%-placeholders inklusive comment-rader. Find-replace
+-- av %%%% → %% bryter queryn silent vid runtime):
 --   1: company_id   (int)
 --   2: period       (text, YYYYMM)
 --   3: source_kind  (text, en av: IMP, SIE, SAFT, MAN, IMP_ADJ)
@@ -52,7 +59,10 @@ account_diff_ytd AS (
         LEFT(COALESCE(bk.account_code, fk.account_code), 1) IN ('1','2') AS is_bs
     FROM (
         SELECT company_id, period, source_kind, scenario, account_code,
-               -- SIGN-FLIP: Mercur-konvention → SIE-konvention via -amount.
+               -- SIGN-FLIP (spec A1): backup_from_mercur lagrar SIE/SAFT i
+               -- Mercur-konvention (intäkt+, kostnad-), fact_balances i
+               -- SIE-konvention (intäkt-, kostnad+). IMP/MAN/IMP_ADJ-grenen
+               -- nedan flippar INTE — båda sidor är Mercur-konvention där.
                SUM(-amount) OVER (
                    PARTITION BY company_id, LEFT(period, 4), source_kind, scenario, account_code
                    ORDER BY period
@@ -109,7 +119,10 @@ account_diff_monthly AS (
 account_diff AS (
     SELECT *,
            CASE
-               -- BS-konton för SIE/SAFT: kan inte jämföras meaningfully utan IB.
+               -- no_baseline checkas FÖRE only_fact/only_facit (spec A3):
+               -- ett BS-konto i SIE/SAFT som saknas på en sida ska ändå
+               -- klassas no_baseline, inte only_*, eftersom avsaknad av IB
+               -- gör hela BS-jämförelsen meningslös för SIE/SAFT.
                WHEN is_bs AND source_kind IN ('SIE', 'SAFT') THEN 'no_baseline'
                WHEN facit_amt IS NULL THEN 'only_fact'
                WHEN fact_amt  IS NULL THEN 'only_facit'
