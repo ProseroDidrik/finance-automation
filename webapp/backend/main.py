@@ -45,6 +45,7 @@ from webapp.backend.auth import install_auth_middleware  # noqa: E402
 
 SQL_PATH = REPO / "webapp" / "backend" / "sql" / "report_pnl.sql"
 SQL_COVERAGE = REPO / "webapp" / "backend" / "sql" / "compare_coverage.sql"
+SQL_COVERAGE_ACCOUNTS = REPO / "webapp" / "backend" / "sql" / "coverage_accounts.sql"
 SQL_PERSONNEL = REPO / "webapp" / "backend" / "sql" / "personnel_summary.sql"
 SQL_PIVOT = REPO / "webapp" / "backend" / "sql" / "report_pivot.sql"
 SQL_SUP_BY_SUPPLIER = REPO / "webapp" / "backend" / "sql" / "suppliers_by_supplier.sql"
@@ -343,6 +344,74 @@ async def compare_coverage(
         }
         for r in rows
     ]
+
+
+_ACCOUNTS_SOURCE_KINDS = {"IMP", "SIE", "SAFT", "MAN", "IMP_ADJ"}
+
+
+@app.get("/api/compare/coverage/accounts")
+async def compare_coverage_accounts(
+    company_id:  int = Query(..., ge=1),
+    period:      str = Query(..., pattern=r"^\d{6}$"),
+    source_kind: str = Query(..., description="IMP|SIE|SAFT|MAN|IMP_ADJ"),
+):
+    """Per-konto-diff för (bolag, period, källa) — drilldown från täckningsmatrisen.
+
+    För SIE/SAFT YTD-kumuleras backup_from_mercur (med sign-flip från Mercur-
+    till SIE-konvention) innan jämförelse mot YTD-fact. BS-konton i SIE/SAFT
+    klassas som 'no_baseline' eftersom YTD-jämförelse kräver IB. För
+    IMP/MAN/IMP_ADJ jämförs monthly↔monthly rakt av. SIE_PSALDO accepteras
+    inte som input — SE-data nås alltid via source_kind='SIE' (mappas internt
+    via picked_kind-CTE).
+    """
+    if source_kind not in _ACCOUNTS_SOURCE_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"source_kind måste vara en av {sorted(_ACCOUNTS_SOURCE_KINDS)}",
+        )
+
+    sql = SQL_COVERAGE_ACCOUNTS.read_text(encoding="utf-8")
+    with open_db() as con:
+        rows = con.fetch_dicts(sql, [company_id, period, source_kind])
+        # Hämta company_name separat — query:n returnerar bara konto-nivå.
+        name_row = con.execute(
+            "SELECT name FROM dim_company WHERE company_id = %s", [company_id]
+        ).fetchone()
+    company_name = name_row[0] if name_row else None
+
+    out_rows = [
+        {
+            "account_code": _safe_str(r["account_code"]),
+            "account_name": _safe_str(r["account_name"]),
+            "facit_amt":    _safe_num(r["facit_amt"]),
+            "fact_amt":     _safe_num(r["fact_amt"]),
+            "diff":         _safe_num(r["diff"]),
+            "status_acc":   _safe_str(r["status_acc"]),
+        }
+        for r in rows
+    ]
+
+    summary = {
+        "n_ok":           sum(1 for r in out_rows if r["status_acc"] == "ok"),
+        "n_amount_diff":  sum(1 for r in out_rows if r["status_acc"] == "amount_diff"),
+        "n_only_facit":   sum(1 for r in out_rows if r["status_acc"] == "only_facit"),
+        "n_only_fact":    sum(1 for r in out_rows if r["status_acc"] == "only_fact"),
+        "n_no_baseline":  sum(1 for r in out_rows if r["status_acc"] == "no_baseline"),
+        "facit_sum":      sum(r["facit_amt"] or 0.0 for r in out_rows),
+        "fact_sum":       sum(r["fact_amt"]  or 0.0 for r in out_rows),
+    }
+    # Runda summor till 2 decimaler — matchar SQL ROUND och undviker FP-brus i UI.
+    summary["facit_sum"] = round(summary["facit_sum"], 2)
+    summary["fact_sum"]  = round(summary["fact_sum"], 2)
+
+    return {
+        "company_id":   company_id,
+        "company_name": company_name,
+        "period":       period,
+        "source_kind":  source_kind,
+        "rows":         out_rows,
+        "summary":      summary,
+    }
 
 
 # ----- Personnel ---------------------------------------------------------------
