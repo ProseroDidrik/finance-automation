@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X, CheckCircle2, AlertTriangle, CircleSlash, Info } from "lucide-react";
 import {
   CoverageAccountRow,
@@ -65,23 +65,31 @@ export function CoverageAccountsDrawer({ selection, onClose }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("status_acc");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
-  // Hämta data när selection ändras
+  // Hämta data när selection ändras. `cancelled`-flagga skyddar mot race
+  // när användaren klickar rad A → rad B snabbt och A:s svar anländer efter
+  // B:s — annars skulle B:s data skrivas över med A:s.
   useEffect(() => {
     if (!selection) { setData(null); return; }
+    let cancelled = false;
     setLoading(true); setError(null);
     fetchCoverageAccounts({
       company_id:  selection.company_id,
       period:      selection.period,
       source_kind: selection.source_kind,
     })
-      .then(setData)
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [selection?.company_id, selection?.period, selection?.source_kind]);
 
-  // Escape-stäng + body scroll-lock
+  // Escape-stäng + body scroll-lock + fokus-återlämning till klickad rad
+  // (spec §5a). returnFocusRef pekar på elementet som hade fokus när drawern
+  // öppnades — vid stäng flyttar vi fokus tillbaka dit.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!selection) return;
+    returnFocusRef.current = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
@@ -89,6 +97,7 @@ export function CoverageAccountsDrawer({ selection, onClose }: Props) {
     return () => {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
+      returnFocusRef.current?.focus?.();
     };
   }, [selection, onClose]);
 
@@ -198,9 +207,11 @@ export function CoverageAccountsDrawer({ selection, onClose }: Props) {
                     <Info size={12} aria-hidden /> {data.summary.n_no_baseline} BS utan IB
                   </span>
                 )}
-                <span className="flex items-center gap-1.5 text-positive">
-                  <CheckCircle2 size={12} aria-hidden /> {data.summary.n_ok} ok
-                </span>
+                {data.summary.n_ok > 0 && (
+                  <span className="flex items-center gap-1.5 text-positive">
+                    <CheckCircle2 size={12} aria-hidden /> {data.summary.n_ok} ok
+                  </span>
+                )}
                 <span className="ml-auto text-fg-muted tabular-nums">
                   Σ facit {fmtCurrency(data.summary.facit_sum)} · fact {fmtCurrency(data.summary.fact_sum)}
                 </span>
@@ -222,7 +233,7 @@ export function CoverageAccountsDrawer({ selection, onClose }: Props) {
               {sortedRows.length === 0 ? (
                 <div className="text-center text-fg-muted text-sm py-12">
                   {hideOk
-                    ? `Inga avvikelser — alla ${data.rows.length} konton stämmer ✓`
+                    ? `Inga avvikelser — ${data.summary.n_ok} konton stämmer ✓${data.summary.n_no_baseline > 0 ? ` (+ ${data.summary.n_no_baseline} BS utan IB)` : ""}`
                     : "Inga rader"}
                 </div>
               ) : (
