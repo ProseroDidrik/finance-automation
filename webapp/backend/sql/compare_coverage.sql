@@ -7,15 +7,20 @@
 --                    pre-allokerat tomma noll-rader för bolag utan månadsbevegelse;
 --                    ingen riktig data saknas, bara harmlös pre-allokering)
 --   'extra'        — fact_balances har rader, facit har inga (utanför facit-scope)
---   'mismatch'     — båda har rader men beloppen avviker
---                    (>1 procent OCH >1 enhet absolut — det andra villkoret tar bort FP-brus)
---   'ok'           — båda har rader, beloppen matchar
+--   'mismatch'     — minst ett konto avviker (per-konto-test via account_diff-CTE,
+--                    se nedan). För SIE/SAFT YTD-kumuleras backup med sign-flip
+--                    (Mercur→SIE-konvention) innan jämförelse. BS-konton i SIE/SAFT
+--                    klassas no_baseline (kan inte jämföras utan IB) och triggar
+--                    INTE mismatch. only_fact triggar mismatch BARA för IMP/MAN/
+--                    IMP_ADJ (samma kontoplan); för SIE/SAFT är only_fact förväntat
+--                    (Mercur har grövre kontoplan än SIE-filen).
+--   'ok'           — båda har rader, alla konton stämmer
 --
--- OBS: för SE-SIE / NO-SAFT är beloppen *inte* jämförbara rakt av eftersom
--- fact_balances lagrar YTD-saldon medan backup_from_mercur (M-rader) lagrar
--- månadsbevegelser. Mismatch-statusen är därför oftast meningslös för SIE/SAFT.
--- För IMP / MAN / IMP_ADJ stämmer båda sidor som monthly och då är beloppen
--- direkt jämförbara.
+-- account_diff-CTE:n delar logik med coverage_accounts.sql (drilldown-endpoint).
+-- Vid divergens — håll båda i sync. Tröskel per konto: |diff| > 1 OCH > 0.01*|facit|.
+--
+-- Empiriska constraints dokumenterade i spec-addendum A1-A3 i
+-- docs/superpowers/specs/2026-05-17-coverage-quality-design.md.
 --
 -- Normalisering: fact_balances har SE-data som både SIE (transaktioner) och
 -- SIE_PSALDO (periodsaldon från samma fil). Vi väljer SIE om den finns,
@@ -63,6 +68,99 @@ fact_agg AS (
     SELECT * FROM fact_sie
     UNION ALL
     SELECT * FROM fact_other
+),
+-- Per-konto-diff (delad logik med coverage_accounts.sql). UNION ALL av
+-- YTD-grenen (SIE/SAFT med sign-flip) och monthly-grenen (IMP/MAN/IMP_ADJ).
+-- Förfiltrerat så bara felstatusar exponeras till EXISTS-testet — sparar arbete.
+account_diff AS (
+    SELECT * FROM (
+        -- YTD-gren: SIE/SAFT — sign-flippa Mercur-konvention och YTD-cum:a.
+        SELECT
+            COALESCE(bk.company_id, fk.company_id)     AS company_id,
+            COALESCE(bk.period,     fk.period)         AS period,
+            COALESCE(bk.source_kind, fk.source_kind)   AS source_kind,
+            COALESCE(bk.scenario,   fk.scenario)       AS scenario,
+            COALESCE(bk.account_code, fk.account_code) AS account_code,
+            bk.facit_amt,
+            fk.fact_amt,
+            ROUND((COALESCE(bk.facit_amt, 0) - COALESCE(fk.fact_amt, 0))::numeric, 2) AS diff,
+            LEFT(COALESCE(bk.account_code, fk.account_code), 1) IN ('1','2') AS is_bs
+        FROM (
+            SELECT company_id, period, source_kind, scenario, account_code,
+                   SUM(-amount) OVER (
+                       PARTITION BY company_id, LEFT(period, 4), source_kind, scenario, account_code
+                       ORDER BY period
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                   ) AS facit_amt
+            FROM backup_from_mercur
+            WHERE scenario = 'A' AND source_kind IN ('SIE', 'SAFT')
+        ) bk
+        FULL OUTER JOIN (
+            SELECT fb.company_id, fb.period, 'SAFT' AS source_kind, fb.scenario,
+                   fb.account_code, fb.amount AS fact_amt
+            FROM fact_balances fb
+            WHERE fb.scenario = 'A' AND fb.source_kind = 'SAFT'
+            UNION ALL
+            SELECT fb.company_id, fb.period, 'SIE' AS source_kind, fb.scenario,
+                   fb.account_code, fb.amount AS fact_amt
+            FROM fact_balances fb
+            JOIN sie_pick p
+              ON p.company_id = fb.company_id AND p.period = fb.period
+             AND p.scenario   = fb.scenario   AND p.picked_kind = fb.source_kind
+            WHERE fb.scenario = 'A'
+        ) fk
+          ON  bk.company_id   = fk.company_id
+          AND bk.period       = fk.period
+          AND bk.source_kind  = fk.source_kind
+          AND bk.scenario     = fk.scenario
+          AND bk.account_code = fk.account_code
+
+        UNION ALL
+
+        -- Monthly-gren: IMP/MAN/IMP_ADJ — monthly↔monthly rakt av, ingen sign-flip.
+        -- is_bs=FALSE eftersom BS-jämförelse på monthly-rörelser är meaningful här.
+        SELECT
+            COALESCE(bk.company_id, fk.company_id)     AS company_id,
+            COALESCE(bk.period,     fk.period)         AS period,
+            COALESCE(bk.source_kind, fk.source_kind)   AS source_kind,
+            COALESCE(bk.scenario,   fk.scenario)       AS scenario,
+            COALESCE(bk.account_code, fk.account_code) AS account_code,
+            bk.amount AS facit_amt,
+            fk.amount AS fact_amt,
+            ROUND((COALESCE(bk.amount, 0) - COALESCE(fk.amount, 0))::numeric, 2) AS diff,
+            FALSE AS is_bs
+        FROM (
+            SELECT company_id, period, source_kind, scenario, account_code, amount
+            FROM backup_from_mercur
+            WHERE scenario = 'A' AND source_kind IN ('IMP', 'MAN', 'IMP_ADJ')
+        ) bk
+        FULL OUTER JOIN (
+            SELECT company_id, period, source_kind, scenario, account_code, amount
+            FROM fact_balances
+            WHERE scenario = 'A' AND source_kind IN ('IMP', 'MAN', 'IMP_ADJ')
+        ) fk USING (company_id, period, source_kind, scenario, account_code)
+    ) merged
+    WHERE
+        -- BS i SIE/SAFT (no_baseline) räknas INTE som mismatch.
+        NOT (is_bs AND source_kind IN ('SIE', 'SAFT'))
+        AND (
+            -- IMP/MAN/IMP_ADJ: alla felstatusar räknas
+            (source_kind IN ('IMP', 'MAN', 'IMP_ADJ')
+             AND (
+                facit_amt IS NULL
+                OR fact_amt IS NULL
+                OR ABS(ROUND((COALESCE(facit_amt,0) - COALESCE(fact_amt,0))::numeric, 2))
+                     > GREATEST(1.0, 0.01 * ABS(COALESCE(facit_amt, 0)))
+             ))
+            -- SIE/SAFT: bara amount_diff + only_facit (only_fact är grövre plan)
+            OR (source_kind IN ('SIE', 'SAFT')
+                AND (
+                    fact_amt IS NULL  -- only_facit
+                    OR (facit_amt IS NOT NULL
+                        AND ABS(ROUND((COALESCE(facit_amt,0) - COALESCE(fact_amt,0))::numeric, 2))
+                             > GREATEST(1.0, 0.01 * ABS(facit_amt)))
+                ))
+        )
 )
 SELECT
     COALESCE(b.company_id,   f.company_id)   AS company_id,
@@ -85,13 +183,16 @@ SELECT
         THEN 'missing_zero'
         WHEN f.company_id IS NULL THEN 'missing'
         WHEN b.company_id IS NULL THEN 'extra'
-        -- Belopp-mismatch flaggas bara när monthly↔monthly är jämförbart
-        -- (IMP/MAN/IMP_ADJ). SIE/SAFT skiljer per definition (YTD vs M).
-        WHEN COALESCE(b.source_kind, f.source_kind) IN ('IMP', 'MAN', 'IMP_ADJ')
-             AND ABS(COALESCE(b.total, 0) - COALESCE(f.total, 0)) > 1
-             AND ABS(COALESCE(b.total, 0) - COALESCE(f.total, 0))
-                 > 0.01 * NULLIF(ABS(COALESCE(b.total, 0)), 0)
-        THEN 'mismatch'
+        -- Per-konto-mismatch (gäller alla källor). account_diff är förfiltrerat
+        -- så EXISTS bara returnerar något om minst ett konto faktiskt avviker
+        -- (efter source-specifik filtrering — se account_diff-CTE:n ovan).
+        WHEN EXISTS (
+            SELECT 1 FROM account_diff ad
+            WHERE ad.company_id  = COALESCE(b.company_id, f.company_id)
+              AND ad.period      = COALESCE(b.period, f.period)
+              AND ad.source_kind = COALESCE(b.source_kind, f.source_kind)
+              AND ad.scenario    = COALESCE(b.scenario, f.scenario)
+        ) THEN 'mismatch'
         ELSE 'ok'
     END AS status
 FROM backup_agg b
