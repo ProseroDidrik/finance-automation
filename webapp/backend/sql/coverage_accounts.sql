@@ -9,6 +9,15 @@
 -- för SIE/SAFT, no_baseline-status för BS-konton, och grövre Mercur-kontoplan
 -- som förklarar varför only_fact är förväntat för SIE/SAFT.
 --
+-- Tröskel per konto: |diff| > 1 OCH > 0.01*|facit|. OBS: konstanten är
+-- duplicerad här (i status-CASE och i `account_diff_*`-CTE:rnas filter) och
+-- i compare_coverage.sql (i account_diff:s WHERE). Vid ändring — uppdatera
+-- alla fyra ställen, annars klassas matris och drilldown olika.
+--
+-- Logiken här delas med compare_coverage.sql men uttrycks i OLIKA SQL-form
+-- (tre separata CTE:r här vs en inlinead här). En A2/A3-regeländring kräver
+-- översättning mellan båda formerna, inte en find-replace.
+--
 -- Parametrar (%%s × 3 — OBS dubbel-%% i kommentarer eftersom psycopg scannar
 -- HELA SQL-strängen för %%-placeholders inklusive comment-rader. Find-replace
 -- av %%%% → %% bryter queryn silent vid runtime):

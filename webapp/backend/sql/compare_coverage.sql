@@ -16,8 +16,15 @@
 --                    (Mercur har grövre kontoplan än SIE-filen).
 --   'ok'           — båda har rader, alla konton stämmer
 --
--- account_diff-CTE:n delar logik med coverage_accounts.sql (drilldown-endpoint).
--- Vid divergens — håll båda i sync. Tröskel per konto: |diff| > 1 OCH > 0.01*|facit|.
+-- account_diff-CTE:n delar logik med coverage_accounts.sql (drilldown-endpoint)
+-- men de uttrycks i OLIKA SQL-form: här som en filtrerad inline-CTE (bara
+-- felstatus exponeras till EXISTS), där som tre separata CTE:r med status_acc
+-- i en CASE-gren. En ändring av A2/A3-reglerna kräver översättning mellan
+-- båda formerna, inte en find-replace.
+--
+-- Tröskel per konto: |diff| > 1 OCH > 0.01*|facit|. OBS: konstanten är
+-- duplicerad här (2× i WHERE) och i coverage_accounts.sql (2×). Vid ändring
+-- — uppdatera alla fyra ställen, annars klassas matris och drilldown olika.
 --
 -- Empiriska constraints dokumenterade i spec-addendum A1-A3 i
 -- docs/superpowers/specs/2026-05-17-coverage-quality-design.md.
