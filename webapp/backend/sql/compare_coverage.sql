@@ -200,9 +200,10 @@ account_diff AS (
         NOT (is_bs AND source_kind IN ('SIE', 'SAFT'))
         AND (
             -- IMP/MAN/IMP_ADJ: alla felstatusar räknas — men tomma fact-rader
-            -- (amount ≈ 0) exkluderas eftersom Mercur skippar 0-belopps-konton
+            -- (amount ~0) exkluderas eftersom Mercur skippar 0-belopps-konton
             -- i sin export medan SIE/SAFT-filer behåller hela kontoplanen
-            -- (empirisk 2026-05-19: 99 % av only_fact-rader är tomma).
+            -- (empirisk 2026-05-19: 99 %% av only_fact-rader är tomma).
+            -- OBS: %%-tecken måste dubblas (psycopg %%s-placeholder-scan).
             (source_kind IN ('IMP', 'MAN', 'IMP_ADJ')
              AND (
                 (facit_amt IS NULL AND ABS(COALESCE(fact_amt, 0)) >= 1)
