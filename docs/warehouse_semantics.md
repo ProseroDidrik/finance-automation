@@ -97,7 +97,7 @@ till `INL` — det är samma sak som `IMP` i koden idag.
 Rådata följer **SIE-konvention**: intäkt **negativ**, kostnad **positiv**,
 tillgång positiv, skuld/eget kapital negativ.
 
-**Undantag — `P_*`-konton (Mercur P-koder)** är lagrade i **Mercur-konvention**
+**Undantag 1 — `P_*`-konton (Mercur P-koder)** är lagrade i **Mercur-konvention**
 (intäkt positiv). `report_pnl.sql:98` flippar tecknet:
 
 ```sql
@@ -106,6 +106,21 @@ SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%' THEN -1 ELSE 1 END)
 
 Frontend gör ytterligare display-flip via `pnl_kpis.yaml`. **När du frågar
 `fact_balances` direkt får du SIE-rådatat**, inte presentationen.
+
+**Undantag 2 — `backup_from_mercur` för SIE/SAFT** är lagrat i **Mercur-konvention**
+(intäkt +, kostnad −), medan `fact_balances` för samma källor följer SIE-
+konvention (intäkt −, kostnad +). Mercur re-exporterar SIE/SAFT-data med
+sign-flip när de bygger sin backup-fil. För `IMP`/`MAN`/`IMP_ADJ` följer båda
+sidor Mercur-konvention och ingen flip behövs.
+
+| `source_kind` | `backup_from_mercur` | `fact_balances` | Flip vid jämförelse |
+|---|---|---|---|
+| `SIE` / `SAFT` | Mercur (intäkt +) | SIE (intäkt −) | **Ja** — `SUM(-backup.amount)` |
+| `IMP` / `MAN` / `IMP_ADJ` | Mercur | Mercur | Nej |
+
+Empiriskt verifierat 2026-05-18: för SE-SIE (54 075 konto-perioder) och NO-SAFT
+(2 897) ligger 96 % resp 90 % närmare sign-flippad än naiv jämförelse. Mönster:
+`webapp/backend/sql/compare_coverage.sql:97` och `coverage_accounts.sql:75`.
 
 ---
 
@@ -220,18 +235,70 @@ Mercur-export av samma utfall som ska hamna i `fact_balances`. Används som
 **Källor i tabellen** (efter 2026-05-13-laddningen av `2026 Backup.txt`):
 
 - `IMP` — FI/DK/DE-utfall (matchar fact.IMP exakt, både rader och summa)
-- `SIE` — SE-utfall (matchar fact.SIE/SIE_PSALDO på *existens*, inte summa)
-- `SAFT` — NO-utfall (matchar fact.SAFT på existens)
+- `SIE` — SE-utfall (matchar fact.SIE/SIE_PSALDO efter YTD-cum + sign-flip)
+- `SAFT` — NO-utfall (samma behandling som SIE)
 - `MAN`, `IMP_ADJ` — manuella justeringar
 
-**KRITISKT — amount-mismatch är förväntat för SIE/SAFT.** Backup lagrar
-*månadsbevegelser* (M-rader), fact_balances lagrar *YTD-saldon*. Beloppen är
-inte jämförbara rakt av:
+**KRITISKT — två normaliseringar behövs för SIE/SAFT** innan amount-jämförelse:
+
+1. **Period:** backup lagrar *månadsbevegelser* (M-rader), fact lagrar *YTD-saldon*.
+   YTD-cum:a backup jan..period innan jämförelse.
+2. **Tecken:** backup är i Mercur-konvention, fact i SIE-konvention. Sign-flippa
+   backup (`SUM(-amount)` i YTD-cumen). Se Mental model 3, Undantag 2.
 
 | Källa | backup.amount | fact.amount | Jämförbarhet |
 |---|---|---|---|
-| `IMP`, `MAN`, `IMP_ADJ` | monthly | monthly | ✅ direkt |
-| `SIE`, `SAFT` | monthly | YTD | ❌ jämför bara existens |
+| `IMP`, `MAN`, `IMP_ADJ` | monthly, Mercur-sign | monthly, Mercur-sign | ✅ direkt |
+| `SIE`, `SAFT` | monthly, Mercur-sign | YTD, SIE-sign | ✅ efter YTD-cum + `SUM(-amount)` |
+
+För BS-konton i SIE/SAFT klassas jämförelsen som `no_baseline` — YTD-cum kräver
+korrekt IB (ingående balans) som inte alltid finns. Endast IS-konton kan
+värde-jämföras tillförlitligt.
+
+### Förväntat brus i SIE-jämförelse: `#PSALDO`-frånvaron
+
+35 av 49 svenska SIE-bolag (~71 % per 2026-05) saknar `#PSALDO`-rader i sin
+SIE-export. Konsekvensen är att `load_sie.py` använder `#RES`-fältet (årets
+totala resultat) som YTD-källa, och taggar värdet med `--period`-parametern.
+`#RES` är en snapshot **vid SIE-genereringstiden**, inte exakt YTD per
+månadsskifte.
+
+Praktisk konsekvens: när bolaget genererar SIE 11 maj för "april-data" hamnar
+typiskt 11 dagar maj-bokningar i `#RES`. Vi taggar värdet som `period=202604`
+men beloppet är YTD per ~11 maj. Mot Mercur-backupens jan-april summa ger
+detta amount_diff av storleksordning 5–30 % per konto — ren timing-brus,
+inte verklig ETL-bug.
+
+**Bolag som påverkas** (saknar `SIE_PSALDO`-rader i fact_balances):
+
+```sql
+WITH sie_b AS (SELECT DISTINCT company_id FROM fact_balances
+               WHERE source_kind = 'SIE' AND scenario = 'A'),
+     psaldo_b AS (SELECT DISTINCT company_id FROM fact_balances
+                  WHERE source_kind = 'SIE_PSALDO' AND scenario = 'A')
+SELECT c.company_id, c.name FROM dim_company c
+WHERE c.company_id IN (SELECT company_id FROM sie_b)
+  AND c.company_id NOT IN (SELECT company_id FROM psaldo_b);
+```
+
+För dessa bolag är amount_diff i täckningsmatrisen *förväntat brus*, inte
+fel. Bolag med `#PSALDO` (14 av 49 SE) har exakt YTD per månadsskifte och
+ska matcha Mercur-backupen inom 1 %-tröskeln.
+
+**Egentliga ETL-buggar separeras genom storleken på diff:** timing-brus är
+typiskt 1–30 % per konto med konsistent riktning (fact > facit eftersom
+extra dagar adderar bokningar). Större diff (50 %+) eller systematisk
+~5× ratio är troligen **kontoplansmappning** — bolagets SIE-kontoplan
+matchar inte Mercurs konsoliderade BAS-mappning. Bolag 164 (El &
+Fastighetsdrift) är ett känt exempel.
+
+### Framtida-period-filter i compare_coverage
+
+`compare_coverage.sql:cutoff`-CTE:n filtrerar bort backup-rader där
+`period > föregående kalendermånad`. SIE-filer täcker hela året (PSALDO-
+rader för jan-aktuell-månad) och MAN-budgetprognoser sträcker till
+202612 — utan filter visas dessa som `missing` i täckningsmatrisen
+trots att vi inte är klara med månaden än.
 
 **Mönster för facit-coverage** (`webapp/backend/sql/compare_coverage.sql`):
 
@@ -363,8 +430,11 @@ GROUP BY 1, 2 ORDER BY 1, 2;
 ❌ Glöm `WHERE scenario = 'A'` i utfallsfrågor → får med MAN-budget.
 
 ❌ Jämför `backup_from_mercur.amount` mot `fact_balances.amount` rakt för
-   SE-SIE eller NO-SAFT — backup är monthly, fact är YTD. Jämför existens,
-   inte summor, för dessa källor.
+   SE-SIE eller NO-SAFT — två normaliseringar krävs: (1) YTD-kum:a backup
+   (monthly → YTD), (2) sign-flippa backup (Mercur → SIE-konvention) via
+   `SUM(-amount)`. Mönster: `webapp/backend/sql/compare_coverage.sql:97`.
+   För IMP/MAN/IMP_ADJ är båda sidor Mercur-konvention och monthly — ingen
+   normalisering behövs.
 
 ❌ `strftime(date, '%Y%m')` är DuckDB-syntax. Postgres: `to_char(date, 'YYYYMM')`.
 

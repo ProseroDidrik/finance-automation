@@ -141,6 +141,47 @@ export async function fetchCoverage(opts: { periodFrom?: string; periodTo?: stri
   return getJSON<CoverageRow[]>(`/api/compare/coverage${qs ? `?${qs}` : ""}`);
 }
 
+export interface CoverageAccountRow {
+  account_code: string;
+  account_name: string | null;
+  facit_amt: number | null;
+  fact_amt: number | null;
+  diff: number | null;
+  status_acc: "ok" | "amount_diff" | "only_facit" | "only_fact" | "no_baseline";
+}
+
+export interface CoverageAccountsSummary {
+  n_ok: number;
+  n_amount_diff: number;
+  n_only_facit: number;
+  n_only_fact: number;
+  n_no_baseline: number;
+  facit_sum: number;
+  fact_sum: number;
+}
+
+export interface CoverageAccountsReport {
+  company_id: number;
+  company_name: string | null;
+  period: string;
+  source_kind: string;
+  rows: CoverageAccountRow[];
+  summary: CoverageAccountsSummary;
+}
+
+export async function fetchCoverageAccounts(opts: {
+  company_id: number;
+  period: string;
+  source_kind: string;
+}): Promise<CoverageAccountsReport> {
+  const p = new URLSearchParams({
+    company_id:  String(opts.company_id),
+    period:      opts.period,
+    source_kind: opts.source_kind,
+  });
+  return getJSON<CoverageAccountsReport>(`/api/compare/coverage/accounts?${p}`);
+}
+
 // ----- Personnel (FTE) -------------------------------------------------------
 
 export interface PersonnelCountry {

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import {
   CheckCircle2, XCircle, CircleSlash, AlertTriangle,
   ChevronUp, ChevronDown, ChevronsUpDown,
 } from "lucide-react";
 import { CoverageRow, fetchCoverage } from "../api";
 import { fmtCurrency, fmtPeriod } from "../lib/format";
+import { CoverageAccountsDrawer, CoverageAccountsSelection } from "./CoverageAccountsDrawer";
 
 // ----- Typer ---------------------------------------------------------------
 
@@ -110,6 +111,11 @@ export function CoverageReport() {
   const [filter, setFilter]   = useState<StatusFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("period");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [accountsSelection, setAccountsSelection] = useState<CoverageAccountsSelection | null>(null);
+
+  // Stabil onClose-referens så drawerns Escape-listener inte re-registreras
+  // onödigt mycket när parent rendrar om.
+  const closeAccountsDrawer = useCallback(() => setAccountsSelection(null), []);
 
   useEffect(() => {
     setLoading(true);
@@ -435,7 +441,28 @@ export function CoverageReport() {
                 {drillRows.map((r, i) => (
                   <tr
                     key={i}
-                    className={`border-b border-border/50 transition-colors ${ROW_CLS[r.status]}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Visa per-konto-diff för ${r.company_name} ${r.period} ${r.source_kind}`}
+                    onClick={() => setAccountsSelection({
+                      company_id:   r.company_id,
+                      company_name: r.company_name,
+                      period:       r.period,
+                      source_kind:  r.source_kind,
+                    })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setAccountsSelection({
+                          company_id:   r.company_id,
+                          company_name: r.company_name,
+                          period:       r.period,
+                          source_kind:  r.source_kind,
+                        });
+                      }
+                    }}
+                    title="Klicka för per-konto-diff"
+                    className={`border-b border-border/50 transition-colors cursor-pointer ${ROW_CLS[r.status]}`}
                   >
                     <td className="px-3 py-1.5 tabular-nums whitespace-nowrap">{fmtPeriod(r.period)}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap">
@@ -474,6 +501,11 @@ export function CoverageReport() {
           </div>
         </div>
       )}
+
+      <CoverageAccountsDrawer
+        selection={accountsSelection}
+        onClose={closeAccountsDrawer}
+      />
     </div>
   );
 }
