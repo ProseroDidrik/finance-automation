@@ -199,10 +199,13 @@ account_diff AS (
         -- BS i SIE/SAFT (no_baseline) räknas INTE som mismatch.
         NOT (is_bs AND source_kind IN ('SIE', 'SAFT'))
         AND (
-            -- IMP/MAN/IMP_ADJ: alla felstatusar räknas
+            -- IMP/MAN/IMP_ADJ: alla felstatusar räknas — men tomma fact-rader
+            -- (amount ≈ 0) exkluderas eftersom Mercur skippar 0-belopps-konton
+            -- i sin export medan SIE/SAFT-filer behåller hela kontoplanen
+            -- (empirisk 2026-05-19: 99 % av only_fact-rader är tomma).
             (source_kind IN ('IMP', 'MAN', 'IMP_ADJ')
              AND (
-                facit_amt IS NULL
+                (facit_amt IS NULL AND ABS(COALESCE(fact_amt, 0)) >= 1)
                 OR fact_amt IS NULL
                 OR ABS(ROUND((COALESCE(facit_amt,0) - COALESCE(fact_amt,0))::numeric, 2))
                      > GREATEST(1.0, 0.01 * ABS(COALESCE(facit_amt, 0)))
