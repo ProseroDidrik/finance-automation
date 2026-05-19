@@ -72,13 +72,24 @@ account_diff_ytd AS (
                -- Mercur-konvention (intäkt+, kostnad-), fact_balances i
                -- SIE-konvention (intäkt-, kostnad+). IMP/MAN/IMP_ADJ-grenen
                -- nedan flippar INTE — båda sidor är Mercur-konvention där.
-               SUM(-amount) OVER (
+               SUM(-monthly_amt) OVER (
                    PARTITION BY company_id, LEFT(period, 4), source_kind, scenario, account_code
                    ORDER BY period
                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                ) AS facit_amt
-        FROM backup_from_mercur
-        WHERE scenario = 'A' AND source_kind IN ('SIE', 'SAFT')
+        FROM (
+            -- DEDUP före YTD-cum: backup_from_mercur har empiriskt flera
+            -- fysiska rader per (bolag, period, källa, scenario, konto) för
+            -- CENTR-bolag i `_history/2026 Backup.txt` (sannolikt dimensioner
+            -- som load_history_excel.py inte aggregerat ihop). Utan denna
+            -- SUM ger window-funktionen samma cum-värde för varje fysisk rad,
+            -- och FULL OUTER JOIN nedan dupliserar konton i drilldownen.
+            SELECT company_id, period, source_kind, scenario, account_code,
+                   SUM(amount) AS monthly_amt
+            FROM backup_from_mercur
+            WHERE scenario = 'A' AND source_kind IN ('SIE', 'SAFT')
+            GROUP BY 1, 2, 3, 4, 5
+        ) bm
     ) bk
     FULL OUTER JOIN (
         SELECT fb.company_id, fb.period, 'SAFT' AS source_kind, fb.scenario,
@@ -115,9 +126,14 @@ account_diff_monthly AS (
         ROUND((COALESCE(bk.amount, 0) - COALESCE(fk.amount, 0))::numeric, 2) AS diff,
         FALSE AS is_bs
     FROM (
-        SELECT company_id, period, source_kind, scenario, account_code, amount
+        -- DEDUP: parallell till YTD-grenens dedup ovan. Inga dubbletter idag
+        -- för IMP/MAN/IMP_ADJ men SUM-aggregeringen är defensiv mot framtida
+        -- load_history-körningar och kostar inget när data redan är unik.
+        SELECT company_id, period, source_kind, scenario, account_code,
+               SUM(amount) AS amount
         FROM backup_from_mercur
         WHERE scenario = 'A' AND source_kind IN ('IMP', 'MAN', 'IMP_ADJ')
+        GROUP BY 1, 2, 3, 4, 5
     ) bk
     FULL OUTER JOIN (
         SELECT company_id, period, source_kind, scenario, account_code, account_name, amount

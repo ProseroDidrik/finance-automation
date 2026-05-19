@@ -94,13 +94,24 @@ account_diff AS (
             LEFT(COALESCE(bk.account_code, fk.account_code), 1) IN ('1','2') AS is_bs
         FROM (
             SELECT company_id, period, source_kind, scenario, account_code,
-                   SUM(-amount) OVER (
+                   SUM(-monthly_amt) OVER (
                        PARTITION BY company_id, LEFT(period, 4), source_kind, scenario, account_code
                        ORDER BY period
                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                    ) AS facit_amt
-            FROM backup_from_mercur
-            WHERE scenario = 'A' AND source_kind IN ('SIE', 'SAFT')
+            FROM (
+                -- DEDUP före YTD-cum: spegel av coverage_accounts.sql:s
+                -- backup_ytd-CTE. backup_from_mercur har empiriskt flera
+                -- fysiska rader per (bolag, period, källa, scenario, konto)
+                -- för CENTR-bolag i `_history/2026 Backup.txt`. Utan denna
+                -- SUM duplikerar window-funktionen + FULL OUTER JOIN raderna
+                -- och account_diff EXISTS-testet kan trigga falska mismatch.
+                SELECT company_id, period, source_kind, scenario, account_code,
+                       SUM(amount) AS monthly_amt
+                FROM backup_from_mercur
+                WHERE scenario = 'A' AND source_kind IN ('SIE', 'SAFT')
+                GROUP BY 1, 2, 3, 4, 5
+            ) bm
         ) bk
         FULL OUTER JOIN (
             SELECT fb.company_id, fb.period, 'SAFT' AS source_kind, fb.scenario,
@@ -137,9 +148,15 @@ account_diff AS (
             ROUND((COALESCE(bk.amount, 0) - COALESCE(fk.amount, 0))::numeric, 2) AS diff,
             FALSE AS is_bs
         FROM (
-            SELECT company_id, period, source_kind, scenario, account_code, amount
+            -- DEDUP: parallell till YTD-grenens dedup ovan. Defensiv mot
+            -- framtida load_history-körningar; backup_from_mercur har inga
+            -- dubbletter för IMP/MAN/IMP_ADJ idag och SUM-aggregeringen är
+            -- en no-op när data redan är unik.
+            SELECT company_id, period, source_kind, scenario, account_code,
+                   SUM(amount) AS amount
             FROM backup_from_mercur
             WHERE scenario = 'A' AND source_kind IN ('IMP', 'MAN', 'IMP_ADJ')
+            GROUP BY 1, 2, 3, 4, 5
         ) bk
         FULL OUTER JOIN (
             SELECT company_id, period, source_kind, scenario, account_code, amount
