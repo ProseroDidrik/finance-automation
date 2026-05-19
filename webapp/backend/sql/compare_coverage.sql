@@ -114,18 +114,26 @@ account_diff AS (
             ) bm
         ) bk
         FULL OUTER JOIN (
-            SELECT fb.company_id, fb.period, 'SAFT' AS source_kind, fb.scenario,
-                   fb.account_code, fb.amount AS fact_amt
-            FROM fact_balances fb
-            WHERE fb.scenario = 'A' AND fb.source_kind = 'SAFT'
+            -- DEDUP fact-sidan: spegel av coverage_accounts.sql:s fact-dedup.
+            -- fact_balances har empiriskt flera fysiska rader per
+            -- (bolag, period, källa, scenario, konto) för SIE/SIE_PSALDO
+            -- (load_sie.py aggregerar inte bort dimensioner från #RES/#PSALDO).
+            -- Utan SUM duplicerar FULL OUTER JOIN raderna och account_diff
+            -- EXISTS-testet kan trigga falska mismatch.
+            SELECT company_id, period, 'SAFT' AS source_kind, scenario,
+                   account_code, SUM(amount) AS fact_amt
+            FROM fact_balances
+            WHERE scenario = 'A' AND source_kind = 'SAFT'
+            GROUP BY company_id, period, scenario, account_code
             UNION ALL
             SELECT fb.company_id, fb.period, 'SIE' AS source_kind, fb.scenario,
-                   fb.account_code, fb.amount AS fact_amt
+                   fb.account_code, SUM(fb.amount) AS fact_amt
             FROM fact_balances fb
             JOIN sie_pick p
               ON p.company_id = fb.company_id AND p.period = fb.period
              AND p.scenario   = fb.scenario   AND p.picked_kind = fb.source_kind
             WHERE fb.scenario = 'A'
+            GROUP BY fb.company_id, fb.period, fb.scenario, fb.account_code
         ) fk
           ON  bk.company_id   = fk.company_id
           AND bk.period       = fk.period
@@ -159,9 +167,14 @@ account_diff AS (
             GROUP BY 1, 2, 3, 4, 5
         ) bk
         FULL OUTER JOIN (
-            SELECT company_id, period, source_kind, scenario, account_code, amount
+            -- DEDUP fact-sidan: defensiv parallell till YTD-grenens dedup.
+            -- IMP/MAN/IMP_ADJ har inga dubbletter idag; SUM är no-op när
+            -- data är unik och försvar mot framtida load-buggar.
+            SELECT company_id, period, source_kind, scenario, account_code,
+                   SUM(amount) AS amount
             FROM fact_balances
             WHERE scenario = 'A' AND source_kind IN ('IMP', 'MAN', 'IMP_ADJ')
+            GROUP BY 1, 2, 3, 4, 5
         ) fk USING (company_id, period, source_kind, scenario, account_code)
     ) merged
     WHERE
