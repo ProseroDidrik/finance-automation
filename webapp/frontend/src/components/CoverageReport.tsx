@@ -76,6 +76,22 @@ const COUNTRY_ORDER = ["Sweden", "Norway", "Finland", "Denmark", "Germany", "CEN
 // - IMP_ADJ: justeringslager ovanpå IMP, inte ETL-täckning per se
 const HIDDEN_SOURCE_KINDS = new Set(["MAN", "IMP_ADJ"]);
 
+// "Strukturellt brus" — mismatches som är kända, dokumenterade och inte ETL-buggar.
+// Att visa dem som rött/gult döljer riktiga ETL-problem visuellt.
+//
+// SE-SIE: 35/49 svenska SIE-bolag saknar #PSALDO-rader → load_sie.py taggar #RES med
+// --period vilket ger 5-30 % timing-brus per konto. Se memory reference_sie_psaldo.md.
+//
+// NO-SAFT: backup_from_mercur lagrar monthly med Mercur-konvention, fact_balances
+// lagrar YTD med SIE-konvention → kräver dubbel normalisering vid jämförelse.
+// account_diff-CTE gör detta men kontoplans-grovhet ger fortfarande mismatches.
+function isStructuralNoise(row: CoverageRow): boolean {
+  if (row.status !== "mismatch") return false;
+  if (row.country === "Sweden" && row.source_kind === "SIE") return true;
+  if (row.country === "Norway" && row.source_kind === "SAFT") return true;
+  return false;
+}
+
 // ----- Hjälpare ------------------------------------------------------------
 
 function emptyAgg(): CellAggregate {
@@ -112,6 +128,7 @@ export function CoverageReport() {
   const [sortKey, setSortKey] = useState<SortKey>("period");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [accountsSelection, setAccountsSelection] = useState<CoverageAccountsSelection | null>(null);
+  const [hideStructuralNoise, setHideStructuralNoise] = useState(true);
 
   // Stabil onClose-referens så drawerns Escape-listener inte re-registreras
   // onödigt mycket när parent rendrar om.
@@ -127,8 +144,22 @@ export function CoverageReport() {
 
   // Filtrera bort ointressanta lager (MAN/IMP_ADJ) — de ska inte påverka
   // matrisen, kolumnsummorna eller den övergripande sammanfattningen.
+  // Dölj också "strukturellt brus" (SE-SIE/NO-SAFT mismatches pga #PSALDO-
+  // frånvaro resp. YTD/sign-konvention) när toggeln är aktiv, så att
+  // återstående färgade celler är riktiga ETL-problem.
   const visibleRows = useMemo(
-    () => rows.filter((r) => !HIDDEN_SOURCE_KINDS.has(r.source_kind)),
+    () => rows.filter((r) =>
+      !HIDDEN_SOURCE_KINDS.has(r.source_kind) &&
+      !(hideStructuralNoise && isStructuralNoise(r))
+    ),
+    [rows, hideStructuralNoise],
+  );
+
+  // Räkna strukturellt brus separat för att kunna visa siffran i toggeln.
+  const structuralNoiseCount = useMemo(
+    () => rows.filter((r) =>
+      !HIDDEN_SOURCE_KINDS.has(r.source_kind) && isStructuralNoise(r)
+    ).length,
     [rows],
   );
 
@@ -273,6 +304,18 @@ export function CoverageReport() {
             <AlertTriangle size={14} aria-hidden /> {grand.extra} extra (utanför facit)
           </span>
         )}
+        <label
+          className="ml-auto flex items-center gap-2 text-fg-muted cursor-pointer select-none"
+          title="SE-SIE och NO-SAFT-bolag har strukturella avvikelser mot Mercur-backupen pga #PSALDO-frånvaro respektive YTD/sign-konventionsskillnader. De är inte ETL-buggar. När toggeln är på döljs dessa för att lyfta fram riktiga problem."
+        >
+          <input
+            type="checkbox"
+            checked={hideStructuralNoise}
+            onChange={(e) => setHideStructuralNoise(e.target.checked)}
+            className="cursor-pointer"
+          />
+          <span>Dölj strukturellt brus ({structuralNoiseCount})</span>
+        </label>
       </div>
 
       {/* Matrix: land × period --------------------------------------- */}
