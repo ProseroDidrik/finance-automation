@@ -33,12 +33,28 @@
 -- SIE_PSALDO (periodsaldon från samma fil). Vi väljer SIE om den finns,
 -- annars SIE_PSALDO. På så vis matchar backup.SIE direkt mot fact-SIE.
 -- Begränsa till utfall (scenario='A') — budget (B) ligger utanför facit.
-WITH backup_agg AS (
+WITH cutoff AS (
+    -- Täckningsmatrisen ska inte visa framtida bokföringsperioder. Mercur-
+    -- backup innehåller framtida data både som ETL-rader (202605-SIE från
+    -- SIE-filer som täcker hela året) och MAN-budget-prognoser fram till
+    -- årets slut. Inget av detta ska klassas som 'missing' bara för att
+    -- fact inte har laddats för den månaden än.
+    --
+    -- Cutoff = föregående kalendermånad. I maj 2026 → '202604'. Beräknas
+    -- automatiskt via now() så koden inte behöver uppdateras månadsvis.
+    -- Per-bolag-source-kind-cutoff skulle vara mer korrekt (om något bolag
+    -- har laddat maj-fact medan andra ligger kvar i april) men kräver att
+    -- vi särskiljer "saknad fact" från "fact-laddning ej körd än" per
+    -- källa — komplexitet vi inte behöver idag.
+    SELECT to_char(date_trunc('month', now()) - interval '1 month', 'YYYYMM') AS p
+),
+backup_agg AS (
     SELECT company_id, period, source_kind, scenario,
            COUNT(*)    AS rows,
            SUM(amount) AS total
     FROM backup_from_mercur
     WHERE scenario = 'A'
+      AND period <= (SELECT p FROM cutoff)
     GROUP BY 1, 2, 3, 4
 ),
 sie_pick AS (
@@ -106,10 +122,11 @@ account_diff AS (
                 -- för CENTR-bolag i `_history/2026 Backup.txt`. Utan denna
                 -- SUM duplikerar window-funktionen + FULL OUTER JOIN raderna
                 -- och account_diff EXISTS-testet kan trigga falska mismatch.
-                SELECT company_id, period, source_kind, scenario, account_code,
-                       SUM(amount) AS monthly_amt
+                SELECT company_id, period, source_kind, scenario,
+                       account_code, SUM(amount) AS monthly_amt
                 FROM backup_from_mercur
                 WHERE scenario = 'A' AND source_kind IN ('SIE', 'SAFT')
+                  AND period <= (SELECT p FROM cutoff)
                 GROUP BY 1, 2, 3, 4, 5
             ) bm
         ) bk
@@ -160,10 +177,11 @@ account_diff AS (
             -- framtida load_history-körningar; backup_from_mercur har inga
             -- dubbletter för IMP/MAN/IMP_ADJ idag och SUM-aggregeringen är
             -- en no-op när data redan är unik.
-            SELECT company_id, period, source_kind, scenario, account_code,
-                   SUM(amount) AS amount
+            SELECT company_id, period, source_kind, scenario,
+                   account_code, SUM(amount) AS amount
             FROM backup_from_mercur
             WHERE scenario = 'A' AND source_kind IN ('IMP', 'MAN', 'IMP_ADJ')
+              AND period <= (SELECT p FROM cutoff)
             GROUP BY 1, 2, 3, 4, 5
         ) bk
         FULL OUTER JOIN (
