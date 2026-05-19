@@ -166,6 +166,12 @@ account_diff AS (
                -- klassas no_baseline, inte only_*, eftersom avsaknad av IB
                -- gör hela BS-jämförelsen meningslös för SIE/SAFT.
                WHEN is_bs AND source_kind IN ('SIE', 'SAFT') THEN 'no_baseline'
+               -- Tomma fact-rader (amount ≈ 0) som inte finns i backup: Mercur
+               -- skippar 0-belopps-konton i sin export medan SIE/SAFT-filer
+               -- behåller hela kontoplanen. Empiriskt 2026-05-19: 99 % av
+               -- only_fact-rader i 202604 hade amount=0. Räkna dem som 'ok'
+               -- så drilldownen inte druknar i tomma konton.
+               WHEN facit_amt IS NULL AND ABS(COALESCE(fact_amt, 0)) < 1 THEN 'ok'
                WHEN facit_amt IS NULL THEN 'only_fact'
                WHEN fact_amt  IS NULL THEN 'only_facit'
                WHEN ABS(diff) > GREATEST(1.0, 0.01 * ABS(facit_amt)) THEN 'amount_diff'
