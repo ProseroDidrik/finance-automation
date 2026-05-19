@@ -42,9 +42,14 @@ ENCODINGS = ("utf-8-sig", "cp437", "latin-1")
 
 RE_ORGNR  = re.compile(r"^#ORGNR\s+(\S+)", re.IGNORECASE)
 RE_FNAMN  = re.compile(r'^#FNAMN\s+"([^"]*)"', re.IGNORECASE)
+RE_PROGRAM = re.compile(r'^#PROGRAM\s+"([^"]*)"', re.IGNORECASE)
 RE_KONTO  = re.compile(r'^#KONTO\s+(\S+)\s+"([^"]*)"', re.IGNORECASE)
 RE_UB     = re.compile(r"^#UB\s+0\s+(\S+)\s+(-?\d+(?:[.,]\d+)?)", re.IGNORECASE)
 RE_RES    = re.compile(r"^#RES\s+0\s+(\S+)\s+(-?\d+(?:[.,]\d+)?)", re.IGNORECASE)
+# Dynamics NAV exporterar #RES 0 som "ackumulerat över alla år" istället för
+# YTD innevarande RAR. Vi läser #RES -1 (föregående RAR) för att kunna
+# korrigera detta nedan, men ENDAST när #PROGRAM matchar NAV.
+RE_RES_PRIOR = re.compile(r"^#RES\s+-1\s+(\S+)\s+(-?\d+(?:[.,]\d+)?)", re.IGNORECASE)
 RE_PSALDO = re.compile(
     r"^#PSALDO\s+0\s+(\d{6})\s+(\S+)\s+\{[^}]*\}\s+(-?\d+(?:[.,]\d+)?)",
     re.IGNORECASE,
@@ -95,8 +100,8 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
         {line_no,account,amount,trans_text,quantity}]}].
     """
     out: dict = {
-        "orgnr": None, "fnamn": None, "konto": {},
-        "ub": [], "res": [], "psaldo": [],
+        "orgnr": None, "fnamn": None, "program": None, "konto": {},
+        "ub": [], "res": [], "res_prior": [], "psaldo": [],
         "rar_start": None, "rar_end": None, "gen_date": None,
         "vouchers": [],
     }
@@ -147,6 +152,8 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
             out["orgnr"] = m.group(1).strip('"')
         elif m := RE_FNAMN.match(line):
             out["fnamn"] = m.group(1)
+        elif m := RE_PROGRAM.match(line):
+            out["program"] = m.group(1)
         elif m := RE_KONTO.match(line):
             out["konto"][m.group(1)] = m.group(2)
         elif m := RE_UB.match(line):
@@ -157,6 +164,11 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
         elif m := RE_RES.match(line):
             try:
                 out["res"].append((m.group(1), float(m.group(2).replace(",", "."))))
+            except ValueError:
+                continue
+        elif m := RE_RES_PRIOR.match(line):
+            try:
+                out["res_prior"].append((m.group(1), float(m.group(2).replace(",", "."))))
             except ValueError:
                 continue
         elif m := RE_PSALDO.match(line):
@@ -266,10 +278,25 @@ def build_orgnr_lookup(con: db.Conn) -> dict[str, tuple[int, str]]:
     return lookup
 
 
+RE_PATH_PERIOD = re.compile(r"(?:^|[\\/])extracted[\\/](\d{6})[\\/]", re.IGNORECASE)
+
+
 def load_file(con, path: Path, base_path: Path, period_override: str | None,
               orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False,
               override: list[int] | None = None) -> str:
     """Load one SIE file. Returns ok|warn|skip|error."""
+    # Path-period sanity-check: om filen ligger under extracted/YYYYMM/ och
+    # --period är annat värde, vägra ladda. Skyddar mot att tagga gammal
+    # mars-fil som april via felaktig --source-dir (verifierat 2026-05-19
+    # på bolag 105 Creab — stale 202604-rader kom från extracted/202603/).
+    if period_override:
+        m = RE_PATH_PERIOD.search(str(path))
+        if m and m.group(1) != period_override:
+            log("ERROR", path.name,
+                f"Path-period mismatch: filen ligger i extracted/{m.group(1)}/ "
+                f"men --period={period_override}. Flytta filen eller justera --period.")
+            return "error"
+
     try:
         text = read_text_with_fallback(path)
     except Exception as e:
@@ -313,6 +340,30 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         return "error"
 
     konto = parsed["konto"]
+
+    # Dynamics NAV-korrigering: NAV exporterar #RES 0 som ackumulerat över
+    # alla år istället för innevarande RAR. När #PROGRAM matchar NAV och
+    # filen har #RES -1, subtrahera fjolåret per konto för att få korrekt YTD.
+    # Detekteras strikt på "Dynamics NAV"-substring för att inte träffa andra
+    # system där #RES -1 är korrekt fjolårsdata (som vi i så fall INTE ska
+    # subtrahera). Verifierat 2026-05-19 mot bolag 164 — gav exakt match mot
+    # Mercur-facit på samtliga testade konton.
+    program = parsed.get("program") or ""
+    if "Dynamics NAV" in program and parsed["res_prior"]:
+        prior_by_code = dict(parsed["res_prior"])
+        n_adjusted = 0
+        corrected: list[tuple[str, float]] = []
+        for code, amt in parsed["res"]:
+            prior = prior_by_code.get(code)
+            if prior is not None:
+                corrected.append((code, amt - prior))
+                n_adjusted += 1
+            else:
+                corrected.append((code, amt))
+        parsed["res"] = corrected
+        log("INFO", company_id,
+            f"NAV-korrigering tillämpad: subtraherat #RES -1 på {n_adjusted} "
+            f"konton (program='{program}')")
 
     # IS/BS-klassning per kontokod: UB → BS, RES → IS. Fallback för PSALDO-koder
     # som ev. saknas i UB/RES: första-siffra-regel (1,2 → BS; annars IS).
