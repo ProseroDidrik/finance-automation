@@ -92,21 +92,30 @@ const HIDDEN_SOURCE_KINDS = new Set(["MAN", "IMP_ADJ"]);
 // "Strukturellt brus" — kända, dokumenterade avvikelser som inte är ETL-buggar.
 // Att visa dem som rött/gult döljer riktiga ETL-problem visuellt.
 //
-// SE-SIE: 35/49 svenska SIE-bolag saknar #PSALDO-rader → load_sie.py taggar #RES med
-// --period vilket ger 5-30 % timing-brus per konto. Se memory reference_sie_psaldo.md.
+// Täckningsmatrisen jämför månadsrörelse mot Mercur-facit. Mercur lagrar dock
+// SIE/SAFT-utfall som statiskt pre-allokerad config (ofta jämnt utspritt över
+// månaderna), inte den faktiska bokföringsperioden — årssumman stämmer men
+// månadsfördelningen skiljer sig. Det ger mismatch som inte är ett ETL-fel.
 //
-// NO-SAFT: backup_from_mercur lagrar monthly med Mercur-konvention, fact_balances
-// lagrar YTD med SIE-konvention → kräver dubbel normalisering vid jämförelse.
-// account_diff-CTE gör detta men kontoplans-grovhet ger fortfarande mismatches.
+// SE-SIE: ~12-14 bolag med pre-allokerade periodiseringskonton (hyra,
+// försäkring, avskrivning). NO-SAFT: större effekt — Mercurs norska backup är
+// kraftigt pre-allokerad, så de flesta bolag avviker på månadsbasis.
 //
-// 'extra' (fact har data, backup saknar) för SE-SIE/NO-SAFT är samma fenomen:
-// Mercur-backupen exporterar inte SIE/SAFT-källan för historiska år (2022-2025),
-// så all vår SIE/SAFT-historik blir 'extra'. Inte saknad data — bara utanför facit.
+// 'extra' (fact har data, backup saknar) för SE-SIE/NO-SAFT: Mercur-backupen
+// exporterar inte SIE/SAFT-källan för historiska år (2022-2025), så den
+// historiken blir 'extra'. Inte saknad data — bara utanför facit.
 function isStructuralNoise(row: CoverageRow): boolean {
   if (row.status !== "mismatch" && row.status !== "extra") return false;
   if (row.country === "Sweden" && row.source_kind === "SIE") return true;
   if (row.country === "Norway" && row.source_kind === "SAFT") return true;
   return false;
+}
+
+// Effektiv status för matrisräkning och cellfärg. När "räkna strukturellt brus
+// som OK" är på mappas SE-SIE/NO-SAFT mismatch/extra till 'ok' — raden räknas
+// fortfarande (nämnaren krymper inte). Drilldown använder alltid r.status.
+function effectiveStatus(row: CoverageRow, treatNoiseAsOk: boolean): CoverageRow["status"] {
+  return treatNoiseAsOk && isStructuralNoise(row) ? "ok" : row.status;
 }
 
 // ----- Hjälpare ------------------------------------------------------------
@@ -145,7 +154,7 @@ export function CoverageReport() {
   const [sortKey, setSortKey] = useState<SortKey>("period");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [accountsSelection, setAccountsSelection] = useState<CoverageAccountsSelection | null>(null);
-  const [hideStructuralNoise, setHideStructuralNoise] = useState(true);
+  const [treatNoiseAsOk, setTreatNoiseAsOk] = useState(true);
   const [selectedYear, setSelectedYear] = useState(() => new Date().getFullYear());
 
   const months = useMemo(() => monthsForYear(selectedYear), [selectedYear]);
@@ -167,15 +176,12 @@ export function CoverageReport() {
 
   // Filtrera bort ointressanta lager (MAN/IMP_ADJ) — de ska inte påverka
   // matrisen, kolumnsummorna eller den övergripande sammanfattningen.
-  // Dölj också "strukturellt brus" (SE-SIE/NO-SAFT mismatches pga #PSALDO-
-  // frånvaro resp. YTD/sign-konvention) när toggeln är aktiv, så att
-  // återstående färgade celler är riktiga ETL-problem.
+  // Strukturellt brus filtreras INTE bort här — raderna räknas alltid med så
+  // att nämnaren är stabil. Toggeln påverkar bara hur de färgas (se
+  // effectiveStatus) och drilldown visar alltid den riktiga statusen.
   const visibleRows = useMemo(
-    () => rows.filter((r) =>
-      !HIDDEN_SOURCE_KINDS.has(r.source_kind) &&
-      !(hideStructuralNoise && isStructuralNoise(r))
-    ),
-    [rows, hideStructuralNoise],
+    () => rows.filter((r) => !HIDDEN_SOURCE_KINDS.has(r.source_kind)),
+    [rows],
   );
 
   // Räkna strukturellt brus separat för att kunna visa siffran i toggeln.
@@ -199,10 +205,10 @@ export function CoverageReport() {
       if (!pMap.has(r.period)) pMap.set(r.period, emptyAgg());
       const agg = pMap.get(r.period)!;
       agg.total += 1;
-      agg[r.status] += 1;
+      agg[effectiveStatus(r, treatNoiseAsOk)] += 1;
     }
     return m;
-  }, [visibleRows]);
+  }, [visibleRows, treatNoiseAsOk]);
 
   // Sortera rader för matrix-rendering: land enligt COUNTRY_ORDER, sedan source_kind
   const matrixRows = useMemo(() => {
@@ -228,10 +234,10 @@ export function CoverageReport() {
       if (!t.has(r.period)) t.set(r.period, emptyAgg());
       const agg = t.get(r.period)!;
       agg.total += 1;
-      agg[r.status] += 1;
+      agg[effectiveStatus(r, treatNoiseAsOk)] += 1;
     }
     return t;
-  }, [visibleRows]);
+  }, [visibleRows, treatNoiseAsOk]);
 
   // Drill-down: filtrera till valda (country, source_kind, [period])
   const drillRows = useMemo(() => {
@@ -262,9 +268,9 @@ export function CoverageReport() {
   // Övergripande summa
   const grand = useMemo(() => {
     const g = emptyAgg();
-    for (const r of visibleRows) { g.total += 1; g[r.status] += 1; }
+    for (const r of visibleRows) { g.total += 1; g[effectiveStatus(r, treatNoiseAsOk)] += 1; }
     return g;
-  }, [visibleRows]);
+  }, [visibleRows, treatNoiseAsOk]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -343,15 +349,15 @@ export function CoverageReport() {
         )}
         <label
           className="ml-auto flex items-center gap-2 text-fg-muted cursor-pointer select-none"
-          title="SE-SIE och NO-SAFT-bolag har strukturella avvikelser mot Mercur-backupen pga #PSALDO-frånvaro respektive YTD/sign-konventionsskillnader. De är inte ETL-buggar. När toggeln är på döljs dessa för att lyfta fram riktiga problem."
+          title="SE-SIE och NO-SAFT-bolag har strukturella avvikelser mot Mercur-backupen (pga #PSALDO-frånvaro respektive YTD/sign-konvention) — inte ETL-buggar. När detta är på räknas de som OK i matrisen så att täckningssiffran blir stabil; den riktiga statusen syns fortfarande i drilldown."
         >
           <input
             type="checkbox"
-            checked={hideStructuralNoise}
-            onChange={(e) => setHideStructuralNoise(e.target.checked)}
+            checked={treatNoiseAsOk}
+            onChange={(e) => setTreatNoiseAsOk(e.target.checked)}
             className="cursor-pointer"
           />
-          <span>Dölj strukturellt brus ({structuralNoiseCount})</span>
+          <span>Räkna strukturellt brus som OK ({structuralNoiseCount})</span>
         </label>
       </div>
 

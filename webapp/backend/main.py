@@ -309,25 +309,27 @@ async def compare_coverage(
     period_from: str | None = Query(None, pattern=r"^\d{6}$"),
     period_to:   str | None = Query(None, pattern=r"^\d{6}$"),
 ):
-    """Facit (backup_from_mercur) vs fact_balances per (bolag, period, källa).
+    """Facit (backup_from_mercur) vs laddad data per (bolag, period, källa).
 
-    Default: returnerar bara perioder ≥ 202601 (facit-fasen 2026). Sätt
-    period_from=202201 för full historik.
+    Jämförelsen sker på månadsbasis. Default: returnerar bara perioder
+    ≥ 202601 (facit-fasen 2026). Sätt period_from=202201 för full historik.
     """
-    sql_body = SQL_COVERAGE.read_text(encoding="utf-8")
-    # SQL:en slutar med ORDER BY — wrappa i sub-query och filtrera ovanpå.
-    filters = []
-    params: list = []
-    pf = period_from or "202601"
-    filters.append("period >= %s")
-    params.append(pf)
-    if period_to:
-        filters.append("period <= %s")
-        params.append(period_to)
-    where = " AND ".join(filters)
-    sql = f"SELECT * FROM (\n{sql_body}\n) cov WHERE {where} ORDER BY period, country, company_id"
+    # compare_coverage.sql filtrerar de tunga CTE:rna på [period_lo, period_hi]
+    # så bara begärt år processas. Värdena substitueras som LITERALER i WHERE
+    # (inte bind-param/CTE-subquery) — annars ser planeraren ett ogenomskinligt
+    # värde, underskattar selektiviteten och väljer en disk-spillande sort.
+    # period_from/period_to är regex-validerade 6-siffriga (Query-pattern), så
+    # substitutionen är ofarlig. period_hi kapas till föregående kalendermånad.
+    from datetime import date as _date
+    _today = _date.today()
+    period_lo = period_from or "202601"
+    period_hi = min(period_to or "999912",
+                    prev_period(f"{_today.year}{_today.month:02d}"))
+    sql = (SQL_COVERAGE.read_text(encoding="utf-8")
+           .replace("@period_lo@", period_lo)
+           .replace("@period_hi@", period_hi))
     with open_db() as con:
-        rows = con.fetch_dicts(sql, params)
+        rows = con.fetch_dicts(sql, [])
     return [
         {
             "company_id":   int(r["company_id"]) if r["company_id"] is not None else None,
@@ -357,12 +359,11 @@ async def compare_coverage_accounts(
 ):
     """Per-konto-diff för (bolag, period, källa) — drilldown från täckningsmatrisen.
 
-    För SIE/SAFT YTD-kumuleras backup_from_mercur (med sign-flip från Mercur-
-    till SIE-konvention) innan jämförelse mot YTD-fact. BS-konton i SIE/SAFT
-    klassas som 'no_baseline' eftersom YTD-jämförelse kräver IB. För
-    IMP/MAN/IMP_ADJ jämförs monthly↔monthly rakt av. SIE_PSALDO accepteras
-    inte som input — SE-data nås alltid via source_kind='SIE' (mappas internt
-    via picked_kind-CTE).
+    Jämför månadsrörelse mot månadsrörelse för alla källslag. Fact-sidan tas
+    från fact_journal_sie (SIE), fact_journal_saft (SAFT) respektive
+    fact_balances (IMP/MAN/IMP_ADJ); backup_from_mercur sign-flippas för
+    SIE/SAFT. SIE_PSALDO accepteras inte som input — SE-data nås via
+    source_kind='SIE'.
     """
     if source_kind not in _ACCOUNTS_SOURCE_KINDS:
         raise HTTPException(
@@ -396,7 +397,6 @@ async def compare_coverage_accounts(
         "n_amount_diff":  sum(1 for r in out_rows if r["status_acc"] == "amount_diff"),
         "n_only_facit":   sum(1 for r in out_rows if r["status_acc"] == "only_facit"),
         "n_only_fact":    sum(1 for r in out_rows if r["status_acc"] == "only_fact"),
-        "n_no_baseline":  sum(1 for r in out_rows if r["status_acc"] == "no_baseline"),
         "facit_sum":      sum(r["facit_amt"] or 0.0 for r in out_rows),
         "fact_sum":       sum(r["fact_amt"]  or 0.0 for r in out_rows),
     }
