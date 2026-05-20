@@ -122,6 +122,14 @@ Each `.msg` file is matched to a company via weighted scoring:
 
 Score < 40 = low confidence (flagged `[LOW]`). Score 999 = manual override.
 
+### Manuella filer: `_uploads/{period}/`
+
+För källfiler som inte kan extraheras ur `.msg` (krypterad mail, mail som aldrig kom) finns `_uploads/{period}/` under base_path — på samma nivå som `_inbox/`, inte inuti det. `extract.py --period {period}` kör `process_uploads()` automatiskt efter msg-loopen.
+
+- Filnamn måste börja med `{ID}_` (BolagsID från Dotterbolagslistan) — prefixet är ground truth, ingen scoring körs.
+- Råkällor kopieras till `extracted/{period}/{Country}/`; färdiga `{ID}_{Namn}_{YYYYMM}_INL.xlsx` routas direkt till `{Country}/output/`.
+- `_uploads` har prioritet: för varje bolag med en `_uploads`-fil arkiveras ev. msg-extraherade källor till `Referens/` först.
+
 ### Output filename conventions
 
 | Country | Format |

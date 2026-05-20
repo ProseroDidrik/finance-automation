@@ -67,7 +67,7 @@ DOTTERBOLAG  = _BASE / "_params" / "Dotterbolagslista.xlsx"
 COMPANY_DEFS: dict[str, dict] = {
     "187": dict(reader="monthly_value",        file_glob="187_*monthly*value*.xlsx"),
     "188": dict(reader="monthly_value",        file_glob="188_*monthly*value*.xlsx"),
-    "220": dict(reader="susa_csv",             file_glob="220_*Susa_*.csv"),
+    "220": dict(reader="susa_csv",             file_glob="220_*Susa*.csv"),
     # 231 Mittermeier: byter mellan "Susa MM.YYYY" och "Auswertung M-YYYY" (jan).
     "231": dict(reader="susa_pro_monat",       file_glob="231_*Susa*.xlsx",
                 fallback_glob="231_Auswertung*.xlsx"),
