@@ -1,0 +1,13 @@
+# Radslut styrs av repot, inte av varje dev:s core.autocrlf
+* text=auto eol=lf
+
+# Windows-skript måste ha CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binärfiler — rör inte
+*.xlsx binary
+*.xlsm binary
+*.xls  binary
+*.msg  binary
