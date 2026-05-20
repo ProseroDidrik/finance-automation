@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import re
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -238,6 +239,7 @@ def fy_periods(fy_start: str, period: str) -> list[str]:
     Antar kalenderårs-progression. Anroparen ska redan ha avvisat brutet
     räkenskapsår (fy_start som inte slutar på '01').
     """
+    assert fy_start <= period, f"fy_periods: fy_start {fy_start!r} > period {period!r}"
     out: list[str] = []
     y, m = int(fy_start[:4]), int(fy_start[4:6])
     while True:
@@ -251,7 +253,8 @@ def fy_periods(fy_start: str, period: str) -> list[str]:
     return out
 
 
-def cumulate_ytd(monthly_rows, periods: list[str]) -> list[tuple[str, str, float]]:
+def cumulate_ytd(monthly_rows: Iterable[tuple[str, str, float]],
+                 periods: list[str]) -> list[tuple[str, str, float]]:
     """Kumulera månadsrörelse → YTD-saldo per konto.
 
     monthly_rows: iterable av (account_code, period, amount) — månadsrörelse.
@@ -261,6 +264,8 @@ def cumulate_ytd(monthly_rows, periods: list[str]) -> list[tuple[str, str, float
     för varje period FRÅN sin första aktivitetsmånad och framåt (carry-forward),
     så att report_pnl.sql:s YTD-diff fungerar även för en månad utan rörelse.
     Tecknet bevaras (SIE-konvention — samma som fact_journal_sie).
+    Rader med samma (account_code, period) summeras — funktionen är robust
+    oavsett om indata redan är aggregerad eller ej.
     """
     by_acct: dict[str, dict[str, float]] = {}
     for account_code, p, amount in monthly_rows:

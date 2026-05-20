@@ -17,6 +17,7 @@ from load_sie import cumulate_ytd, fy_periods
 def check_fy_periods() -> bool:
     ok = fy_periods("202601", "202604") == ["202601", "202602", "202603", "202604"]
     ok = ok and fy_periods("202603", "202603") == ["202603"]
+    ok = ok and fy_periods("202511", "202601") == ["202511", "202512", "202601"]
     print(f"[{'OK' if ok else 'FAIL'}]  fy_periods")
     return ok
 
@@ -38,9 +39,12 @@ def check_cumulate() -> bool:
         ("4000", "202603"):   30.0,   # carry-forward
     }
     ok = got == want
+    # Konto med aktivitet helt utanför periods-fönstret ger inga rader.
+    oob = cumulate_ytd([("9999", "202512", -200.0)], periods)
+    ok = ok and oob == []
     print(f"[{'OK' if ok else 'FAIL'}]  cumulate_ytd")
     if not ok:
-        print(f"  want={want}\n  got ={got}")
+        print(f"  want={want}\n  got ={got}\n  oob ={oob}")
     return ok
 
 
