@@ -17,6 +17,7 @@ on:
     paths:
       - "mcp_server.py"
       - "SCHEMA.md"
+      - "docs/warehouse_semantics.md"
       - "webapp/Dockerfile.mcp"
       - ".dockerignore"
       - ".github/workflows/deploy-mcp.yml"

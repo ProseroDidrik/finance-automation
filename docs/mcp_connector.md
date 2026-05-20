@@ -73,8 +73,41 @@ Ställ frågor på svenska — Claude kallar verktygen automatiskt:
 
 > *Vilka SE-bolag saknas i facit för april 2026?*
 
-`describe_schema` läses in i kontexten innan första queryn, så Claude kan
-period-typer (YTD vs monthly), source_kind-prioriteten, och tecken­konventionen.
+Claude ska anropa `describe_schema` själv innan första queryn — det ger
+schema + query-semantik (YTD vs monthly, source_kind-prioritet, tecken­-
+konvention). Servern påminner om det via sitt `instructions`-fält, men för
+stabilast resultat: kör frågorna i en Claude Project med instruktionerna nedan.
+
+## Project-instruktioner (rekommenderas starkt)
+
+En lös chatt utan kontext gör ofta att Claude hoppar direkt på `query_sql`,
+gissar schemat och räknar fel. Lägg verktygsanvändarna i en delad **Claude
+Project** och klistra in följande i projektets instruktioner — admin gör det
+en gång, det gäller alla i projektet och funkar i både claude.ai och Claude
+Desktop:
+
+```text
+Du har MCP-servern "finance-warehouse" — Prosero-koncernens nordiska
+ekonomidata (Postgres, read-only) med verktygen describe_schema och query_sql.
+
+Arbetsordning för varje fråga om ekonomidata:
+1. Anropa describe_schema EN gång i början av konversationen, innan du skriver
+   någon SQL. Det ger tabeller, live radantal och query-semantiken.
+2. Skriv query_sql (read-only SELECT) enligt den semantiken.
+
+Räkna inte fel — fyra återkommande fällor:
+- fact_balances.amount är YTD (ackumulerat) för Sverige/Norge men
+  månadsrörelse för Finland/Danmark/Tyskland. Summera aldrig amount rakt
+  över länder utan att normalisera period_type.
+- Samma bolag+period kan ha flera source_kind. Välj högsta prioritet per
+  land (best_source) — summera aldrig över källor.
+- Filtrera alltid scenario = 'A' för utfall, annars dubblas budget in.
+- Teckenkonvention är SIE (intäkt negativ); P_*-konton är teckenflippade.
+
+describe_schema förklarar alla fyra i detalj med färdiga SQL-mönster — följ
+dem. Visa SQL:en för användaren innan stora aggregeringar, och svara med en
+kort sammanfattning, inte råa radhögar.
+```
 
 ## Säkerhet
 

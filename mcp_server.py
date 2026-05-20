@@ -59,8 +59,34 @@ WRITE_PATTERN = re.compile(
 )
 LIMIT_PATTERN = re.compile(r"\blimit\b\s+\d+", re.IGNORECASE)
 
+# Skickas i MCP:s ``initialize``-svar — klienten (Claude.ai/Desktop) ser det
+# INNAN något verktyg anropas. Det är enda stället att säga "kör describe_schema
+# först" där modellen läser det utan att redan ha valt att anropa describe_schema.
+# Håll kort — det ligger i varje handshake. Detaljerna bor i describe_schema.
+SERVER_INSTRUCTIONS = """\
+finance-warehouse — Prosero-koncernens nordiska ekonomidata (Postgres, read-only).
+
+ARBETSORDNING — varje ny konversation:
+1. Anropa `describe_schema` EN gång före din första `query_sql`. Det returnerar
+   tabeller, live radantal OCH query-semantiken. Hoppar du över det räknar du fel.
+2. Skriv sedan `query_sql` (read-only SELECT).
+
+Fyra fällor som ger tyst FELAKTIGA siffror om du inte läst describe_schema:
+- `fact_balances.amount` är YTD (ackumulerat sedan 1 jan) för SE/NO men
+  månadsrörelse för FI/DK/DE. SUM:a aldrig `amount` rakt över länder.
+- Samma (bolag, period) kan ha flera `source_kind`. Välj högsta prioritet per
+  land (best_source) — summera aldrig över källor.
+- Filtrera alltid `scenario = 'A'` för utfall, annars dubblas budget in.
+- Teckenkonvention är SIE (intäkt negativ); `P_*`-konton är teckenflippade.
+
+describe_schema förklarar alla fyra med färdiga SQL-mönster. Dialekt: Postgres
+(`to_char`, inte `strftime`). Vid osäkerhet: visa SQL:en för användaren innan
+stora aggregeringar körs, och svara med en kort sammanfattning — inte råa
+radhögar."""
+
 mcp = FastMCP(
     "finance-warehouse",
+    instructions=SERVER_INSTRUCTIONS,
     host=HTTP_HOST,
     port=HTTP_PORT,
     transport_security=TransportSecuritySettings(
@@ -147,6 +173,10 @@ def describe_schema() -> str:
 @mcp.tool()
 def query_sql(sql: str, limit: int = DEFAULT_LIMIT) -> str:
     """Kör en SELECT-query mot warehouse. Read-only.
+
+    Kör `describe_schema` först om du inte redan gjort det i den här
+    konversationen — semantiken där (YTD vs monthly, best_source, scenario,
+    teckenkonvention) avgör om dina siffror blir rätt.
 
     - DML/DDL avvisas (INSERT/UPDATE/DELETE/CREATE/DROP/ATTACH/COPY/TRUNCATE/...).
     - Om ingen LIMIT finns i queryn slås den på automatiskt (max `limit` rader).
