@@ -308,24 +308,24 @@ def synthesize_sie_ver(con, company_id: int, fy_start: str, fy_end: str,
     """
     periods = fy_periods(fy_start, period)
 
-    journal = con.execute(
-        """SELECT account_code, period, SUM(amount) AS amount
+    # Ett pass över fact_journal_sie: månadsrörelse + kontonamn per IS-konto.
+    rows = con.execute(
+        """SELECT account_code, period,
+                  SUM(amount)       AS amount,
+                  MAX(account_name) AS account_name
            FROM fact_journal_sie
            WHERE company_id = %s
              AND period BETWEEN %s AND %s
-             AND LEFT(account_code, 1) IN ('3','4','5','6','7','8')
+             AND LEFT(account_code, 1) = ANY(%s)
            GROUP BY account_code, period""",
-        [company_id, fy_start, period],
+        [company_id, fy_start, period, list(IS_ACCOUNT_CLASSES)],
     ).fetchall()
 
-    name_rows = con.execute(
-        """SELECT account_code, MAX(account_name) AS account_name
-           FROM fact_journal_sie
-           WHERE company_id = %s AND period BETWEEN %s AND %s
-           GROUP BY account_code""",
-        [company_id, fy_start, period],
-    ).fetchall()
-    names = {code: nm for code, nm in name_rows}
+    journal = [(code, p, amount) for code, p, amount, _name in rows]
+    names: dict[str, str | None] = {}
+    for code, _p, _amount, account_name in rows:
+        if account_name is not None or code not in names:
+            names[code] = account_name
 
     # Idempotens: rensa hela FY:t innan INSERT.
     con.execute(
@@ -691,6 +691,9 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             # Bolaget levererar #PSALDO — rensa ev. stale SIE_VER från en
             # tidigare laddning då filen saknade #PSALDO. best_source föredrar
             # SIE_PSALDO så det är ofarligt numeriskt, men håll datat rent.
+            # OBS: körs bara vid faktisk laddning — om konfliktkollen ovan
+            # returnerat "skip" når vi aldrig hit, men då laddas heller ingen
+            # ny #PSALDO så best_source ger fortsatt rätt siffror.
             con.execute(
                 """DELETE FROM fact_balances
                    WHERE company_id = %s AND source_kind = %s
