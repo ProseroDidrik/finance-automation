@@ -27,15 +27,15 @@ DOTTERBOLAG_PATH = _REPO_ROOT / "_params" / "Dotterbolagslista.xlsx"
 # Override och delete jobbar mot detta lager (lager-isolering: rör aldrig MAN/IMP_ADJ).
 # Per land mappar IMP-koncept till olika source_kind-värden:
 IMP_KINDS_BY_COUNTRY = {
-    "Sweden":  ("SIE", "SIE_PSALDO"),
-    "CA":      ("SIE", "SIE_PSALDO"),
+    "Sweden":  ("SIE", "SIE_PSALDO", "SIE_VER"),
+    "CA":      ("SIE", "SIE_PSALDO", "SIE_VER"),
     "Norway":  ("SAFT",),
     "Finland": ("IMP",),
     "Denmark": ("IMP",),
     "Germany": ("IMP",),
     "CENTR":   ("IMP",),
 }
-IMP_KINDS = ("IMP", "SIE", "SIE_PSALDO", "SAFT")
+IMP_KINDS = ("IMP", "SIE", "SIE_PSALDO", "SIE_VER", "SAFT")
 
 
 COUNTRY_CURRENCY = {
@@ -213,7 +213,7 @@ CREATE TABLE IF NOT EXISTS fact_balances (
     amount          DOUBLE PRECISION NOT NULL,
     currency        TEXT NOT NULL,
     statement_type  TEXT,                  -- 'IS' | 'BS' | NULL
-    source_kind     TEXT NOT NULL,         -- 'IMP' | 'SIE' | 'SIE_PSALDO' | 'SAFT' | 'MAN' | 'IMP_ADJ' | 'IB'
+    source_kind     TEXT NOT NULL,         -- 'IMP'|'SIE'|'SIE_PSALDO'|'SIE_VER'|'SAFT'|'MAN'|'IMP_ADJ'|'IB'
     source_file     TEXT NOT NULL,
     row_index       INTEGER,
     scenario        TEXT NOT NULL DEFAULT 'A',  -- 'A' = Actuals | 'B' = Budget

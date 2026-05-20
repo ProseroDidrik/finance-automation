@@ -74,7 +74,7 @@ def _delete_targets_for_company(country: str, source_kind: str, period: str
     if source_kind == "IMP":
         if country in ("Sweden", "CA"):
             return [
-                ("fact_balances",     ["SIE", "SIE_PSALDO"], "fy"),
+                ("fact_balances",     ["SIE", "SIE_PSALDO", "SIE_VER"], "fy"),
                 ("fact_journal_sie",  [],                    "fy"),
             ]
         if country == "Norway":
