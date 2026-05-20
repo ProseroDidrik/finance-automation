@@ -1081,8 +1081,8 @@ def run_221(d: Path):
 def run_238(d: Path):
     return process_company(
         code="238", friendly_name="ANV", period=PERIOD,
-        bs_rows_raw=read_period_csv_diff(str(glob_one(d, "238_tase-kk_*.csv")), PERIOD),
-        is_rows_raw=read_period_csv_col(str(glob_one(d, "238_tuloslaskelma-kk_*.csv")), PERIOD),
+        bs_rows_raw=read_period_csv_diff(str(glob_one(d, "238_*tase-kk*.csv")), PERIOD),
+        is_rows_raw=read_period_csv_col(str(glob_one(d, "238_*tuloslaskelma-kk*.csv")), PERIOD),
     )
 
 
