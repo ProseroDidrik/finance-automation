@@ -13,6 +13,9 @@ config.json
 data/
 .mcp_token
 
+# Scratch / one-off verification files
+_scratch/
+
 # Windows-temp auth-tokens (colon-encoded paths)
 *Temp*auth.json
 CUsersDidWac*
