@@ -38,6 +38,7 @@ from shared import begin_run, is_override_for, load_config, log, prev_month_peri
 
 SOURCE_KIND = "SIE"
 SOURCE_KIND_PSALDO = "SIE_PSALDO"
+SOURCE_KIND_SIE_VER = "SIE_VER"
 PERIOD_TYPE = "ytd"
 ENCODINGS = ("utf-8-sig", "cp437", "latin-1")
 
@@ -285,6 +286,79 @@ def cumulate_ytd(monthly_rows: Iterable[tuple[str, str, float]],
     return out
 
 
+# Kontoklass 3–8 = resultaträkning (IS). 1–2 = balansräkning (BS) och kan inte
+# YTD-kumuleras utan korrekt ingående balans — skippas i SIE_VER.
+IS_ACCOUNT_CLASSES = ("3", "4", "5", "6", "7", "8")
+
+
+def synthesize_sie_ver(con, company_id: int, fy_start: str, fy_end: str,
+                       period: str, rel_src: str, now: datetime) -> int:
+    """Syntetisera SIE_VER-rader (YTD-saldon) från fact_journal_sie.
+
+    Anropas inom den öppna transaktionen i load_file, EFTER att journalraderna
+    skrivits — läser därför både den aktuella filens verifikat och tidigare
+    laddade månader. Aggregerar verifikat per (konto, period), kumulerar till
+    YTD och skriver source_kind='SIE_VER'. Bara IS-konton (kontoklass 3–8).
+
+    DELETE täcker hela FY:t (fy_start..fy_end) → idempotent och rensar även
+    ev. stale senare-månadsrader. INSERT skrivs bara för fy_start..period.
+
+    Returnerar antal SIE_VER-rader som skrevs (0 om inga verifikat finns —
+    då behålls #RES-baserad SIE som fallback via best_source).
+    """
+    periods = fy_periods(fy_start, period)
+
+    journal = con.execute(
+        """SELECT account_code, period, SUM(amount) AS amount
+           FROM fact_journal_sie
+           WHERE company_id = %s
+             AND period BETWEEN %s AND %s
+             AND LEFT(account_code, 1) IN ('3','4','5','6','7','8')
+           GROUP BY account_code, period""",
+        [company_id, fy_start, period],
+    ).fetchall()
+
+    name_rows = con.execute(
+        """SELECT account_code, MAX(account_name) AS account_name
+           FROM fact_journal_sie
+           WHERE company_id = %s AND period BETWEEN %s AND %s
+           GROUP BY account_code""",
+        [company_id, fy_start, period],
+    ).fetchall()
+    names = {code: nm for code, nm in name_rows}
+
+    # Idempotens: rensa hela FY:t innan INSERT.
+    con.execute(
+        """DELETE FROM fact_balances
+           WHERE company_id = %s AND source_kind = %s
+             AND period BETWEEN %s AND %s""",
+        [company_id, SOURCE_KIND_SIE_VER, fy_start, fy_end],
+    )
+
+    ytd = cumulate_ytd(journal, periods)
+    if not ytd:
+        return 0
+
+    idx_per_period: dict[str, int] = {}
+    insert_rows: list[tuple] = []
+    for account_code, p, amount in ytd:
+        idx_per_period[p] = idx_per_period.get(p, 0) + 1
+        insert_rows.append((
+            company_id, p, PERIOD_TYPE, account_code, names.get(account_code),
+            amount, "SEK", "IS", SOURCE_KIND_SIE_VER, rel_src,
+            idx_per_period[p], now,
+        ))
+    con.executemany(
+        """INSERT INTO fact_balances
+           (company_id, period, period_type, account_code, account_name,
+            amount, currency, statement_type, source_kind, source_file,
+            row_index, loaded_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        insert_rows,
+    )
+    return len(insert_rows)
+
+
 def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
     """Räkenskapsårets (start_period, end_period) som 'YYYYMM'.
 
@@ -312,22 +386,22 @@ def derive_period(parsed: dict) -> str | None:
     return None
 
 
-def build_orgnr_lookup(con: db.Conn) -> dict[str, tuple[int, str]]:
-    """orgnr_normalized → (company_id, name) för alla bolag med orgnr.
+def build_orgnr_lookup(con: db.Conn) -> dict[str, tuple[int, str, str]]:
+    """orgnr_normalized → (company_id, name, country) för alla bolag med orgnr.
 
     SIE är ett svenskt format så valutan är alltid SEK; vi tar ingen valuta
     från dim_company här (vissa CENTR/CA-bolag har svenskt orgnr men annan
-    klassad valuta).
+    klassad valuta). country behövs för att gata SIE_VER-syntesen till Sverige.
     """
-    lookup: dict[str, tuple[int, str]] = {}
+    lookup: dict[str, tuple[int, str, str]] = {}
     for row in con.execute(
-        "SELECT company_id, name, orgnr FROM dim_company "
+        "SELECT company_id, name, country, orgnr FROM dim_company "
         "WHERE orgnr IS NOT NULL AND orgnr <> ''"
     ).fetchall():
-        cid, name, orgnr = row
+        cid, name, country, orgnr = row
         key = normalize_orgnr(orgnr)
         if key:
-            lookup[key] = (cid, name)
+            lookup[key] = (cid, name, country)
     return lookup
 
 
@@ -366,7 +440,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     if not hit:
         log("ERROR", path.name, f"OrgNr {orgnr_raw} saknas i dim_company")
         return "error"
-    company_id, _name = hit
+    company_id, _name, country = hit
     currency = "SEK"
 
     period_derived = derive_period(parsed)  # max #PSALDO eller None
@@ -597,6 +671,33 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                     journal_rows[i:i + JOURNAL_BATCH],
                 )
 
+        # SIE_VER: syntetisera YTD-saldon från verifikaten för SE-bolag som
+        # saknar #PSALDO. #RES-fältet är en snapshot vid genereringstiden och
+        # ger skev månadsfördelning; verifikat-kumen ger exakt fördelning.
+        sie_ver_count = 0
+        if include_journal and country == "Sweden" and not parsed["psaldo"]:
+            if fy_start.endswith("01"):
+                sie_ver_count = synthesize_sie_ver(
+                    con, company_id, fy_start, fy_end, period, rel_src, now)
+                if sie_ver_count == 0:
+                    log("INFO", company_id,
+                        "SIE_VER: inga verifikat i fact_journal_sie — "
+                        "behåller #RES-baserad SIE som fallback.")
+            else:
+                log("WARN", company_id,
+                    f"SIE_VER: brutet räkenskapsår (FY-start {fy_start}) — "
+                    "hoppar över syntes (YTD-kum antar kalenderår).")
+        elif country == "Sweden" and parsed["psaldo"]:
+            # Bolaget levererar #PSALDO — rensa ev. stale SIE_VER från en
+            # tidigare laddning då filen saknade #PSALDO. best_source föredrar
+            # SIE_PSALDO så det är ofarligt numeriskt, men håll datat rent.
+            con.execute(
+                """DELETE FROM fact_balances
+                   WHERE company_id = %s AND source_kind = %s
+                     AND period BETWEEN %s AND %s""",
+                [company_id, SOURCE_KIND_SIE_VER, fy_start, fy_end],
+            )
+
         con.execute(
             """INSERT INTO load_history
                (company_id, period, source_kind, source_file, rows_loaded,
@@ -608,6 +709,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
              f"sie_rows={len(sie_rows)} psaldo_rows={len(psaldo_rows)} "
              f"psaldo_periods={len(psaldo_periods)} "
              f"journal_rows={len(journal_rows)} journal_periods={len(journal_periods)} "
+             f"sie_ver_rows={sie_ver_count} "
              f"sum_ub={total_ub:.2f} sum_res={total_res:.2f}",
              now],
         )
@@ -619,11 +721,12 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
 
     psaldo_msg = f" PSALDO={len(psaldo_rows)}({len(psaldo_periods)} mån)" if psaldo_rows else ""
     journal_msg = f" JOURNAL={len(journal_rows)}({len(journal_periods)} mån)" if journal_rows else ""
+    sie_ver_msg = f" SIE_VER={sie_ver_count}" if sie_ver_count else ""
     cutoff_msg = (f"  CUTOFF<= {period_override}: skippade PSALDO={psaldo_skipped} "
                   f"vouchers={journal_skipped}"
                   if period_override and (psaldo_skipped or journal_skipped) else "")
     log("OK", company_id,
-        f"{path.name}  period={period}  rader={len(sie_rows)}{psaldo_msg}{journal_msg}  "
+        f"{path.name}  period={period}  rader={len(sie_rows)}{psaldo_msg}{journal_msg}{sie_ver_msg}  "
         f"sum={total:.2f}{cutoff_msg}")
     return "ok"
 
