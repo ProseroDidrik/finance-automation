@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { X, CheckCircle2, AlertTriangle, CircleSlash, Info } from "lucide-react";
+import { X, CheckCircle2, AlertTriangle, CircleSlash } from "lucide-react";
 import {
   CoverageAccountRow,
   CoverageAccountsReport,
@@ -17,21 +17,17 @@ export interface CoverageAccountsSelection {
 type SortKey = "account_code" | "account_name" | "facit_amt" | "fact_amt" | "diff" | "status_acc";
 type SortDir = "asc" | "desc";
 
-// no_baseline ligger mellan only_fact och ok — det är inte ett fel utan en
-// informativ markör för SIE/SAFT BS-konton som inte kan jämföras utan IB.
 const STATUS_SORT_ORDER: Record<CoverageAccountRow["status_acc"], number> = {
   amount_diff: 0,
   only_facit:  1,
   only_fact:   2,
-  no_baseline: 3,
-  ok:          4,
+  ok:          3,
 };
 
 const STATUS_LABEL: Record<CoverageAccountRow["status_acc"], string> = {
   amount_diff: "Belopp avviker",
   only_facit:  "Saknas i fact",
   only_fact:   "Extra i fact",
-  no_baseline: "BS utan IB",
   ok:          "OK",
 };
 
@@ -39,16 +35,14 @@ const STATUS_CLS: Record<CoverageAccountRow["status_acc"], string> = {
   amount_diff: "bg-warn/15 text-warn",
   only_facit:  "bg-negative/15 text-negative",
   only_fact:   "bg-warn/15 text-warn",
-  no_baseline: "bg-fg-muted/10 text-fg-muted",
   ok:          "text-positive",
 };
 
 // Tooltip för status_acc — förklaras vid hover i drawer-tabellen.
 const STATUS_TITLE: Record<CoverageAccountRow["status_acc"], string> = {
   amount_diff: "Båda källor har raden men beloppen skiljer sig",
-  only_facit:  "Mercur-facit har raden men fact_balances saknar den",
-  only_fact:   "fact_balances har raden men Mercur saknar den",
-  no_baseline: "BS-saldo kan inte jämföras utan IB — visas som information",
+  only_facit:  "Mercur-facit har raden men fact saknar den",
+  only_fact:   "fact har raden men Mercur saknar den",
   ok:          "Belopp matchar inom tröskel",
 };
 
@@ -101,12 +95,11 @@ export function CoverageAccountsDrawer({ selection, onClose }: Props) {
     };
   }, [selection, onClose]);
 
-  // Filtrering: "Visa bara avvikelser" döljer både ok OCH no_baseline (båda
-  // är non-mismatch — no_baseline är informativ men inte ett fel).
+  // Filtrering: "Visa bara avvikelser" döljer ok-rader.
   const sortedRows = useMemo(() => {
     if (!data) return [] as CoverageAccountRow[];
     const rows = hideOk
-      ? data.rows.filter((r) => r.status_acc !== "ok" && r.status_acc !== "no_baseline")
+      ? data.rows.filter((r) => r.status_acc !== "ok")
       : data.rows;
     return [...rows].sort((a, b) => {
       let va: string | number, vb: string | number;
@@ -199,14 +192,6 @@ export function CoverageAccountsDrawer({ selection, onClose }: Props) {
                     <AlertTriangle size={12} aria-hidden /> {data.summary.n_only_fact} extra i fact
                   </span>
                 )}
-                {data.summary.n_no_baseline > 0 && (
-                  <span
-                    className="flex items-center gap-1.5 text-fg-muted"
-                    title="BS-konton i SIE/SAFT — kan inte jämföras utan IB, visas informativt"
-                  >
-                    <Info size={12} aria-hidden /> {data.summary.n_no_baseline} BS utan IB
-                  </span>
-                )}
                 {data.summary.n_ok > 0 && (
                   <span className="flex items-center gap-1.5 text-positive">
                     <CheckCircle2 size={12} aria-hidden /> {data.summary.n_ok} ok
@@ -233,7 +218,7 @@ export function CoverageAccountsDrawer({ selection, onClose }: Props) {
               {sortedRows.length === 0 ? (
                 <div className="text-center text-fg-muted text-sm py-12">
                   {hideOk
-                    ? `Inga avvikelser — ${data.summary.n_ok} konton stämmer ✓${data.summary.n_no_baseline > 0 ? ` (+ ${data.summary.n_no_baseline} BS utan IB)` : ""}`
+                    ? `Inga avvikelser — ${data.summary.n_ok} konton stämmer ✓`
                     : "Inga rader"}
                 </div>
               ) : (

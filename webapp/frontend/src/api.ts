@@ -147,7 +147,7 @@ export interface CoverageAccountRow {
   facit_amt: number | null;
   fact_amt: number | null;
   diff: number | null;
-  status_acc: "ok" | "amount_diff" | "only_facit" | "only_fact" | "no_baseline";
+  status_acc: "ok" | "amount_diff" | "only_facit" | "only_fact";
 }
 
 export interface CoverageAccountsSummary {
@@ -155,7 +155,6 @@ export interface CoverageAccountsSummary {
   n_amount_diff: number;
   n_only_facit: number;
   n_only_fact: number;
-  n_no_baseline: number;
   facit_sum: number;
   fact_sum: number;
 }

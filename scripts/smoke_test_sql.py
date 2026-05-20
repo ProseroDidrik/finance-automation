@@ -72,14 +72,10 @@ def _run(name: str, sql: str, params: tuple, limit: int = 5) -> bool:
 
 
 def test_compare_coverage() -> bool:
-    """compare_coverage.sql wrappas som main.py:compare_coverage()."""
+    """compare_coverage.sql körs som main.py:compare_coverage() — periodliteraler substitueras."""
     body = (SQL_DIR / "compare_coverage.sql").read_text(encoding="utf-8")
-    sql = (
-        f"SELECT * FROM (\n{body}\n) cov "
-        "WHERE period >= %s "
-        "ORDER BY period, country, company_id LIMIT 5"
-    )
-    return _run("compare_coverage.sql (wrapped)", sql, ("202601",))
+    body = body.replace("@period_lo@", "202601").replace("@period_hi@", "202604")
+    return _run("compare_coverage.sql", body, ())
 
 
 def test_coverage_accounts() -> bool:
