@@ -15,6 +15,8 @@ Körning:
   py load_history_sie_saft.py --years 2022 2023  # specifika år
   py load_history_sie_saft.py --dry-run
   py load_history_sie_saft.py --include-journal
+  py load_history_sie_saft.py --override        # global override, skriver över allt
+  py load_history_sie_saft.py --override 32 75  # bara dessa bolag
 """
 from __future__ import annotations
 
@@ -108,7 +110,8 @@ def discover_year(year_dir: Path) -> dict[str, tuple[Path, str]]:
 
 def load_year(con: db.Conn, year: int, year_dir: Path,
               base_path: Path, orgnr_lookup_sie: dict, orgnr_lookup_saft: dict,
-              *, dry_run: bool, include_journal: bool) -> dict[str, int]:
+              *, dry_run: bool, include_journal: bool,
+              override: list[int] | None = None) -> dict[str, int]:
     """Ladda ett årsdir. Returnerar {status: count}."""
     period_fallback = f"{year}12"
     files = discover_year(year_dir)
@@ -144,6 +147,7 @@ def load_year(con: db.Conn, year: int, year_dir: Path,
             status = load_sie.load_file(
                 con, path, base_path, period_override, orgnr_lookup_sie,
                 dry_run=dry_run, include_journal=include_journal,
+                override=override,
             )
         else:
             # SAF-T
@@ -158,6 +162,7 @@ def load_year(con: db.Conn, year: int, year_dir: Path,
                 orgnr_lookup_saft,
                 dry_run=dry_run,
                 include_journal=include_journal,
+                override=override,
             )
 
         counts[status] = counts.get(status, 0) + 1
@@ -174,11 +179,17 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--include-journal", action="store_true",
                         help="Ladda även verifikat till fact_journal_sie/saft (tungt)")
+    parser.add_argument("--override", nargs="*", type=int, default=None, metavar="ID",
+                        help="Skriv över befintlig SIE/SAFT-data. --override = global "
+                             "(alla bolag); --override 32 75 = bara dessa bolag.")
     args = parser.parse_args()
 
     begin_run("load_history_sie_saft.py", "HIST")
+    ovr_desc = ("global" if args.override == [] else
+                f"bolag={args.override}" if args.override else "off")
     log("START", "load_history_sie_saft.py",
-        f"år={args.years}  dry_run={args.dry_run}  journal={args.include_journal}")
+        f"år={args.years}  dry_run={args.dry_run}  "
+        f"journal={args.include_journal}  override={ovr_desc}")
 
     cfg = load_config()
     base_path = Path(cfg["base_path"])
@@ -211,6 +222,7 @@ def main() -> None:
                 con, year, year_dir, base_path,
                 orgnr_lookup_sie, orgnr_lookup_saft,
                 dry_run=args.dry_run, include_journal=args.include_journal,
+                override=args.override,
             )
             log("INFO", str(year),
                 f"OK={counts['ok']}  WARN={counts['warn']}  "
