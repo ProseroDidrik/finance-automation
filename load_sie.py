@@ -63,7 +63,7 @@ RE_VER    = re.compile(
 )
 RE_TRANS  = re.compile(
     r'^#TRANS\s+(\S+)\s+\{[^}]*\}\s+(-?\d+(?:[.,]\d+)?)'  # konto, dim, belopp
-    r'(?:\s+"([^"]*)")?'                                    # transdate (str)
+    r'(?:\s+(\d{8}))?'                                    # transdat (ociterat YYYYMMDD)
     r'(?:\s+"([^"]*)")?'                                    # text
     r'(?:\s+(-?\d+(?:[.,]\d+)?))?',                         # quantity
     re.IGNORECASE,
