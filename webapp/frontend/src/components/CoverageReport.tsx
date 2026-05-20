@@ -66,8 +66,21 @@ const STATUS_SORT_ORDER: Record<CoverageRow["status"], number> = {
   missing: 0, mismatch: 1, extra: 2, missing_zero: 3, ok: 4,
 };
 
-const MONTHS_2026 = ["202601","202602","202603","202604","202605","202606",
-                     "202607","202608","202609","202610","202611","202612"];
+// Första året med inläst data i warehouse (SIE/SAF-T-historik + Mercur-backup).
+const COVERAGE_START_YEAR = 2022;
+
+function monthsForYear(year: number): string[] {
+  return Array.from({ length: 12 }, (_, i) => `${year}${String(i + 1).padStart(2, "0")}`);
+}
+
+function availableYears(): number[] {
+  const current = new Date().getFullYear();
+  const years: number[] = [];
+  for (let y = COVERAGE_START_YEAR; y <= Math.max(current, COVERAGE_START_YEAR); y++) {
+    years.push(y);
+  }
+  return years;
+}
 
 const COUNTRY_ORDER = ["Sweden", "Norway", "Finland", "Denmark", "Germany", "CENTR", "CA"];
 
@@ -76,7 +89,7 @@ const COUNTRY_ORDER = ["Sweden", "Norway", "Finland", "Denmark", "Germany", "CEN
 // - IMP_ADJ: justeringslager ovanpå IMP, inte ETL-täckning per se
 const HIDDEN_SOURCE_KINDS = new Set(["MAN", "IMP_ADJ"]);
 
-// "Strukturellt brus" — mismatches som är kända, dokumenterade och inte ETL-buggar.
+// "Strukturellt brus" — kända, dokumenterade avvikelser som inte är ETL-buggar.
 // Att visa dem som rött/gult döljer riktiga ETL-problem visuellt.
 //
 // SE-SIE: 35/49 svenska SIE-bolag saknar #PSALDO-rader → load_sie.py taggar #RES med
@@ -85,8 +98,12 @@ const HIDDEN_SOURCE_KINDS = new Set(["MAN", "IMP_ADJ"]);
 // NO-SAFT: backup_from_mercur lagrar monthly med Mercur-konvention, fact_balances
 // lagrar YTD med SIE-konvention → kräver dubbel normalisering vid jämförelse.
 // account_diff-CTE gör detta men kontoplans-grovhet ger fortfarande mismatches.
+//
+// 'extra' (fact har data, backup saknar) för SE-SIE/NO-SAFT är samma fenomen:
+// Mercur-backupen exporterar inte SIE/SAFT-källan för historiska år (2022-2025),
+// så all vår SIE/SAFT-historik blir 'extra'. Inte saknad data — bara utanför facit.
 function isStructuralNoise(row: CoverageRow): boolean {
-  if (row.status !== "mismatch") return false;
+  if (row.status !== "mismatch" && row.status !== "extra") return false;
   if (row.country === "Sweden" && row.source_kind === "SIE") return true;
   if (row.country === "Norway" && row.source_kind === "SAFT") return true;
   return false;
@@ -129,6 +146,9 @@ export function CoverageReport() {
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [accountsSelection, setAccountsSelection] = useState<CoverageAccountsSelection | null>(null);
   const [hideStructuralNoise, setHideStructuralNoise] = useState(true);
+  const [selectedYear, setSelectedYear] = useState(() => new Date().getFullYear());
+
+  const months = useMemo(() => monthsForYear(selectedYear), [selectedYear]);
 
   // Stabil onClose-referens så drawerns Escape-listener inte re-registreras
   // onödigt mycket när parent rendrar om.
@@ -136,11 +156,14 @@ export function CoverageReport() {
 
   useEffect(() => {
     setLoading(true);
-    fetchCoverage({ periodFrom: "202601" })
+    // Rensa drill/drawer — de pekar på en period i tidigare valt år.
+    setDrill(null);
+    setAccountsSelection(null);
+    fetchCoverage({ periodFrom: `${selectedYear}01`, periodTo: `${selectedYear}12` })
       .then(setRows)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [selectedYear]);
 
   // Filtrera bort ointressanta lager (MAN/IMP_ADJ) — de ska inte påverka
   // matrisen, kolumnsummorna eller den övergripande sammanfattningen.
@@ -275,12 +298,26 @@ export function CoverageReport() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Datatäckning 2026</h1>
-        <p className="text-sm text-fg-muted mt-0.5">
-          Mercur-facit ({grand.total} förväntade kombinationer) jämfört mot fact_balances.
-          Klicka en cell för att se de bolag som matchar/saknas.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold">Datatäckning {selectedYear}</h1>
+          <p className="text-sm text-fg-muted mt-0.5">
+            Mercur-facit ({grand.total} förväntade kombinationer) jämfört mot fact_balances.
+            Klicka en cell för att se de bolag som matchar/saknas.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-sm shrink-0">
+          <span className="text-fg-muted">År</span>
+          <select
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(Number(e.target.value))}
+            className="bg-surface border border-border rounded-md px-2 py-1 text-fg cursor-pointer"
+          >
+            {availableYears().map((y) => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {/* Total-sammanfattning */}
@@ -325,7 +362,7 @@ export function CoverageReport() {
             <tr className="border-b border-border bg-surface">
               <th className="px-3 py-2 text-left font-medium text-fg-muted">Land</th>
               <th className="px-3 py-2 text-left font-medium text-fg-muted">Källa</th>
-              {MONTHS_2026.map((p) => (
+              {months.map((p) => (
                 <th key={p} className="px-2 py-2 text-center font-medium text-fg-muted whitespace-nowrap">
                   {p.slice(4)}
                 </th>
@@ -341,7 +378,7 @@ export function CoverageReport() {
                 <tr key={`${country}|${source_kind}`} className="border-b border-border/50">
                   <td className="px-3 py-1.5 whitespace-nowrap text-fg">{country}</td>
                   <td className="px-3 py-1.5 font-mono text-fg-muted">{source_kind}</td>
-                  {MONTHS_2026.map((p) => {
+                  {months.map((p) => {
                     const agg = skMap.get(p) ?? emptyAgg();
                     rowOk += agg.ok;
                     rowMiss += agg.missing;
@@ -395,7 +432,7 @@ export function CoverageReport() {
           <tfoot>
             <tr className="border-t border-border bg-surface">
               <td colSpan={2} className="px-3 py-2 text-fg-muted font-medium">Σ alla länder</td>
-              {MONTHS_2026.map((p) => {
+              {months.map((p) => {
                 const agg = colTotals.get(p) ?? emptyAgg();
                 const okEff = agg.ok + agg.missing_zero;
                 return (
