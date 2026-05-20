@@ -42,6 +42,7 @@ injekterad från Key Vault `kv-finauto-6427/database-url`).
 | `INL` | `monthly` | DK / FI / DE | `*_INL.xlsx` (process_*-output) | `load_inl.py` |
 | `SIE` | `ytd` | SE | `*.SE` (SIE-export) | `load_sie.py` |
 | `SIE_PSALDO` | `ytd` | SE | (samma fil, `#PSALDO`-rader) | `load_sie.py` |
+| `SIE_VER` | `ytd` | SE | (samma fil, syntetiserad ur `#VER`/`#TRANS`) | `load_sie.py` |
 | `SAFT` | `ytd` | NO | `*_SAF-T_*.xml` | `load_saft.py` |
 | `MAN` | `monthly` | alla | Mercur-export / backup-txt | `load_history_excel.py` |
 | `IMP` | `monthly` | FI/DK/DE/NO | Mercur-export / backup-txt | `load_history_excel.py` |
@@ -124,7 +125,7 @@ Den centrala read-tabellen. En rad per (bolag, period, konto, källa).
 | `amount` | DOUBLE | Belopp i bolagets valuta |
 | `currency` | TEXT | `SEK`/`NOK`/`DKK`/`EUR` |
 | `statement_type` | TEXT | `IS` / `BS` / NULL |
-| `source_kind` | TEXT | `IMP` / `SIE` / `SIE_PSALDO` / `SAFT` / `MAN` / `IMP_ADJ` / `IB` |
+| `source_kind` | TEXT | `IMP` / `SIE` / `SIE_PSALDO` / `SIE_VER` / `SAFT` / `MAN` / `IMP_ADJ` / `IB` |
 | `source_file` | TEXT | Relativ till `base_path` (Dropbox-roten) |
 | `row_index` | INT | Ordning i källfilen |
 | `scenario` | TEXT | `A` (Utfall) / `B` (Budget). Default `A`. |

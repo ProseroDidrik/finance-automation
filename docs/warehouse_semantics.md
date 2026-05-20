@@ -74,15 +74,12 @@ summera aldrig över alla källor.
 
 | Land | Prioritet (utfall, scenario='A') |
 |---|---|
-| Sweden | `SIE` → `SIE_PSALDO` → `IMP` → `IMP_ADJ` |
+| Sweden | `SIE_PSALDO` → `SIE_VER` → `SIE` → `IMP` → `IMP_ADJ` |
 | Norway | `SAFT` → `IMP` → `IMP_ADJ` |
 | Finland, Denmark, Germany, CENTR | `IMP` → `IMP_ADJ` |
 | CA | `SIE` → `IMP` → `IMP_ADJ` |
 
-`SIE_PSALDO` = `#PSALDO`-raderna i SIE-filen (alternativ periodsaldo-
-representation). När både `SIE` och `SIE_PSALDO` finns för samma bolag, välj
-`SIE`. När bara `SIE_PSALDO` finns (13 av 46 SE-bolag idag), använd den som
-fallback — den innehåller samma slags YTD-saldon.
+`SIE_PSALDO` = `#PSALDO`-raderna i SIE-filen (källrapporterat per-månads YTD-saldo) — bäst när det finns. `SIE_VER` = YTD-saldon syntetiserade av `load_sie.py` från verifikaten (`#VER`/`#TRANS`) för de ~35 SE-bolag som saknar `#PSALDO`; ger exakt månadsfördelning. `SIE` (#RES-baserad) är därmed effektivt deprekerad — kvar bara som sista fallback om verifikat-syntesen inte kunnat köras. När både finns: `SIE_PSALDO` > `SIE_VER` > `SIE`.
 
 Färdigt mönster: `report_pnl.sql:41-81` (`best_source` CTE).
 
@@ -256,6 +253,12 @@ korrekt IB (ingående balans) som inte alltid finns. Endast IS-konton kan
 värde-jämföras tillförlitligt.
 
 ### Förväntat brus i SIE-jämförelse: `#PSALDO`-frånvaron
+
+> **Uppdaterat 2026-05-20:** `load_sie.py` syntetiserar numera `SIE_VER` (YTD
+> kumulerat från verifikaten) för bolag utan `#PSALDO`. `report_pnl.sql` och
+> `report_pivot.sql` väljer `SIE_VER` före `SIE`, så #RES-timing-bruset nedan
+> gäller inte längre P&L-rapporterna. `compare_coverage.sql` påverkas inte —
+> den läste redan `fact_journal_sie` direkt.
 
 35 av 49 svenska SIE-bolag (~71 % per 2026-05) saknar `#PSALDO`-rader i sin
 SIE-export. Konsekvensen är att `load_sie.py` använder `#RES`-fältet (årets
