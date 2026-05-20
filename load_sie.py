@@ -232,6 +232,54 @@ def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
     return rows, periods, skipped
 
 
+def fy_periods(fy_start: str, period: str) -> list[str]:
+    """Lista kalendermånader 'YYYYMM' från fy_start t.o.m. period (inklusive).
+
+    Antar kalenderårs-progression. Anroparen ska redan ha avvisat brutet
+    räkenskapsår (fy_start som inte slutar på '01').
+    """
+    out: list[str] = []
+    y, m = int(fy_start[:4]), int(fy_start[4:6])
+    while True:
+        p = f"{y:04d}{m:02d}"
+        out.append(p)
+        if p >= period:
+            break
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    return out
+
+
+def cumulate_ytd(monthly_rows, periods: list[str]) -> list[tuple[str, str, float]]:
+    """Kumulera månadsrörelse → YTD-saldo per konto.
+
+    monthly_rows: iterable av (account_code, period, amount) — månadsrörelse.
+    periods:      ordnad lista FY-perioder 'YYYYMM' (från fy_periods()).
+
+    Returnerar list[(account_code, period, ytd_amount)]. Varje konto får en rad
+    för varje period FRÅN sin första aktivitetsmånad och framåt (carry-forward),
+    så att report_pnl.sql:s YTD-diff fungerar även för en månad utan rörelse.
+    Tecknet bevaras (SIE-konvention — samma som fact_journal_sie).
+    """
+    by_acct: dict[str, dict[str, float]] = {}
+    for account_code, p, amount in monthly_rows:
+        acct = by_acct.setdefault(account_code, {})
+        acct[p] = acct.get(p, 0.0) + amount
+
+    period_index = {p: i for i, p in enumerate(periods)}
+    out: list[tuple[str, str, float]] = []
+    for account_code, mvm in by_acct.items():
+        active = [period_index[p] for p in mvm if p in period_index]
+        if not active:
+            continue
+        running = 0.0
+        for i in range(min(active), len(periods)):
+            running += mvm.get(periods[i], 0.0)
+            out.append((account_code, periods[i], running))
+    return out
+
+
 def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
     """Räkenskapsårets (start_period, end_period) som 'YYYYMM'.
 
