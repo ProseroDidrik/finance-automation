@@ -674,6 +674,10 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # SIE_VER: syntetisera YTD-saldon från verifikaten för SE-bolag som
         # saknar #PSALDO. #RES-fältet är en snapshot vid genereringstiden och
         # ger skev månadsfördelning; verifikat-kumen ger exakt fördelning.
+        # Vid --no-include-journal körs ingen syntes; ev. befintliga SIE_VER-
+        # rader lämnas avsiktligt orörda — de speglar fortfarande den oförändrade
+        # fact_journal_sie och är alltid minst lika korrekta som #RES-baserad SIE
+        # (SIE_VER är en materialiserad vy av journalen).
         sie_ver_count = 0
         if include_journal and country == "Sweden" and not parsed["psaldo"]:
             if fy_start.endswith("01"):
