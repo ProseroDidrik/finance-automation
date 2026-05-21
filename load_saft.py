@@ -258,6 +258,12 @@ def _yyyymm_from_iso(date_str: str | None) -> str | None:
         return None
 
 
+def _journal_period(j: dict, fallback: str) -> str:
+    """YYYYMM för en journal-rad — från transaction_date, annars fallback."""
+    d = j["transaction_date"]
+    return f"{d.year:04d}{d.month:02d}" if d else fallback
+
+
 def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
     """Räkenskapsårets (start_period, end_period) som 'YYYYMM'.
 
@@ -424,10 +430,9 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     con.execute("BEGIN")
     try:
         # Override: rensa SAFT (period > filens period inom FY — egna period
-        # rensas av period-DELETE nedan) och journal (HELA FY — normal journal-
-        # DELETE matchar bara samma source_file, så vid override måste vi rensa
-        # alla källfilers journal för FY:t. Den nya filens journal-perioder
-        # återinfogas direkt efter).
+        # rensas av period-DELETE nedan) och journal HELA FY:t. Den period-
+        # nyckade journal-DELETE nedan täcker bara perioderna i den nya filen;
+        # vid override vill vi även rensa ev. stale journal i senare månader.
         if has_override and existing > 0:
             con.execute(
                 """DELETE FROM fact_balances
@@ -456,35 +461,45 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         )
 
         # Journal: strömmande iterparse + batchad insert (5000 rader/batch).
-        # Idempotens: en SAF-T-fil = ett komplett journal-set; rensa per
-        # (company_id, source_file) före insert.
+        # Idempotens: rensa per (company_id, period) — INTE per source_file.
+        # En SAF-T-fil är YTD; en senare månadsfil måste ersätta tidigare
+        # filers överlappande månader. Källfilsnyckling missade det och
+        # dubbelräknade verifikat (load_sie undviker det via period-nyckling).
+        # Period-setet måste vara känt före DELETE → journalen läses i två
+        # pass (1: perioder, 2: insert).
         # Cutoff: om --period är satt skippas journal-rader med
-        # tx_date.period > period_override (FY-filer kan innehålla framtida
-        # tomma månader; vi vill bara ladda upp t.o.m. perioden).
+        # jp > period_override (FY-filer kan innehålla framtida tomma månader).
         journal_rows_loaded = 0
         journal_skipped = 0
         journal_periods: set[str] = set()
         if include_journal:
-            con.execute(
-                """DELETE FROM fact_journal_saft
-                   WHERE company_id = %s AND source_file = %s""",
-                [company_id, rel_src],
-            )
+            # Pass 1: vilka perioder täcker filens journal?
+            for j in iter_saft_journal(path, parsed["ns"]):
+                jp = _journal_period(j, period)
+                if period_override and jp > period_override:
+                    continue
+                journal_periods.add(jp)
+            if journal_periods:
+                placeholders = ",".join(["%s"] * len(journal_periods))
+                con.execute(
+                    f"""DELETE FROM fact_journal_saft
+                        WHERE company_id = %s AND period IN ({placeholders})""",
+                    [company_id, *sorted(journal_periods)],
+                )
+            # Pass 2: strömma in raderna batchvis.
             batch: list[tuple] = []
             for j in iter_saft_journal(path, parsed["ns"]):
-                tx_date = j["transaction_date"]
-                jp = f"{tx_date.year:04d}{tx_date.month:02d}" if tx_date else period
+                jp = _journal_period(j, period)
                 if period_override and jp > period_override:
                     journal_skipped += 1
                     continue
-                journal_periods.add(jp)
                 debit = j["debit"] or 0.0
                 credit = j["credit"] or 0.0
                 amt = debit - credit
                 batch.append((
                     company_id, jp,
                     j["journal_id"], j["journal_desc"],
-                    j["transaction_id"], tx_date, j["transaction_desc"],
+                    j["transaction_id"], j["transaction_date"], j["transaction_desc"],
                     j["line_no"], j["record_id"], j["account_code"],
                     debit, credit, amt, j["line_desc"],
                     currency, rel_src, now,
