@@ -42,7 +42,11 @@ SOURCE_KIND_SIE_VER = "SIE_VER"
 PERIOD_TYPE = "ytd"
 ENCODINGS = ("utf-8-sig", "cp437", "latin-1")
 
-RE_ORGNR  = re.compile(r"^#ORGNR\s+(\S+)", re.IGNORECASE)
+# #ORGNR: orgnr är antingen en citerad sträng (norska Global-exporter skriver
+# "NO 971199954 MVA" / "989 285 246 MVA" — prefix/suffix och mellanslag) eller
+# ett ociterat token (svensk standard, t.ex. 556071-2340). Grupp 1 = citerat
+# innehåll, grupp 2 = ociterat token; normalize_orgnr strippar allt utom siffror.
+RE_ORGNR  = re.compile(r'^#ORGNR\s+(?:"([^"\r\n]*)"|(\S+))', re.IGNORECASE)
 RE_FNAMN  = re.compile(r'^#FNAMN\s+"([^"]*)"', re.IGNORECASE)
 RE_PROGRAM = re.compile(r'^#PROGRAM\s+"([^"]*)"', re.IGNORECASE)
 RE_KONTO  = re.compile(r'^#KONTO\s+(\S+)\s+"([^"]*)"', re.IGNORECASE)
@@ -151,7 +155,7 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
 
         # Top-level (inte i block)
         if m := RE_ORGNR.match(line):
-            out["orgnr"] = m.group(1).strip('"')
+            out["orgnr"] = m.group(1) if m.group(1) is not None else m.group(2)
         elif m := RE_FNAMN.match(line):
             out["fnamn"] = m.group(1)
         elif m := RE_PROGRAM.match(line):

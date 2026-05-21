@@ -29,7 +29,7 @@ DOTTERBOLAG_PATH = _REPO_ROOT / "_params" / "Dotterbolagslista.xlsx"
 IMP_KINDS_BY_COUNTRY = {
     "Sweden":  ("SIE", "SIE_PSALDO", "SIE_VER"),
     "CA":      ("SIE", "SIE_PSALDO", "SIE_VER"),
-    "Norway":  ("SAFT",),
+    "Norway":  ("SAFT", "SIE", "SIE_PSALDO"),  # normalt SAF-T; enstaka bolag SIE
     "Finland": ("IMP",),
     "Denmark": ("IMP",),
     "Germany": ("IMP",),

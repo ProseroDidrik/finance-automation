@@ -35,7 +35,11 @@ from shared import begin_run, load_config, log
 HISTORY_YEARS = [2022, 2023, 2024, 2025]
 NS_SAFT = "urn:StandardAuditFile-Taxation-Financial:NO"
 
-RE_ORGNR_SIE = re.compile(r"^#ORGNR\s+(\S+)", re.IGNORECASE | re.MULTILINE)
+# #ORGNR: citerad sträng (norska Global-exporter, "NO 971199954 MVA" — mellanslag
+# och prefix/suffix) eller ociterat token (svensk standard). Grupp 1 = citerat
+# innehåll, grupp 2 = ociterat token. Se RE_ORGNR i load_sie.py.
+RE_ORGNR_SIE = re.compile(r'^#ORGNR\s+(?:"([^"\r\n]*)"|(\S+))',
+                          re.IGNORECASE | re.MULTILINE)
 
 
 def normalize_orgnr(orgnr: str) -> str:
@@ -55,7 +59,8 @@ def _quick_orgnr_sie(path: Path) -> str | None:
                         break
             m = RE_ORGNR_SIE.search(text)
             if m:
-                return normalize_orgnr(m.group(1).strip('"'))
+                raw = m.group(1) if m.group(1) is not None else m.group(2)
+                return normalize_orgnr(raw)
         except Exception:
             continue
     return None

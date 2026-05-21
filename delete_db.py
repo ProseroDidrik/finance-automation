@@ -7,8 +7,8 @@ MAN/IMP_ADJ. Anges källa = MAN rörs bara MAN, etc.
 IMP-mappning per land (filformat-info bevaras i source_kind):
   Sweden, CA          → DELETE source_kind IN ('SIE','SIE_PSALDO') hela FY:t
                         + fact_journal_sie för samma FY
-  Norway              → DELETE source_kind = 'SAFT' hela FY:t
-                        + fact_journal_saft för samma FY
+  Norway              → DELETE source_kind IN ('SAFT','SIE','SIE_PSALDO') hela FY:t
+                        + fact_journal_saft och fact_journal_sie för samma FY
   Finland/Denmark/
   Germany/CENTR       → DELETE source_kind = 'IMP' för perioden
 
@@ -78,9 +78,12 @@ def _delete_targets_for_company(country: str, source_kind: str, period: str
                 ("fact_journal_sie",  [],                    "fy"),
             ]
         if country == "Norway":
+            # Norge levererar normalt SAF-T, men enstaka bolag (t.ex. 176
+            # Buysec FY2022) har levererat SIE — bägge ingår i IMP-lagret.
             return [
-                ("fact_balances",     ["SAFT"], "fy"),
-                ("fact_journal_saft", [],       "fy"),
+                ("fact_balances",     ["SAFT", "SIE", "SIE_PSALDO"], "fy"),
+                ("fact_journal_saft", [],                            "fy"),
+                ("fact_journal_sie",  [],                            "fy"),
             ]
         # Finland, Denmark, Germany, CENTR — Excel-import per månad
         return [("fact_balances", ["IMP"], "eq")]

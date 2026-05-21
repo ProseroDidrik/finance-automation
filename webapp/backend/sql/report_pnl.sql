@@ -55,9 +55,11 @@ best_source AS (
         END
       WHEN 'Norway' THEN
         CASE
-          WHEN MAX(CASE WHEN fb.source_kind = 'SAFT'    THEN 1 ELSE 0 END) = 1 THEN 'SAFT'
-          WHEN MAX(CASE WHEN fb.source_kind = 'IMP'     THEN 1 ELSE 0 END) = 1 THEN 'IMP'
-          WHEN MAX(CASE WHEN fb.source_kind = 'IMP_ADJ' THEN 1 ELSE 0 END) = 1 THEN 'IMP_ADJ'
+          WHEN MAX(CASE WHEN fb.source_kind = 'SAFT'       THEN 1 ELSE 0 END) = 1 THEN 'SAFT'
+          WHEN MAX(CASE WHEN fb.source_kind = 'SIE_PSALDO' THEN 1 ELSE 0 END) = 1 THEN 'SIE_PSALDO'
+          WHEN MAX(CASE WHEN fb.source_kind = 'SIE'        THEN 1 ELSE 0 END) = 1 THEN 'SIE'
+          WHEN MAX(CASE WHEN fb.source_kind = 'IMP'        THEN 1 ELSE 0 END) = 1 THEN 'IMP'
+          WHEN MAX(CASE WHEN fb.source_kind = 'IMP_ADJ'    THEN 1 ELSE 0 END) = 1 THEN 'IMP_ADJ'
           ELSE NULL
         END
       WHEN 'CA' THEN
