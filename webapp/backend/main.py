@@ -24,12 +24,13 @@ from __future__ import annotations
 import math
 import os
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from psycopg_pool import ConnectionPool
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
@@ -53,23 +54,46 @@ SQL_SUP_BY_CATEGORY = REPO / "webapp" / "backend" / "sql" / "suppliers_by_catego
 
 FRONTEND_DIST = REPO / "webapp" / "frontend" / "dist"
 
+# Connection pool — skapas i lifespan, lånas ut av open_db().
+_pool: ConnectionPool | None = None
+
 # ----- Connection lifecycle ---------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Verifiera att Postgres är åtkomlig vid uppstart (snabbare felupptäckt
-    än att vänta på första request). I container körs detta innan health-probe
-    blir grön — App Service stoppar deploy om DATABASE_URL pekar fel."""
-    with db.connect(read_only=True) as con:
-        con.execute("SELECT 1")
-        con.fetchone()
+    """Öppna en connection pool vid uppstart och verifiera att Postgres svarar.
+    Poolen återanvänder anslutningar — ingen TCP+TLS-handshake per request.
+    Verifieringen körs innan health-probe blir grön; App Service stoppar deploy
+    om DATABASE_URL pekar fel."""
+    global _pool
+    _pool = ConnectionPool(
+        conninfo=db.database_url(),
+        min_size=1,
+        max_size=6,
+        kwargs={"autocommit": True},
+        open=True,
+    )
+    with _pool.connection() as raw:
+        raw.execute("SELECT 1")
     yield
+    _pool.close()
 
 
-def open_db() -> db.Conn:
-    """Öppna en ny read-only connection per anrop. Autocommit=True så
-    SELECT-vägen aldrig håller en öppen transaktion mot Azure Postgres."""
-    return db.connect(read_only=True)
+@contextmanager
+def open_db():
+    """Låna en poolad read-only-anslutning, inkapslad som db.Conn.
+
+    Anslutningen återlämnas till poolen (stängs inte). Endpoints använder den
+    oförändrat: ``with open_db() as con: con.fetch_dicts(...)``.
+    """
+    if _pool is None:
+        raise RuntimeError("Connection pool inte initierad (lifespan körde inte)")
+    with _pool.connection() as raw:
+        con = db.Conn(raw)
+        try:
+            yield con
+        finally:
+            con.close_cursor()
 
 
 # ----- App --------------------------------------------------------------------

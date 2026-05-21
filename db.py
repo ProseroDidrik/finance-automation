@@ -130,6 +130,13 @@ class Conn:
             self._cur.close()
         self._conn.close()
 
+    def close_cursor(self) -> None:
+        """Stäng den interna cursorn utan att stänga anslutningen. Används av
+        poolade läsvägar där anslutningen återlämnas till poolen, inte stängs."""
+        if self._cur is not None and not self._cur.closed:
+            self._cur.close()
+        self._cur = None
+
     def __enter__(self) -> "Conn":
         return self
 
@@ -152,6 +159,11 @@ def _database_url() -> str:
             "Lokal Postgres via Docker: docker compose up -d postgres"
         )
     return url
+
+
+def database_url() -> str:
+    """Publik accessor för DATABASE_URL — t.ex. för webappens connection pool."""
+    return _database_url()
 
 
 def connect(read_only: bool = False) -> Conn:
