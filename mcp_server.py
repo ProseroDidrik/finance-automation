@@ -17,6 +17,7 @@ Claude Code startar den utan att shell-env ärvs, så länge användaren
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ import time
 
 import pandas as pd
 import psycopg
+from psycopg_pool import ConnectionPool
 
 # Azure SDK loggar pratigt till stderr vilket korruperar MCP stdio-protokollet.
 # Stäng allt under WARNING för azure.*-trädet.
@@ -114,8 +116,42 @@ def _resolve_database_url() -> str:
     return secret.value
 
 
-def _connect() -> psycopg.Connection:
-    return psycopg.connect(_resolve_database_url(), autocommit=True)
+# Connection pool — återanvänder anslutningar i stället för att göra en ny
+# TCP+TLS+auth-handshake per tool-anrop. configure() ger varje anslutning
+# 30 s statement_timeout.
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
+
+
+def _configure_conn(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute(f"SET statement_timeout = {int(QUERY_TIMEOUT_SEC * 1000)}")
+
+
+def _get_pool() -> ConnectionPool:
+    """Lazy singleton-pool. Skapas vid första anropet (efter att DATABASE_URL
+    resolvats, ev. via Key Vault). Fungerar i både stdio- och http-läget."""
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                _pool = ConnectionPool(
+                    conninfo=_resolve_database_url(),
+                    min_size=1,
+                    max_size=4,
+                    kwargs={"autocommit": True},
+                    configure=_configure_conn,
+                    open=True,
+                )
+    return _pool
+
+
+@atexit.register
+def _close_pool() -> None:
+    """Stäng poolen rent vid process-shutdown — annars klagar Python 3.13+
+    på att pool-trådarna inte kan joinas under interpreter-finalisering."""
+    if _pool is not None:
+        _pool.close()
 
 
 def _log(entry: dict) -> None:
@@ -125,39 +161,42 @@ def _log(entry: dict) -> None:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-@mcp.tool()
-def describe_schema() -> str:
-    """Returnera warehouse-schema (SCHEMA.md), live tabellöversikt med radantal,
-    plus query-semantik (warehouse_semantics.md) som täcker period_type,
-    best_source-prioritet per land, scenario-filter, teckenkonvention och
-    facit-jämförelse. Anropa detta FÖRST när du ska skriva en query — utan
-    semantik-reglerna räknar du fel."""
+# describe_schema cachas — anropas i början av varje konversation och behöver
+# inte vara färskare än så. reltuples är ungefärligt (uppdateras av ANALYZE).
+SCHEMA_CACHE_TTL = 300.0  # sekunder
+_schema_cache: tuple[float, str] | None = None
+_schema_cache_lock = threading.Lock()
+
+
+def _build_schema_snapshot() -> str:
+    """Bygg describe_schema-svaret: SCHEMA.md + approx tabellöversikt + semantik.
+
+    Tabellöversikten använder pg_class.reltuples (ungefärligt, ~momentant) i
+    stället för exakt COUNT(*) per tabell, som annars seq-scannar varje tabell.
+    """
     parts: list[str] = []
     if SCHEMA_MD.exists():
         parts.append(SCHEMA_MD.read_text(encoding="utf-8"))
     else:
         parts.append("(SCHEMA.md saknas)")
 
-    with _connect() as conn, conn.cursor() as cur:
+    with _get_pool().connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-            ORDER BY table_name
+            SELECT c.relname, c.reltuples::bigint
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind = 'r' AND n.nspname = 'public'
+            ORDER BY c.relname
             """
         )
-        tables = [r[0] for r in cur.fetchall()]
-        rows = []
-        for name in tables:
-            cur.execute(f'SELECT COUNT(*) FROM "{name}"')
-            rows.append((name, cur.fetchone()[0]))
+        rows = cur.fetchall()
 
-    parts.append("\n## Live snapshot\n")
-    parts.append("| Tabell | Rader |")
+    parts.append("\n## Live snapshot (≈ rader, uppskattning)\n")
+    parts.append("| Tabell | ≈ Rader |")
     parts.append("|---|---:|")
     for name, count in rows:
-        parts.append(f"| `{name}` | {count:,} |")
+        parts.append(f"| `{name}` | {max(count, 0):,} |")
 
     # Semantik-reglerna (period_type, best_source, etc.) — finns både i
     # repo:t (docs/warehouse_semantics.md) och som lokal skill i Claude Code.
@@ -168,6 +207,27 @@ def describe_schema() -> str:
         parts.append(SEMANTICS_MD.read_text(encoding="utf-8"))
 
     return "\n".join(parts)
+
+
+@mcp.tool()
+def describe_schema() -> str:
+    """Returnera warehouse-schema (SCHEMA.md), live tabellöversikt med approx
+    radantal, plus query-semantik (warehouse_semantics.md) som täcker
+    period_type, best_source-prioritet per land, scenario-filter,
+    teckenkonvention och facit-jämförelse. Anropa detta FÖRST när du ska skriva
+    en query — utan semantik-reglerna räknar du fel.
+
+    Svaret cachas i 5 min — radantalen är ungefärliga (pg_class.reltuples).
+    """
+    global _schema_cache
+    now = time.time()
+    cached = _schema_cache
+    if cached is not None and now - cached[0] < SCHEMA_CACHE_TTL:
+        return cached[1]
+    snapshot = _build_schema_snapshot()
+    with _schema_cache_lock:
+        _schema_cache = (time.time(), snapshot)
+    return snapshot
 
 
 @mcp.tool()
@@ -195,36 +255,30 @@ def query_sql(sql: str, limit: int = DEFAULT_LIMIT) -> str:
         sql_to_run = f"SELECT * FROM ({sql_to_run}) AS _q LIMIT {int(limit)}"
 
     t0 = time.time()
-    conn = _connect()
-    # statement_timeout på session-nivå räcker som primär timeout-mekanism.
+    # statement_timeout sätts per anslutning av poolens _configure_conn.
     # Threading.Timer + conn.cancel() är belt-and-braces (cancel kräver
     # secondary connection och kan ta tid att verka).
-    with conn.cursor() as cur:
-        # SET tar inte parametrar i Postgres, embedda literal.
-        cur.execute(f"SET statement_timeout = {int(QUERY_TIMEOUT_SEC * 1000)}")
-
-    def _cancel() -> None:
-        try:
-            conn.cancel()
-        except Exception:
-            pass
-
-    timer = threading.Timer(QUERY_TIMEOUT_SEC + 2, _cancel)
-    timer.start()
     try:
-        with conn.cursor() as cur:
-            cur.execute(sql_to_run)
-            columns = [d[0] for d in cur.description] if cur.description else []
-            rows = cur.fetchall()
-        df = pd.DataFrame(rows, columns=columns)
+        with _get_pool().connection() as conn:
+            def _cancel() -> None:
+                try:
+                    conn.cancel()
+                except Exception:
+                    pass
+
+            timer = threading.Timer(QUERY_TIMEOUT_SEC + 2, _cancel)
+            timer.start()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql_to_run)
+                    columns = [d[0] for d in cur.description] if cur.description else []
+                    rows = cur.fetchall()
+                df = pd.DataFrame(rows, columns=columns)
+            finally:
+                timer.cancel()
     except Exception as exc:
-        timer.cancel()
-        conn.close()
         _log({"sql": sql, "ok": False, "error": str(exc)})
         return f"ERROR: {exc}"
-    finally:
-        timer.cancel()
-        conn.close()
 
     elapsed_ms = int((time.time() - t0) * 1000)
     n = len(df)

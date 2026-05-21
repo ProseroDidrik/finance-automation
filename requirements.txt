@@ -13,6 +13,10 @@ duckdb>=1.0
 
 # Postgres-driver (Azure DB for PostgreSQL Flexible Server)
 psycopg[binary]>=3.2
+psycopg-pool>=3.2
+
+# Markdown-tabeller i mcp_server.py (pandas df.to_markdown)
+tabulate>=0.9
 
 # Webapp
 fastapi>=0.115

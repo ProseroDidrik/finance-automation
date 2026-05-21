@@ -20,6 +20,7 @@ WORKDIR /app
 # (Slipper openpyxl/extract-msg/PySide6/duckdb från fulla requirements.txt.)
 RUN pip install --no-cache-dir \
         "psycopg[binary]>=3.2" \
+        "psycopg-pool>=3.2" \
         "pandas>=2.0" \
         "tabulate>=0.9" \
         "mcp>=1.0" \
