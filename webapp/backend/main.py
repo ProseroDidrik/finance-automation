@@ -30,6 +30,7 @@ from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from psycopg_pool import ConnectionPool
 
@@ -129,6 +130,9 @@ def open_db():
 # ----- App --------------------------------------------------------------------
 
 app = FastAPI(title="Finance Reporting API", lifespan=lifespan)
+
+# Komprimera stora JSON-svar (pivot/täckning kan vara hundratals kB).
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # CORS för Vite-dev-server (port 5173). I prod serveras frontend från samma
 # origin (StaticFiles-mount nedan) så CORS är inte i bruk där.
