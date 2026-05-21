@@ -88,11 +88,21 @@ def _open_excel(path: Path, encrypted: bool, password: str | None) -> io.BytesIO
 
 
 def _to_date(v) -> date | None:
-    """Konvertera olika datumrepresentationer → date eller None."""
-    if v is None or (isinstance(v, float) and pd.isna(v)):
+    """Konvertera olika datumrepresentationer → date eller None.
+
+    pd.NaT fångas explicit via pd.isna: NaT är en datetime-subklass och skulle
+    annars smita förbi isinstance-kollen nedan och returneras som NaT i stället
+    för None (samma mönster som _to_str använder).
+    """
+    if v is None:
         return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
     if isinstance(v, pd.Timestamp):
-        return None if pd.isna(v) else v.date()
+        return v.date()
     if isinstance(v, datetime):
         return v.date()
     if isinstance(v, date):
@@ -102,9 +112,10 @@ def _to_date(v) -> date | None:
         if not s or s == "-":
             return None
         try:
-            return pd.to_datetime(s, errors="coerce").date()
+            ts = pd.to_datetime(s, errors="coerce")
         except Exception:
             return None
+        return None if pd.isna(ts) else ts.date()
     return None
 
 
