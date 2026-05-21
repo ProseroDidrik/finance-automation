@@ -290,6 +290,12 @@ def cumulate_ytd(monthly_rows: Iterable[tuple[str, str, float]],
 # YTD-kumuleras utan korrekt ingående balans — skippas i SIE_VER.
 IS_ACCOUNT_CLASSES = ("3", "4", "5", "6", "7", "8")
 
+# Länder vars SIE-bolag får SIE_VER-syntes. Sverige + CA (bolag med svenskt
+# orgnr men annan koncernklassning, t.ex. 49, 162) — speglar SIE_VER-posterna
+# i IMP_KINDS_BY_COUNTRY (db.py). Norska SIE-bolag och CENTR exkluderas:
+# syntesen antar svensk kontoplan och kalenderår.
+SIE_VER_COUNTRIES = ("Sweden", "CA")
+
 
 def synthesize_sie_ver(con, company_id: int, fy_start: str, fy_end: str,
                        period: str, rel_src: str, now: datetime) -> int:
@@ -391,7 +397,8 @@ def build_orgnr_lookup(con: db.Conn) -> dict[str, tuple[int, str, str]]:
 
     SIE är ett svenskt format så valutan är alltid SEK; vi tar ingen valuta
     från dim_company här (vissa CENTR/CA-bolag har svenskt orgnr men annan
-    klassad valuta). country behövs för att gata SIE_VER-syntesen till Sverige.
+    klassad valuta). country behövs för att gata SIE_VER-syntesen till
+    SIE_VER_COUNTRIES (Sverige + CA).
     """
     lookup: dict[str, tuple[int, str, str]] = {}
     for row in con.execute(
@@ -671,7 +678,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                     journal_rows[i:i + JOURNAL_BATCH],
                 )
 
-        # SIE_VER: syntetisera YTD-saldon från verifikaten för SE-bolag som
+        # SIE_VER: syntetisera YTD-saldon från verifikaten för SE/CA-bolag som
         # saknar #PSALDO. #RES-fältet är en snapshot vid genereringstiden och
         # ger skev månadsfördelning; verifikat-kumen ger exakt fördelning.
         # Vid --no-include-journal körs ingen syntes; ev. befintliga SIE_VER-
@@ -679,7 +686,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # fact_journal_sie och är alltid minst lika korrekta som #RES-baserad SIE
         # (SIE_VER är en materialiserad vy av journalen).
         sie_ver_count = 0
-        if include_journal and country == "Sweden" and not parsed["psaldo"]:
+        if include_journal and country in SIE_VER_COUNTRIES and not parsed["psaldo"]:
             if fy_start.endswith("01"):
                 sie_ver_count = synthesize_sie_ver(
                     con, company_id, fy_start, fy_end, period, rel_src, now)
@@ -691,7 +698,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                 log("WARN", company_id,
                     f"SIE_VER: brutet räkenskapsår (FY-start {fy_start}) — "
                     "hoppar över syntes (YTD-kum antar kalenderår).")
-        elif country == "Sweden" and parsed["psaldo"]:
+        elif country in SIE_VER_COUNTRIES and parsed["psaldo"]:
             # Bolaget levererar #PSALDO — rensa ev. stale SIE_VER från en
             # tidigare laddning då filen saknade #PSALDO. best_source föredrar
             # SIE_PSALDO så det är ofarligt numeriskt, men håll datat rent.

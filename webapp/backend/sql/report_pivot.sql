@@ -79,9 +79,11 @@ best_source AS (
                 END
             WHEN 'CA' THEN
                 CASE
-                    WHEN MAX(CASE WHEN fb.source_kind = 'SIE'     THEN 1 ELSE 0 END) = 1 THEN 'SIE'
-                    WHEN MAX(CASE WHEN fb.source_kind = 'IMP'     THEN 1 ELSE 0 END) = 1 THEN 'IMP'
-                    WHEN MAX(CASE WHEN fb.source_kind = 'IMP_ADJ' THEN 1 ELSE 0 END) = 1 THEN 'IMP_ADJ'
+                    WHEN MAX(CASE WHEN fb.source_kind = 'SIE_PSALDO' THEN 1 ELSE 0 END) = 1 THEN 'SIE_PSALDO'
+                    WHEN MAX(CASE WHEN fb.source_kind = 'SIE_VER'    THEN 1 ELSE 0 END) = 1 THEN 'SIE_VER'
+                    WHEN MAX(CASE WHEN fb.source_kind = 'SIE'        THEN 1 ELSE 0 END) = 1 THEN 'SIE'
+                    WHEN MAX(CASE WHEN fb.source_kind = 'IMP'        THEN 1 ELSE 0 END) = 1 THEN 'IMP'
+                    WHEN MAX(CASE WHEN fb.source_kind = 'IMP_ADJ'    THEN 1 ELSE 0 END) = 1 THEN 'IMP_ADJ'
                     ELSE NULL
                 END
             ELSE  -- Finland, Denmark, Germany, CENTR
