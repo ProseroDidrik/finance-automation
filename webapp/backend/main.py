@@ -270,7 +270,8 @@ async def pnl_report(
 ):
     """P&L-rapport: tree (raw, SIE-konvention) + kpis (post-flip).
 
-    Tabellen: scenario='A', källa via best_source eller user override (aldrig MAN).
+    Tabellen: scenario='A' — bas-källa via best_source/override + additivt
+    MAN-A + IMP_ADJ-A ovanpå (verkligt utfall = bas + justeringslager).
     Budget YTD-kolumn: scenario='B', källa='MAN' (hårdkodat).
     """
     try:
@@ -285,7 +286,8 @@ async def pnl_report(
     def _params(src_override: str | None, scenario: str | None):
         return [src_override, company_id, ystart, period,    # best_source (4)
                 company_id, ystart, period, scenario,        # raw_balances (4)
-                prev, period]                                # balances (2)
+                prev, period,                                # balances 3a (2)
+                period]                                      # balances 3b (1)
 
     with open_db() as con:
         info = con.execute(

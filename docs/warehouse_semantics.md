@@ -66,22 +66,31 @@ YTD-konverteringen antar **kalenderår**. Bolag med brutet räkenskapsår skulle
 
 ---
 
-## Mental model 2 — `best_source` (källprioritet per land)
+## Mental model 2 — `best_source` (bas-källa) + additiva justeringslager
 
-Samma (bolag, period) kan ha rader från flera source_kinds (t.ex. både `SIE`
-och `IMP` om Mercur-historik finns). **Välj högsta prioritet per land** —
-summera aldrig över alla källor.
+Verkligt utfall = **en bas-källa** + **additiva justeringslager**. Två skilda
+saker — blanda inte ihop dem.
 
-| Land | Prioritet (utfall, scenario='A') |
+**Bas-källan** — välj *en*. `SIE_PSALDO`/`SIE_VER`/`SIE` (och `SAFT`/`IMP`) är
+mutuellt uteslutande representationer av samma huvudbok; summera dem aldrig.
+
+| Land | Bas-prioritet (scenario='A') |
 |---|---|
-| Sweden | `SIE_PSALDO` → `SIE_VER` → `SIE` → `IMP` → `IMP_ADJ` |
-| Norway | `SAFT` → `IMP` → `IMP_ADJ` |
-| Finland, Denmark, Germany, CENTR | `IMP` → `IMP_ADJ` |
-| CA | `SIE` → `IMP` → `IMP_ADJ` |
+| Sweden | `SIE_PSALDO` → `SIE_VER` → `SIE` → `IMP` |
+| Norway | `SAFT` → `IMP` |
+| Finland, Denmark, Germany, CENTR | `IMP` |
+| CA | `SIE` → `IMP` |
+
+**Justeringslagren** `MAN` och `IMP_ADJ` (scenario='A') är *aldrig* alternativ
+till basen — de **summeras alltid ovanpå**. Saknas bas-källa (t.ex. bara
+`IMP_ADJ` finns) är justeringslagret hela utfallet:
+
+    utfall = bas-källa (0 eller 1)  +  MAN-A  +  IMP_ADJ-A
 
 `SIE_PSALDO` = `#PSALDO`-raderna i SIE-filen (källrapporterat per-månads YTD-saldo) — bäst när det finns. `SIE_VER` = YTD-saldon syntetiserade av `load_sie.py` från verifikaten (`#VER`/`#TRANS`) för de ~35 SE-bolag som saknar `#PSALDO`; ger exakt månadsfördelning. `SIE` (#RES-baserad) är därmed effektivt deprekerad — kvar bara som sista fallback om verifikat-syntesen inte kunnat köras. När både finns: `SIE_PSALDO` > `SIE_VER` > `SIE`.
 
-Färdigt mönster: `report_pnl.sql:41-81` (`best_source` CTE).
+Färdigt mönster: `report_pnl.sql` — `best_source`-CTE väljer basen, och
+`raw_balances` OR-villkoret summerar `MAN`/`IMP_ADJ` ovanpå.
 
 **OBS — INL är borta:** sedan 2026-05-cutovern lagrar `load_inl.py` (FI/DK/DE)
 data med `source_kind='IMP'`, inte `'INL'`. Äldre dokumentation kan referera
@@ -127,13 +136,13 @@ Empiriskt verifierat 2026-05-18: för SE-SIE (54 075 konto-perioder) och NO-SAFT
 - `'A'` = utfall (Actuals) — default för rapporter
 - `'B'` = budget
 
-**Nyans för `MAN`:** Den primära användningen är budget (`scenario='B'`,
-107 bolag 202604), men det finns **också MAN-rader för utfall** (`scenario='A'`,
-47 bolag 202604) som representerar manuella justeringar på utfallssiffrorna.
+**Nyans för `MAN`:** Den primära användningen är budget (`scenario='B'`), men
+det finns **också MAN-rader för utfall** (`scenario='A'`) — manuella
+justeringar på utfallssiffrorna. Likaså `IMP_ADJ` (finns bara som scenario A).
 
-`report_pnl.sql`s `best_source`-CTE **exkluderar MAN helt** — manuella
-utfallsjusteringar fångas inte upp av huvudrapporten. För facit-analys eller
-audit, fråga MAN-A separat.
+`report_pnl.sql` **summerar `MAN`-A + `IMP_ADJ`-A ovanpå bas-källan** (se
+Mental model 2) — verkligt utfall = bas + justeringslager. Budget-kolumnen kör
+samma query med `scenario='B'` och source-override `'MAN'`.
 
 **Default i alla utfallsfrågor:** `WHERE scenario = 'A'`. Glömmer du det dubbleras
 utfall + budget.
@@ -393,7 +402,9 @@ LEFT JOIN (SELECT * FROM fact_sie UNION ALL SELECT * FROM fact_other) f
 ### Ad hoc P&L för (bolag, period)
 
 Använd helst `report_pnl.sql` via webapp-endpointen `/api/report/pnl`. För
-direkt query mot warehouse:
+direkt query mot warehouse (OBS: mönstret nedan visar bara **bas-källan** —
+för verkligt utfall summera `MAN`-A + `IMP_ADJ`-A additivt ovanpå, se Mental
+model 2):
 
 ```sql
 WITH best AS (
