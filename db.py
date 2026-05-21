@@ -130,6 +130,13 @@ class Conn:
             self._cur.close()
         self._conn.close()
 
+    def close_cursor(self) -> None:
+        """Stäng den interna cursorn utan att stänga anslutningen. Används av
+        poolade läsvägar där anslutningen återlämnas till poolen, inte stängs."""
+        if self._cur is not None and not self._cur.closed:
+            self._cur.close()
+        self._cur = None
+
     def __enter__(self) -> "Conn":
         return self
 
@@ -152,6 +159,11 @@ def _database_url() -> str:
             "Lokal Postgres via Docker: docker compose up -d postgres"
         )
     return url
+
+
+def database_url() -> str:
+    """Publik accessor för DATABASE_URL — t.ex. för webappens connection pool."""
+    return _database_url()
 
 
 def connect(read_only: bool = False) -> Conn:
@@ -257,6 +269,7 @@ CREATE TABLE IF NOT EXISTS fact_journal_sie (
 CREATE INDEX IF NOT EXISTS idx_fjs_company_period ON fact_journal_sie(company_id, period);
 CREATE INDEX IF NOT EXISTS idx_fjs_voucher        ON fact_journal_sie(company_id, series, voucher_number);
 CREATE INDEX IF NOT EXISTS idx_fjs_account        ON fact_journal_sie(account_code);
+CREATE INDEX IF NOT EXISTS idx_fjs_period         ON fact_journal_sie(period);
 
 CREATE TABLE IF NOT EXISTS fact_journal_saft (
     id                 BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_journal_saft'),
@@ -282,6 +295,7 @@ CREATE TABLE IF NOT EXISTS fact_journal_saft (
 CREATE INDEX IF NOT EXISTS idx_fjsaft_company_period ON fact_journal_saft(company_id, period);
 CREATE INDEX IF NOT EXISTS idx_fjsaft_transaction    ON fact_journal_saft(company_id, transaction_id);
 CREATE INDEX IF NOT EXISTS idx_fjsaft_account        ON fact_journal_saft(account_code);
+CREATE INDEX IF NOT EXISTS idx_fjsaft_period         ON fact_journal_saft(period);
 
 CREATE TABLE IF NOT EXISTS dim_account_map (
     account_id      TEXT PRIMARY KEY,
