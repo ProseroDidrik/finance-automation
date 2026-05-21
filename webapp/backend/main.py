@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import time
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
@@ -51,6 +52,35 @@ SQL_PERSONNEL = REPO / "webapp" / "backend" / "sql" / "personnel_summary.sql"
 SQL_PIVOT = REPO / "webapp" / "backend" / "sql" / "report_pivot.sql"
 SQL_SUP_BY_SUPPLIER = REPO / "webapp" / "backend" / "sql" / "suppliers_by_supplier.sql"
 SQL_SUP_BY_CATEGORY = REPO / "webapp" / "backend" / "sql" / "suppliers_by_category.sql"
+
+# SQL-filer läses en gång och cachas — slipper disk-I/O per request.
+_SQL_TEXT_CACHE: dict[Path, str] = {}
+
+
+def _sql(path: Path) -> str:
+    text = _SQL_TEXT_CACHE.get(path)
+    if text is None:
+        text = path.read_text(encoding="utf-8")
+        _SQL_TEXT_CACHE[path] = text
+    return text
+
+
+# Kort TTL-cache för långsamt föränderlig data (companies/periods ändras bara
+# när ny data laddas, månadsvis).
+RESPONSE_CACHE_TTL = 300.0  # sekunder
+_RESPONSE_CACHE: dict[str, tuple[float, object]] = {}
+
+
+def _cached(key: str, producer):
+    """Returnera cachat värde om < RESPONSE_CACHE_TTL gammalt, annars producera."""
+    now = time.time()
+    hit = _RESPONSE_CACHE.get(key)
+    if hit is not None and now - hit[0] < RESPONSE_CACHE_TTL:
+        return hit[1]
+    value = producer()
+    _RESPONSE_CACHE[key] = (now, value)
+    return value
+
 
 FRONTEND_DIST = REPO / "webapp" / "frontend" / "dist"
 
@@ -168,39 +198,43 @@ async def health():
 @app.get("/api/companies")
 async def list_companies():
     """Bolag som har P&L-data i någon period (filtrerade på consolidated)."""
-    with open_db() as con:
-        rows = con.fetch_dicts(
-            """
-            SELECT c.company_id, c.name, c.country, c.currency,
-                   COUNT(DISTINCT fb.period) AS n_periods,
-                   MAX(fb.period) AS latest_period
-            FROM dim_company c
-            JOIN fact_balances fb ON fb.company_id = c.company_id
-            WHERE COALESCE(c.kind, '') != 'consolidated'
-            GROUP BY c.company_id, c.name, c.country, c.currency
-            HAVING COUNT(DISTINCT fb.period) > 0
-            ORDER BY c.country, c.company_id
-            """
-        )
-    return {"companies": rows}
+    def _produce():
+        with open_db() as con:
+            rows = con.fetch_dicts(
+                """
+                SELECT c.company_id, c.name, c.country, c.currency,
+                       COUNT(DISTINCT fb.period) AS n_periods,
+                       MAX(fb.period) AS latest_period
+                FROM dim_company c
+                JOIN fact_balances fb ON fb.company_id = c.company_id
+                WHERE COALESCE(c.kind, '') != 'consolidated'
+                GROUP BY c.company_id, c.name, c.country, c.currency
+                HAVING COUNT(DISTINCT fb.period) > 0
+                ORDER BY c.country, c.company_id
+                """
+            )
+        return {"companies": rows}
+    return _cached("companies", _produce)
 
 
 @app.get("/api/periods")
 async def list_periods(company_id: int | None = Query(None)):
     """Alla perioder med data, eller filtrerat per bolag."""
-    with open_db() as con:
-        if company_id is None:
-            rows = con.fetch_dicts(
-                """SELECT period, COUNT(DISTINCT company_id) AS n_companies
-                   FROM fact_balances GROUP BY period ORDER BY period DESC"""
-            )
-        else:
-            rows = con.fetch_dicts(
-                """SELECT period FROM fact_balances WHERE company_id = %s
-                   GROUP BY period ORDER BY period DESC""",
-                [company_id],
-            )
-    return {"periods": rows}
+    def _produce():
+        with open_db() as con:
+            if company_id is None:
+                rows = con.fetch_dicts(
+                    """SELECT period, COUNT(DISTINCT company_id) AS n_companies
+                       FROM fact_balances GROUP BY period ORDER BY period DESC"""
+                )
+            else:
+                rows = con.fetch_dicts(
+                    """SELECT period FROM fact_balances WHERE company_id = %s
+                       GROUP BY period ORDER BY period DESC""",
+                    [company_id],
+                )
+        return {"periods": rows}
+    return _cached(f"periods:{company_id}", _produce)
 
 
 @app.get("/api/report/options")
@@ -242,7 +276,7 @@ async def pnl_report(
         raise HTTPException(status_code=400, detail=str(e))
 
     src = source_kind or None  # tom sträng → None (auto)
-    sql = SQL_PATH.read_text(encoding="utf-8")
+    sql = _sql(SQL_PATH)
 
     def _params(src_override: str | None, scenario: str | None):
         return [src_override, company_id, ystart, period,    # best_source (4)
@@ -349,7 +383,7 @@ async def compare_coverage(
     period_lo = period_from or "202601"
     period_hi = min(period_to or "999912",
                     prev_period(f"{_today.year}{_today.month:02d}"))
-    sql = (SQL_COVERAGE.read_text(encoding="utf-8")
+    sql = (_sql(SQL_COVERAGE)
            .replace("@period_lo@", period_lo)
            .replace("@period_hi@", period_hi))
     with open_db() as con:
@@ -395,7 +429,7 @@ async def compare_coverage_accounts(
             detail=f"source_kind måste vara en av {sorted(_ACCOUNTS_SOURCE_KINDS)}",
         )
 
-    sql = SQL_COVERAGE_ACCOUNTS.read_text(encoding="utf-8")
+    sql = _sql(SQL_COVERAGE_ACCOUNTS)
     with open_db() as con:
         rows = con.fetch_dicts(sql, [company_id, period, source_kind])
         # Hämta company_name separat — query:n returnerar bara konto-nivå.
@@ -492,7 +526,7 @@ async def personnel_summary(country: str = Query(..., description="Sweden|Norway
         start_year = end_year
     years = list(range(start_year, end_year + 1))
 
-    sql = SQL_PERSONNEL.read_text(encoding="utf-8")
+    sql = _sql(SQL_PERSONNEL)
     with open_db() as con:
         # SQL-ordning: %s #1 = years (INTEGER[]), %s #2 = country (TEXT).
         rows = con.fetch_dicts(sql, [years, country])
@@ -675,7 +709,7 @@ async def report_pivot(
         # Bygg VALUES-stränpermitt + parametrar
         bucket_values_clause = "VALUES " + ", ".join(["(%s, %s, %s)"] * len(buckets))
         bucket_params = [v for b in buckets for v in (b.key, b.start, b.end)]
-        sql_template = SQL_PIVOT.read_text(encoding="utf-8")
+        sql_template = _sql(SQL_PIVOT)
         sql = sql_template.replace("{bucket_values}", bucket_values_clause)
 
         params = (
@@ -957,7 +991,7 @@ async def suppliers_by_supplier(
     """Pivot: per leverantör (förenklat) × år."""
     cids = _parse_int_list(company_ids)
     segs = _parse_str_list(segments)
-    sql = SQL_SUP_BY_SUPPLIER.read_text(encoding="utf-8")
+    sql = _sql(SQL_SUP_BY_SUPPLIER)
     with open_db() as con:
         years = [int(r[0]) for r in con.execute(
             """SELECT DISTINCT year FROM fact_supplier_spend
@@ -983,7 +1017,7 @@ async def suppliers_by_category(
     """Pivot: per kategori (+ segment) × år."""
     cids = _parse_int_list(company_ids)
     segs = _parse_str_list(segments)
-    sql = SQL_SUP_BY_CATEGORY.read_text(encoding="utf-8")
+    sql = _sql(SQL_SUP_BY_CATEGORY)
     with open_db() as con:
         years = [int(r[0]) for r in con.execute(
             """SELECT DISTINCT year FROM fact_supplier_spend
