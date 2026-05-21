@@ -48,7 +48,11 @@ def _run(name: str, sql: str, params: tuple, limit: int = 5) -> bool:
     t0 = time.time()
     try:
         with _connect() as con, con.cursor() as cur:
-            cur.execute("SET statement_timeout = 30000")
+            # 120 s — smoke-testet ska verifiera att SQL:en är giltig och kör,
+            # inte fälla korrekta-men-tunga queries. compare_coverage tar ~34 s
+            # på Burstable-tiern (Fas 1-mål att få ned); en snålare gräns gav
+            # falsk FAIL.
+            cur.execute("SET statement_timeout = 120000")
             cur.execute(sql, params)
             rows = cur.fetchmany(limit)
             elapsed = int((time.time() - t0) * 1000)
