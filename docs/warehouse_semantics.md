@@ -222,6 +222,35 @@ via barnen. Vanliga rotnoder utöver `P&L`: `B` (Balans), `BUD` (Budget),
 
 Hela trädet: `report_pnl.sql:24-35` (`accounts` CTE med `WITH RECURSIVE`).
 
+**AARO-konton.** Gruppkonton (`is_aggregated = TRUE`) vars `description` börjar
+med ett 4-siffrigt prefix — t.ex. `'4010 Cost of goods sold, external, COGS'`
+eller `'7610 Other personnel costs'` — kallas i dagligt tal *aaro-konton*. Det
+4-siffriga numret är koncernens standardiserade AARO-kontonummer; ~258 rader
+har en sådan beskrivning. Det är en mycket användbar grupperingsnivå: varje
+bolagskonto (t.ex. `170_4110`) pekar via `parent_id` upp på sitt aaro-konto,
+och aaro-kontots eget `parent_id` är ofta ett Mercur-namn (`Materialkost`,
+`Personalkostnader`) som återfinns i Mercur.
+
+```sql
+-- Alla aaro-konton:
+SELECT account_id, description, parent_id
+FROM dim_account_map
+WHERE is_aggregated AND description ~ '^[0-9]{4}( |$)'
+ORDER BY description;
+
+-- Rulla upp ett bolagskonto till dess aaro-konto:
+WITH RECURSIVE walk AS (
+  SELECT account_id, description, parent_id, is_aggregated
+  FROM dim_account_map WHERE account_id = '170_4110'
+  UNION ALL
+  SELECT m.account_id, m.description, m.parent_id, m.is_aggregated
+  FROM dim_account_map m JOIN walk w ON m.account_id = w.parent_id
+)
+SELECT * FROM walk
+WHERE is_aggregated AND description ~ '^[0-9]{4}( |$)'
+LIMIT 1;
+```
+
 ---
 
 ## Facit: `backup_from_mercur`
