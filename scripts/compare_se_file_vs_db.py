@@ -204,12 +204,13 @@ def compute_db(rows, sk_for_cid, leaf_map):
 def compute_adjustments(rows, leaf_map, pcode_map):
     """MAN-A + IMP_ADJ-A som additivt lager ovanpa SIE-basen.
 
-    Bada ar redan manadsdata (period_type='monthly') och lagras i
-    Mercur-konvention -> ingen YTD-derivering, ingen SIE-flip (x+1, samma
-    teckenkonvention som filen). P-koder mappas via pcode_map (account_id),
-    vanliga konton via leaf_map (cid, account_code). BS-ben (1410/1470/2990
-    ...) saknar P&L-grupp och faller bort - korrekt, RR-jamforelse.
-    Returnerar ((cid,grp)->{per:val}, stats).
+    Bada ar redan manadsdata (period_type='monthly') -> ingen YTD-derivering.
+    Tecken som compute_db: vanliga MAN/IMP_ADJ-konton ligger i SIE-konvention
+    (intakt negativ, empiriskt verifierat mot warehouse) -> flippas x-1 till
+    filens Mercur-konvention; P-koder ar redan Mercur-konv -> x+1. P-koder
+    mappas via pcode_map (account_id), vanliga konton via leaf_map
+    (cid, account_code). BS-ben (1410/1470/2990 ...) saknar P&L-grupp och
+    faller bort - korrekt, RR-jamforelse. Returnerar ((cid,grp)->{per:val}, stats).
     """
     adj = defaultdict(lambda: defaultdict(float))
     stats = {"mapped": 0, "dropped": 0}
@@ -223,7 +224,8 @@ def compute_adjustments(rows, leaf_map, pcode_map):
             stats["dropped"] += 1
             continue
         stats["mapped"] += 1
-        adj[(int(cid), grp)][per] += float(amt)
+        flip = 1.0 if acc.startswith("P_") else -1.0
+        adj[(int(cid), grp)][per] += float(amt) * flip
     return adj, stats
 
 
