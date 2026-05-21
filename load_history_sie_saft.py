@@ -15,6 +15,7 @@ Körning:
   py load_history_sie_saft.py --years 2022 2023  # specifika år
   py load_history_sie_saft.py --dry-run
   py load_history_sie_saft.py --include-journal
+  py load_history_sie_saft.py --format sie       # bara SIE-filer (hoppa över SAF-T)
   py load_history_sie_saft.py --override        # global override, skriver över allt
   py load_history_sie_saft.py --override 32 75  # bara dessa bolag
 """
@@ -75,11 +76,15 @@ def _quick_orgnr_saft(path: Path) -> str | None:
     return None
 
 
-def discover_year(year_dir: Path) -> dict[str, tuple[Path, str]]:
+def discover_year(year_dir: Path,
+                  allowed_formats: set[str]) -> dict[str, tuple[Path, str]]:
     """Returnerar {normalized_orgnr: (best_path, format)} för ett årsdir.
 
     format = 'sie' eller 'saft'
-    Senast ändrad fil per orgnr vinner.
+    allowed_formats: delmängd av {'sie', 'saft'} — filer av andra format hoppas
+    över. Filtret appliceras FÖRE dedup så att en SIE-only-körning väljer den
+    senaste SIE-filen även om en nyare SAF-T finns för samma orgnr.
+    Senast ändrad fil per orgnr vinner inom de tillåtna formaten.
     """
     best: dict[str, tuple[Path, float, str]] = {}
 
@@ -89,12 +94,13 @@ def discover_year(year_dir: Path) -> dict[str, tuple[Path, str]]:
         suffix = f.suffix.upper()
         if suffix in (".SE", ".SI"):
             fmt = "sie"
-            orgnr = _quick_orgnr_sie(f)
         elif suffix == ".XML":
             fmt = "saft"
-            orgnr = _quick_orgnr_saft(f)
         else:
             continue
+        if fmt not in allowed_formats:
+            continue
+        orgnr = _quick_orgnr_sie(f) if fmt == "sie" else _quick_orgnr_saft(f)
 
         if not orgnr:
             log("WARN", f.name, "Kunde inte läsa orgnr — filen skippas")
@@ -111,18 +117,23 @@ def discover_year(year_dir: Path) -> dict[str, tuple[Path, str]]:
 def load_year(con: db.Conn, year: int, year_dir: Path,
               base_path: Path, orgnr_lookup_sie: dict, orgnr_lookup_saft: dict,
               *, dry_run: bool, include_journal: bool,
+              allowed_formats: set[str],
               override: list[int] | None = None) -> dict[str, int]:
     """Ladda ett årsdir. Returnerar {status: count}."""
     period_fallback = f"{year}12"
-    files = discover_year(year_dir)
+    files = discover_year(year_dir, allowed_formats)
     if not files:
         log("WARN", str(year), f"Inga filer hittades i {year_dir}")
         return {"ok": 0, "warn": 0, "skip": 0, "error": 0}
 
-    # Logga dedup-info
+    # Logga dedup-info — räkna bara filer av de format vi faktiskt laddar.
+    def _counts_for(f: Path) -> bool:
+        suffix = f.suffix.upper()
+        return ((suffix in (".SE", ".SI") and "sie" in allowed_formats)
+                or (suffix == ".XML" and "saft" in allowed_formats))
+
     all_files = sum(
-        1 for f in year_dir.iterdir()
-        if f.is_file() and f.suffix.upper() in (".SE", ".SI", ".XML")
+        1 for f in year_dir.iterdir() if f.is_file() and _counts_for(f)
     )
     log("INFO", str(year),
         f"{len(files)} unika orgnr valda av {all_files} filer i {year_dir.name}")
@@ -179,17 +190,22 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--include-journal", action="store_true",
                         help="Ladda även verifikat till fact_journal_sie/saft (tungt)")
+    parser.add_argument("--format", choices=("sie", "saft", "both"), default="both",
+                        help="Vilka filformat som ska laddas (default: both). "
+                             "--format sie laddar bara SIE och hoppar över SAF-T.")
     parser.add_argument("--override", nargs="*", type=int, default=None, metavar="ID",
                         help="Skriv över befintlig SIE/SAFT-data. --override = global "
                              "(alla bolag); --override 32 75 = bara dessa bolag.")
     args = parser.parse_args()
+
+    allowed_formats = {"sie", "saft"} if args.format == "both" else {args.format}
 
     begin_run("load_history_sie_saft.py", "HIST")
     ovr_desc = ("global" if args.override == [] else
                 f"bolag={args.override}" if args.override else "off")
     log("START", "load_history_sie_saft.py",
         f"år={args.years}  dry_run={args.dry_run}  "
-        f"journal={args.include_journal}  override={ovr_desc}")
+        f"journal={args.include_journal}  format={args.format}  override={ovr_desc}")
 
     cfg = load_config()
     base_path = Path(cfg["base_path"])
@@ -222,6 +238,7 @@ def main() -> None:
                 con, year, year_dir, base_path,
                 orgnr_lookup_sie, orgnr_lookup_saft,
                 dry_run=args.dry_run, include_journal=args.include_journal,
+                allowed_formats=allowed_formats,
                 override=args.override,
             )
             log("INFO", str(year),
