@@ -157,7 +157,7 @@ En rad **per anställd**, inte per (anställd, period):
 
 - `employed_from`, `employed_to` (NULL = aktiv) — räkna ut aktivitet vid valt datum själv.
 - `employment_pct` (1.0 = heltid) — **summera detta för FTE**, inte `COUNT(*)` (det blir headcount).
-- Endast SE/NO/FI har data — DK/DE saknas.
+- SE/NO/FI/DK/DE har data (CENTR/CA saknas). DK + DE inlästa 2026-05-21.
 - `salary_local` är ifyllt bara för FI (i `dim_company.currency`).
 
 ```sql
