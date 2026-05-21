@@ -30,6 +30,28 @@ ställa en fråga på vanlig svenska ("visa resultaträkningen för bolag X i
 april") och få ett korrekt svar utan att behöva kunna datastrukturen. Claude
 kontrollerar alltid uppställningen först och följer warehouse-reglerna.
 
+Claude känner numera också igen koncernens standardiserade kontogrupper, så ni
+kan fråga efter kostnadsslag med deras vanliga namn — t.ex. "personalkostnader"
+eller "materialkostnad" — och få bolagets konton rätt hopsummerade på den nivån.
+
+## 4. Claude räknar med manuella justeringar
+
+Ett bolags utfall består av en grundkälla plus eventuella manuella justeringar
+som lagts in i efterhand, vid sidan av den automatiska importen. Tidigare kunde
+de justeringarna falla bort när en resultaträkning räknades fram. Nu vet Claude
+att de alltid ska läggas additivt ovanpå grundsiffrorna — så när ni ber Claude
+om en resultaträkning får ni med hela bilden, justeringarna inräknade.
+
+P&L-fliken i webbgränssnittet räknar tills vidare på grundsiffrorna; vill ni ha
+de manuella justeringarna inräknade just nu, fråga Claude.
+
+## 5. Personalstatistik för fler länder
+
+Fliken *Personal* visar antal anställda per bolag — hur många som finns vid
+årsskiftet och hur många som börjat respektive slutat under året. Den täcker nu
+även de danska och tyska bolagen, som tidigare saknades. Inget nytt handgrepp —
+välj bara fliken som vanligt.
+
 ## Bonus — täckningssidan
 
 Ni kan nu se, per bolag och period, om datan är inläst *och* om den stämmer mot
