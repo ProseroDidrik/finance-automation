@@ -1,15 +1,18 @@
-"""Ladda personalstatistik (FTE) per land till fact_personnel i DuckDB.
+"""Ladda personalstatistik (FTE) per land till fact_personnel.
 
 Källa: <base_path>/_statistics/FTE/
   - Personal - master Sverige.xlsx   (krypterad — config.personnel_password)
   - Personel Norway.xlsx             (krypterad — config.personnel_password)
   - Combined Personnel Finland.xlsx  (okrypterad)
+  - Denmark personell.xlsx           (okrypterad — anonymiserad, syntetiska namn)
+  - Tyskland: en fil per bolag (Weckbacher + Mittermeier). Mittermeier kommer
+    som kvartals-snapshots — rader för samma person slås ihop till senaste.
 
 Idempotens: alla rader för ett land tas bort innan ny laddning. Re-run skriver om allt.
 
 CLI:
-    py load_personnel.py                      # alla tre länder
-    py load_personnel.py --country Sweden     # bara ett land (Sweden|Norway|Finland)
+    py load_personnel.py                      # alla länder
+    py load_personnel.py --country Denmark    # bara ett land
     py load_personnel.py --dry-run            # parsa + rapportera, skriv inget
 """
 from __future__ import annotations
@@ -30,10 +33,19 @@ from shared import begin_run, load_config, log
 # ---------------------------------------------------------------------------
 
 FTE_DIR = "_statistics/FTE"
-FILES = {
-    "Sweden":  ("Personal - master Sverige.xlsx",   True,  "Data",        "A:Q"),
-    "Norway":  ("Personel Norway.xlsx",             True,  "Data",        None),
-    "Finland": ("Combined Personnel Finland.xlsx",  False, "Combination", None),
+
+# Land → lista av (filnamn, krypterad). De flesta länder har en fil; Tyskland
+# har flera (en per bolag, Mittermeier dessutom uppdelad per kvartal).
+FILES: dict[str, list[tuple[str, bool]]] = {
+    "Sweden":  [("Personal - master Sverige.xlsx",  True)],
+    "Norway":  [("Personel Norway.xlsx",            True)],
+    "Finland": [("Combined Personnel Finland.xlsx", False)],
+    "Denmark": [("Denmark personell.xlsx",          False)],
+    "Germany": [
+        ("Mitarbeiterzahlen I Quartal 2026.xlsx",                          False),
+        ("4. Quartal 2025 FTE_template_DE_V2 Franz Mittermeier GmbH.xlsx",  False),
+        ("1. Quartal 2026 FTE_template_DE_V2 Franz Mittermeier GmbH.xlsx",  False),
+    ],
 }
 
 # Finland: Yritys → company_id (manuellt verifierat mot dim_company och Excel-pivoten).
@@ -66,6 +78,22 @@ FI_NAME_TO_ID: dict[str, int] = {
     "Suomen Turvakonsultit Oy":            193,
 }
 
+# Danmark: Bolag-sträng → company_id. Sub-bolagen används — de "consolidated"
+# raderna (192 Sikring Nord, 132 Actas) ska som vanligt inte laddas.
+DK_BOLAG_TO_ID: dict[str, int] = {
+    "Zipp":         229,
+    "HardiV":       178,
+    "SIKOM":        216,
+    "Sikring Nord": 190,
+    "Actas":         81,
+}
+
+# Tyskland: Company/Unternehmen-sträng → company_id.
+DE_NAME_TO_ID: dict[str, int] = {
+    "Weckbacher":  220,
+    "Mittermeier": 231,
+}
+
 # ---------------------------------------------------------------------------
 # Hjälpfunktioner
 # ---------------------------------------------------------------------------
@@ -88,11 +116,21 @@ def _open_excel(path: Path, encrypted: bool, password: str | None) -> io.BytesIO
 
 
 def _to_date(v) -> date | None:
-    """Konvertera olika datumrepresentationer → date eller None."""
-    if v is None or (isinstance(v, float) and pd.isna(v)):
+    """Konvertera olika datumrepresentationer → date eller None.
+
+    pd.NaT fångas explicit via pd.isna: NaT är en datetime-subklass och skulle
+    annars smita förbi isinstance-kollen nedan och returneras som NaT i stället
+    för None (samma mönster som _to_str använder).
+    """
+    if v is None:
         return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
     if isinstance(v, pd.Timestamp):
-        return None if pd.isna(v) else v.date()
+        return v.date()
     if isinstance(v, datetime):
         return v.date()
     if isinstance(v, date):
@@ -102,9 +140,10 @@ def _to_date(v) -> date | None:
         if not s or s == "-":
             return None
         try:
-            return pd.to_datetime(s, errors="coerce").date()
+            ts = pd.to_datetime(s, errors="coerce")
         except Exception:
             return None
+        return None if pd.isna(ts) else ts.date()
     return None
 
 
@@ -143,7 +182,7 @@ def _norm_gender(v) -> str | None:
     s_low = s.lower()
     if s_low in ("m", "man", "male", "mies"):
         return "M"
-    if s_low in ("f", "k", "kvinna", "female", "nainen"):
+    if s_low in ("f", "k", "w", "kvinna", "female", "nainen"):
         return "F"
     return None
 
@@ -163,6 +202,14 @@ def _se_birth_date(v) -> date | None:
         return date(year, mm, dd)
     except ValueError:
         return None
+
+
+def _dk_end_date(v) -> date | None:
+    """Danmark: slutdatum. Sentinel-år ≥ 2099 ('fortfarande anställd') → None."""
+    d = _to_date(v)
+    if d is not None and d.year >= 2099:
+        return None
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +350,125 @@ def parse_finland(buf, valid_ids: set[int]) -> tuple[list[dict], list[tuple]]:
     return rows, ignored
 
 
-PARSERS = {"Sweden": parse_sweden, "Norway": parse_norway, "Finland": parse_finland}
+def parse_denmark(buf, valid_ids: set[int]) -> tuple[list[dict], list[tuple]]:
+    """Danmark — anonymiserad fil (inga namn).
+
+    Kolumner: Land, ID Mercur, NR, Bolag, Födelsedatum, Anställningsdatum,
+    Slutdatum, % of employment, + härledda kolumner som ignoreras.
+
+    employee_name (NOT NULL i schemat) syntetiseras per bolag — "{Bolag} #{n}".
+    Det är bara en etikett; FTE-analys räknar på anställnings-/slutdatum.
+    'Födelsedatum'-kolumnen är obrukbar (anställningsnummer för vissa bolag,
+    nollor/platshållare för andra, maskad CPR för SIKOM) → birth_date lämnas tom.
+    """
+    df = pd.read_excel(buf, sheet_name="Sheet1", engine="openpyxl")
+    rows, ignored = [], []
+    seq: dict[int, int] = {}
+    for _, r in df.iterrows():
+        bolag = _to_str(r.get("Bolag"))
+        if not bolag:
+            continue
+        cid = DK_BOLAG_TO_ID.get(bolag)
+        if cid is None:
+            ignored.append(("unmapped_bolag", bolag))
+            continue
+        if cid not in valid_ids:
+            ignored.append(("unknown_company", cid, bolag))
+            continue
+        seq[cid] = seq.get(cid, 0) + 1
+        rows.append({
+            "company_id":         cid,
+            "employee_name":      f"{bolag} #{seq[cid]}",
+            "title":              None,
+            "birth_date":         None,
+            "employed_from":      _to_date(r.get("Anställningsdatum")),
+            "employed_to":        _dk_end_date(r.get("Slutdatum")),
+            "termination_reason": None,
+            "employment_pct":     _to_float(r.get("% of employment")),
+            "productivity":       None,
+            "billable_pct":       None,
+            "gender":             None,
+            "category":           None,
+            "salary_local":       None,
+            "location":           None,
+            "apprenticeship_end": None,
+            "pension_apprentice": None,
+        })
+    return rows, ignored
+
+
+def parse_germany(buf, valid_ids: set[int]) -> tuple[list[dict], list[tuple]]:
+    """Tyskland — gemensam mall (Weckbacher + Mittermeier).
+
+    Rubrikrad ligger på rad-index 2 (engelska); rad 0-1 är tomma/tyska etiketter.
+    Tre skräpkolumner sist (tom, GERMAN, tom) används inte.
+    """
+    df = pd.read_excel(buf, sheet_name=0, engine="openpyxl", header=2)
+    # Datumkolumner kommer blandat som Timestamp och tysk text "DD.MM.YYYY" —
+    # tolka med dayfirst så 01.10.1997 inte blir 10 januari.
+    for col in ("Date of birth", "Date of employment", "End date of employment"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
+    rows, ignored = [], []
+    for _, r in df.iterrows():
+        comp = _to_str(r.get("Company"))
+        if not comp:
+            continue
+        cid = DE_NAME_TO_ID.get(comp)
+        if cid is None:
+            ignored.append(("unmapped_company", comp, r.get("Name")))
+            continue
+        if cid not in valid_ids:
+            ignored.append(("unknown_company", cid, comp))
+            continue
+        name = _to_str(r.get("Name"))
+        if not name:
+            continue
+        rows.append({
+            "company_id":         cid,
+            "employee_name":      name,
+            "title":              _to_str(r.get("Title")),
+            "birth_date":         _to_date(r.get("Date of birth")),
+            "employed_from":      _to_date(r.get("Date of employment")),
+            "employed_to":        _to_date(r.get("End date of employment")),
+            "termination_reason": _to_str(r.get("Reason for termination of employment")),
+            "employment_pct":     _to_float(r.get("% of employment")),
+            "productivity":       _to_float(r.get("Productivity %")),
+            "billable_pct":       None,
+            "gender":             _norm_gender(r.get("Male/Female")),
+            "category":           _to_str(r.get("Category")),
+            "salary_local":       None,
+            "location":           None,
+            "apprenticeship_end": None,
+            "pension_apprentice": _to_str(r.get("Pensioner/trainee")),
+        })
+    return rows, ignored
+
+
+def _merge_latest_snapshot(rows: list[dict]) -> tuple[list[dict], int]:
+    """Slå ihop rader som beskriver samma person i flera filer (snapshots).
+
+    Nyckel: (company_id, employee_name). Vid dubbletter behålls raden med
+    senaste snapshot_date. Förutsätter att varje rad redan har snapshot_date satt.
+    Returnerar (sammanslagna_rader, antal_borttagna_dubbletter).
+    """
+    best: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["company_id"], r["employee_name"])
+        cur = best.get(key)
+        if cur is None or r["snapshot_date"] > cur["snapshot_date"]:
+            best[key] = r
+    merged = list(best.values())
+    return merged, len(rows) - len(merged)
+
+
+PARSERS = {
+    "Sweden":  parse_sweden,
+    "Norway":  parse_norway,
+    "Finland": parse_finland,
+    "Denmark": parse_denmark,
+    "Germany": parse_germany,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -322,11 +487,12 @@ INSERT INTO fact_personnel (
 """
 
 
-def write_country(
-    con, country: str, rows: list[dict],
-    source_file: str, snapshot_date: date,
-) -> None:
-    """Idempotent skrivning för ett land. En transaktion."""
+def write_country(con, country: str, rows: list[dict]) -> None:
+    """Idempotent skrivning för ett land. En transaktion.
+
+    Varje rad bär sin egen snapshot_date + source_file (sätts av run() per fil),
+    så länder med flera källfiler — t.ex. Tyskland — får korrekt ursprung per rad.
+    """
     now = datetime.now()
     payload = [
         (
@@ -335,10 +501,15 @@ def write_country(
             r["employment_pct"], r["productivity"], r["billable_pct"],
             r["gender"], r["category"], r["salary_local"],
             r["location"], r["apprenticeship_end"], r["pension_apprentice"],
-            snapshot_date, source_file, now,
+            r["snapshot_date"], r["source_file"], now,
         )
         for r in rows
     ]
+    # load_history: en rad per land. period = senaste snapshot bland filerna,
+    # source_file = alla distinkta källfiler.
+    snaps = [r["snapshot_date"] for r in rows]
+    period = (max(snaps) if snaps else date.today()).strftime("%Y%m")
+    src_summary = "; ".join(sorted({r["source_file"] for r in rows}))
     con.execute("BEGIN")
     try:
         con.execute("DELETE FROM fact_personnel WHERE country = %s", [country])
@@ -349,8 +520,7 @@ def write_country(
                (company_id, period, source_kind, source_file, rows_loaded, sum_amount,
                 statement_type_present, status, message, loaded_at)
                VALUES (NULL, %s, 'PERSONNEL', %s, %s, NULL, FALSE, 'ok', %s, %s)""",
-            [snapshot_date.strftime("%Y%m"), source_file, len(payload),
-             f"country={country}", now],
+            [period, src_summary, len(payload), f"country={country}", now],
         )
         con.execute("COMMIT")
     except Exception:
@@ -436,40 +606,62 @@ def run(country_filter: str | None, dry_run: bool) -> int:
                 log("ERROR", country, "okänt land")
                 err_count += 1
                 continue
-            filename, encrypted, _, _ = FILES[country]
-            f = base_path / FTE_DIR / filename
-            if not f.exists():
-                log("ERROR", country, f"filen saknas: {f}")
+
+            # Parsa varje källfil för landet; stämpla varje rad med filens
+            # snapshot_date + source_file.
+            all_rows: list[dict] = []
+            all_ignored: list[tuple] = []
+            parse_failed = False
+            for filename, encrypted in FILES[country]:
+                f = base_path / FTE_DIR / filename
+                if not f.exists():
+                    log("ERROR", country, f"filen saknas: {f}")
+                    parse_failed = True
+                    break
+                try:
+                    buf = _open_excel(f, encrypted, password)
+                    rows, ignored = PARSERS[country](buf, valid_ids)
+                except Exception as e:
+                    log("ERROR", country, f"parsning misslyckades ({filename}): {e}")
+                    parse_failed = True
+                    break
+                snap = date.fromtimestamp(f.stat().st_mtime)
+                src = db.relpath_from_base(f, base_path)
+                for r in rows:
+                    r["snapshot_date"] = snap
+                    r["source_file"] = src
+                all_rows.extend(rows)
+                all_ignored.extend(ignored)
+            if parse_failed:
                 err_count += 1
                 continue
 
-            try:
-                buf = _open_excel(f, encrypted, password)
-                rows, ignored = PARSERS[country](buf, valid_ids)
-            except Exception as e:
-                log("ERROR", country, f"parsning misslyckades: {e}")
-                err_count += 1
-                continue
+            # Tyskland: samma person finns i flera kvartalsfiler — slå ihop
+            # till senaste snapshot per (bolag, namn).
+            merge_note = ""
+            if country == "Germany":
+                all_rows, dropped = _merge_latest_snapshot(all_rows)
+                if dropped:
+                    merge_note = f", {dropped} kvartalsdubbletter ihopslagna"
 
-            for reason, *info in ignored[:5]:
+            for reason, *info in all_ignored[:5]:
                 log("WARN", country, f"hoppade ({reason}): {info}")
-            if len(ignored) > 5:
-                log("WARN", country, f"... + {len(ignored) - 5} fler ignorerade rader")
+            if len(all_ignored) > 5:
+                log("WARN", country, f"... + {len(all_ignored) - 5} fler ignorerade rader")
 
-            n_companies = len({r["company_id"] for r in rows})
-            msg = f"{len(rows)} rader, {n_companies} bolag"
-            if ignored:
-                msg += f", {len(ignored)} ignorerade"
+            n_companies = len({r["company_id"] for r in all_rows})
+            msg = f"{len(all_rows)} rader, {n_companies} bolag"
+            if all_ignored:
+                msg += f", {len(all_ignored)} ignorerade"
+            msg += merge_note
 
             if dry_run:
                 log("INFO", country, msg + " [DRY — skriver inget]")
             else:
-                snapshot_date = date.fromtimestamp(f.stat().st_mtime)
-                source_file = db.relpath_from_base(f, base_path)
-                write_country(con, country, rows, source_file, snapshot_date)
-                log("OK", country, msg + f"  snapshot={snapshot_date}")
+                write_country(con, country, all_rows)
+                log("OK", country, msg)
                 ok_count += 1
-                if ignored:
+                if all_ignored:
                     warn_count += 1
 
         if not dry_run and country_filter in (None, "Sweden"):
