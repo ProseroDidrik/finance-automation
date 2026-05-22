@@ -114,17 +114,17 @@ raw_balances AS (
   WHERE fb.company_id = %s
     AND fb.period BETWEEN %s AND %s
     AND fb.scenario = COALESCE(%s, fb.scenario)
-  -- period_type med i GROUP BY: en YTD-bas-rad (SE/NO) och en monthly
-  -- MAN/IMP_ADJ-rad för samma konto hålls isär (olika periodsemantik) och
-  -- summeras först i leaf_amounts. För IMP-länder (monthly bas) hamnar bas +
-  -- justering i samma grupp och summeras direkt — korrekt.
+  -- period_type med i GROUP BY: en YTD-bas-rad (SE/NO via SIE/SIE_VER/SAFT)
+  -- och en monthly-rad (MAN/IMP_ADJ, eller SIE_PSALDO-bas) för samma konto
+  -- hålls isär (olika periodsemantik) och summeras först i leaf_amounts. När
+  -- bas och justering har samma period_type summeras de direkt — korrekt.
   GROUP BY fb.company_id, fb.period, fb.account_code, fb.period_type
 ),
 
 -- 3. Normalisera till (amount_month, amount_ytd) per konto för vald period.
---    3a. YTD-källor (SIE/SAFT): en rad per konto; månad = YTD − föregående YTD.
---    3b. Monthly-källor (IMP/MAN/IMP_ADJ): en rad per konto med data i
---        jan..period; YTD = summa över månaderna, månad = valda månadens
+--    3a. YTD-källor (SIE/SIE_VER/SAFT): en rad per konto; månad = YTD − föreg.
+--    3b. Monthly-källor (SIE_PSALDO/IMP/MAN/IMP_ADJ): en rad per konto med data
+--        i jan..period; YTD = summa över månaderna, månad = valda månadens
 --        rörelse (0 om ingen).
 --    OBS: monthly-grenen grupperar över HELA jan..period utan period-filter.
 --    MAN/IMP_ADJ är glesa — ett konto med en post i t.ex. januari men inte i
