@@ -666,6 +666,10 @@ async def report_pivot(
     include_ytd: bool = Query(False, description="Lägg till YTD-kolumn (jan→period_to)"),
     scenario: str = Query("A", description="A=utfall, B=budget"),
     source_kind: str | None = Query(None, description="Tvinga viss källa (annars auto per land)"),
+    source_layers: str = Query(
+        "base,man,imp_adj",
+        description="Komma-sep lager att summera: base,man,imp_adj. Default alla.",
+    ),
 ):
     """Pivot: bolag × period-buckets × kontoträd. Ger alla bolag i ett land eller
     explicit lista. Tids-granularitet (År/Halvår/Kvartal/Månad) plus valfri LTM-kolumn.
@@ -718,9 +722,17 @@ async def report_pivot(
         sql_template = _sql(SQL_PIVOT)
         sql = sql_template.replace("{bucket_values}", bucket_values_clause)
 
+        # Lager-filter: 'base' = bas-källan (best_source), 'man'/'imp_adj' =
+        # additiva justeringslager. Default alla tre. Okända tokens ignoreras.
+        layers = {s.strip().lower() for s in source_layers.split(",") if s.strip()}
+        include_base    = "base"    in layers
+        include_man     = "man"     in layers
+        include_imp_adj = "imp_adj" in layers
         params = (
             bucket_params
-            + [company_ids_list, source_kind, scenario, report_currency]
+            + [company_ids_list, source_kind,
+               include_base, include_man, include_imp_adj,
+               scenario, report_currency]
         )
         df_rows = con.fetch_dicts(sql, params)
 
