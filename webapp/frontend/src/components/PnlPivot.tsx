@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Eye, EyeOff } from "lucide-react";
+import { ChevronDown, ChevronRight, Eye, EyeOff, Layers } from "lucide-react";
 import {
   Company, Granularity, PivotKpi, PivotReport, PivotRow, ReportCurrency,
-  fetchCompanies, fetchPeriods, fetchPivot,
+  SourceLayer, fetchCompanies, fetchPeriods, fetchPivot,
 } from "../api";
 import { fmtBucket, fmtCurrency, fmtPercent } from "../lib/format";
 
@@ -197,6 +197,18 @@ export function PnlPivot() {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["P&L"]));
   const [hiddenBuckets, setHiddenBuckets] = useState<Set<string>>(new Set());
   const [showColumnPicker, setShowColumnPicker] = useState<boolean>(false);
+  // Lager-filter: vilka källager som summeras in i utfallet (scenario A).
+  const [sourceLayers, setSourceLayers] = useState<{ base: boolean; man: boolean; imp_adj: boolean }>(
+    { base: true, man: true, imp_adj: true },
+  );
+  const [showSourcePicker, setShowSourcePicker] = useState<boolean>(false);
+  const selectedLayers = useMemo<SourceLayer[]>(() => {
+    const out: SourceLayer[] = [];
+    if (sourceLayers.base) out.push("base");
+    if (sourceLayers.man) out.push("man");
+    if (sourceLayers.imp_adj) out.push("imp_adj");
+    return out;
+  }, [sourceLayers]);
 
   // Initial: ladda bolag + perioder
   useEffect(() => {
@@ -239,7 +251,7 @@ export function PnlPivot() {
       include_ytd:    includeYtd,
     } as const;
 
-    const actualP = fetchPivot({ ...baseQuery, scenario: "A" });
+    const actualP = fetchPivot({ ...baseQuery, scenario: "A", source_layers: selectedLayers });
     const budgetP = includeBudget
       ? fetchPivot({
           ...baseQuery,
@@ -247,6 +259,10 @@ export function PnlPivot() {
           // som utfall så användaren får jämförbara kolumner. Källa MAN, scenario B.
           scenario:    "B",
           source_kind: "MAN",
+          // Budget = scenario B med forcerad source_kind=MAN; lager-filtret styr
+          // bara scenario A:s utfall. ["base"] explicit så att en eventuell
+          // scenario-B IMP_ADJ inte smyger in i budgetkolumnen.
+          source_layers: ["base"],
         })
       : null;
 
@@ -264,7 +280,7 @@ export function PnlPivot() {
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [scope, periodFrom, periodTo, granularity, reportCurrency,
-      includeLtm, includeYtd, includeBudget]);
+      includeLtm, includeYtd, includeBudget, selectedLayers]);
 
   const groupedCompanies = useMemo(() => {
     const groups = new Map<string, Company[]>();
@@ -457,6 +473,41 @@ export function PnlPivot() {
               {t.label}
             </button>
           ))}
+        </div>
+
+        {/* Källor — lager-filter (bas / MAN / IMP_ADJ) */}
+        <div className="relative">
+          <button
+            onClick={() => setShowSourcePicker((v) => !v)}
+            className="px-3 py-1.5 rounded-md border border-border bg-surface text-fg-muted text-xs hover:bg-elevated inline-flex items-center gap-1"
+            title="Välj vilka källager som summeras in i utfallet"
+          >
+            <Layers size={12} aria-hidden />
+            Källor ({selectedLayers.length}/3)
+          </button>
+          {showSourcePicker && (
+            <div className="absolute right-0 mt-1 z-20 bg-surface border border-border rounded-md shadow-lg p-2 min-w-[12rem] text-xs">
+              {([
+                { key: "base",    label: "Baskälla (auto)" },
+                { key: "man",     label: "MAN-justeringar" },
+                { key: "imp_adj", label: "IMP_ADJ-justeringar" },
+              ] as { key: "base" | "man" | "imp_adj"; label: string }[]).map((l) => (
+                <label
+                  key={l.key}
+                  className="flex items-center gap-2 px-2 py-1 hover:bg-elevated rounded cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={sourceLayers[l.key]}
+                    onChange={() =>
+                      setSourceLayers((prev) => ({ ...prev, [l.key]: !prev[l.key] }))
+                    }
+                  />
+                  <span>{l.label}</span>
+                </label>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Kolumn-visibility */}
