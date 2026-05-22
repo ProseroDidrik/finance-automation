@@ -6,12 +6,18 @@
 -- Tokenen <bucket-values> i bucket_spec-CTE:n ersätts av Python till en
 -- VALUES-lista (3 placeholder per bucket) innan SQL:en skickas till psycopg.
 --
--- Bind-parametrar (i ordning, EFTER token-substitutionen):
+-- Bind-parametrar (i ordning, EFTER <bucket-values>-substitutionen):
 --   - alla bucket-värden (3 per bucket: key, start_period, end_period)
---   - company_ids                  : INTEGER[]
---   - scenario                     : TEXT ('A' eller 'B')
---   - report_currency              : TEXT ('SEK' eller 'LOCAL') — andra → LOCAL
---   - source_kind override         : TEXT eller NULL (auto via prio per land)
+--   - company_ids       : INTEGER[]
+--   - source_kind       : TEXT eller NULL (override; NULL = auto via prio per land)
+--   - include_base      : BOOLEAN — summera in bas-källan (best_source)
+--   - include_man       : BOOLEAN — summera in MAN-justeringslagret
+--   - include_imp_adj   : BOOLEAN — summera in IMP_ADJ-justeringslagret
+--   - scenario          : TEXT ('A' eller 'B')
+--   - report_currency   : TEXT ('SEK' eller 'LOCAL') — andra → LOCAL
+--
+-- Utfall = vald bas-källa (best_source) + additivt MAN + IMP_ADJ ovanpå.
+-- best_source väljer ALDRIG MAN/IMP_ADJ — de är additiva lager (se raw_balances).
 
 WITH RECURSIVE
 -- Bucket-spec injiceras av Python (VALUES per bucket):
@@ -67,7 +73,6 @@ best_source AS (
                     WHEN MAX(CASE WHEN fb.source_kind = 'SIE_VER'    THEN 1 ELSE 0 END) = 1 THEN 'SIE_VER'
                     WHEN MAX(CASE WHEN fb.source_kind = 'SIE'        THEN 1 ELSE 0 END) = 1 THEN 'SIE'
                     WHEN MAX(CASE WHEN fb.source_kind = 'IMP'        THEN 1 ELSE 0 END) = 1 THEN 'IMP'
-                    WHEN MAX(CASE WHEN fb.source_kind = 'IMP_ADJ'    THEN 1 ELSE 0 END) = 1 THEN 'IMP_ADJ'
                     ELSE NULL
                 END
             WHEN 'Norway' THEN
@@ -76,7 +81,6 @@ best_source AS (
                     WHEN MAX(CASE WHEN fb.source_kind = 'SIE_PSALDO' THEN 1 ELSE 0 END) = 1 THEN 'SIE_PSALDO'
                     WHEN MAX(CASE WHEN fb.source_kind = 'SIE'        THEN 1 ELSE 0 END) = 1 THEN 'SIE'
                     WHEN MAX(CASE WHEN fb.source_kind = 'IMP'        THEN 1 ELSE 0 END) = 1 THEN 'IMP'
-                    WHEN MAX(CASE WHEN fb.source_kind = 'IMP_ADJ'    THEN 1 ELSE 0 END) = 1 THEN 'IMP_ADJ'
                     ELSE NULL
                 END
             WHEN 'CA' THEN
@@ -85,13 +89,11 @@ best_source AS (
                     WHEN MAX(CASE WHEN fb.source_kind = 'SIE_VER'    THEN 1 ELSE 0 END) = 1 THEN 'SIE_VER'
                     WHEN MAX(CASE WHEN fb.source_kind = 'SIE'        THEN 1 ELSE 0 END) = 1 THEN 'SIE'
                     WHEN MAX(CASE WHEN fb.source_kind = 'IMP'        THEN 1 ELSE 0 END) = 1 THEN 'IMP'
-                    WHEN MAX(CASE WHEN fb.source_kind = 'IMP_ADJ'    THEN 1 ELSE 0 END) = 1 THEN 'IMP_ADJ'
                     ELSE NULL
                 END
             ELSE  -- Finland, Denmark, Germany, CENTR
                 CASE
                     WHEN MAX(CASE WHEN fb.source_kind = 'IMP'     THEN 1 ELSE 0 END) = 1 THEN 'IMP'
-                    WHEN MAX(CASE WHEN fb.source_kind = 'IMP_ADJ' THEN 1 ELSE 0 END) = 1 THEN 'IMP_ADJ'
                     ELSE NULL
                 END
         END) AS source_kind
@@ -102,22 +104,34 @@ best_source AS (
     GROUP BY fb.company_id, fb.period, c.country
 ),
 
--- 3. Råa balances för valt scenario, summerade per (bolag, period, konto).
+-- 3. Råa balances för valt scenario, summerade per (bolag, period, konto, period_type).
 --    P-koder normaliseras till SIE-konvention (negat).
+--
+--    Additivt: bas-källan (best_source) ELLER ett justeringslager (MAN/IMP_ADJ).
+--    Lager-filtret — tre booleska parametrar — styr vilka lager som tas med.
+--    OR i join-villkoret avgör bara OM en fb-rad joinar, inte hur många gånger.
+--
+--    period_type ligger i GROUP BY: en YTD-bas-rad (SE/NO) och en monthly
+--    MAN/IMP_ADJ-rad för samma konto hålls isär (olika periodsemantik) och
+--    summeras först i bucket_amounts. Utan detta skulle de slås ihop och
+--    monthly-justeringen felaktigt YTD-diffas i month_amounts.
 raw_balances AS (
     SELECT
-        fb.company_id, fb.period, fb.account_code,
+        fb.company_id, fb.period, fb.account_code, fb.period_type,
         MAX(fb.account_name) AS account_name,
-        MAX(fb.period_type)  AS period_type,
         SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%%' THEN -1 ELSE 1 END) AS amount
     FROM fact_balances fb
     JOIN best_source bs
         ON bs.company_id  = fb.company_id
        AND bs.period      = fb.period
-       AND bs.source_kind = fb.source_kind
+       AND (
+            (%s::boolean AND bs.source_kind = fb.source_kind)
+         OR (%s::boolean AND fb.source_kind = 'MAN')
+         OR (%s::boolean AND fb.source_kind = 'IMP_ADJ')
+       )
     JOIN months_with_prev mw ON mw.period = fb.period
     WHERE fb.scenario = %s
-    GROUP BY fb.company_id, fb.period, fb.account_code
+    GROUP BY fb.company_id, fb.period, fb.account_code, fb.period_type
 ),
 
 -- 4. Månadsbelopp: monthly→direkt; ytd→ diff mot föregående månad inom samma år.

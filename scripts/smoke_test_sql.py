@@ -89,6 +89,26 @@ def test_coverage_accounts() -> bool:
     return _run("coverage_accounts.sql", body, (72, "202604", "SIE"))
 
 
+def test_report_pivot() -> bool:
+    """report_pivot.sql körs som main.py:report_pivot() — {bucket_values} substitueras.
+
+    Param-ordning efter substitution: bucket(3) + company_ids + source_kind
+    + include_base + include_man + include_imp_adj + scenario + report_currency.
+    """
+    body = (SQL_DIR / "report_pivot.sql").read_text(encoding="utf-8")
+    # main.py bygger "VALUES (%s,%s,%s), ..." en gång per bucket — här: en bucket.
+    body = body.replace("{bucket_values}", "VALUES (%s, %s, %s)")
+    params = (
+        "2026-03", "202603", "202603",   # bucket: key, start_period, end_period
+        [72],                            # company_ids (INTEGER[]) — bolag 72 Dala Lås
+        None,                            # source_kind (NULL = auto)
+        True, True, True,                # include_base / include_man / include_imp_adj
+        "A",                             # scenario
+        "LOCAL",                         # report_currency
+    )
+    return _run("report_pivot.sql", body, params)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--file", help="Specifik SQL-fil att testa (ingen wrapping)")
@@ -111,6 +131,7 @@ def main() -> int:
     results = [
         test_compare_coverage(),
         test_coverage_accounts(),
+        test_report_pivot(),
     ]
     if all(results):
         print(f"\nAll {len(results)} tests OK.")
