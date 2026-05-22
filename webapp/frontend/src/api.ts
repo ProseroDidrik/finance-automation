@@ -248,6 +248,7 @@ export async function fetchPersonnelEmployees(companyId: number): Promise<Person
 
 export type Granularity = "month" | "quarter" | "half" | "year";
 export type ReportCurrency = "SEK" | "LOCAL";
+export type SourceLayer = "base" | "man" | "imp_adj";
 
 export interface PivotBucket {
   key: string;
@@ -313,6 +314,7 @@ export interface PivotQuery {
   include_ytd?: boolean;
   scenario?: "A" | "B";
   source_kind?: string;
+  source_layers?: SourceLayer[];
 }
 
 // ----- Counterparties -------------------------------------------------------
@@ -479,5 +481,7 @@ export async function fetchPivot(q: PivotQuery): Promise<PivotReport> {
   if (q.include_ytd) params.append("include_ytd", "true");
   if (q.scenario) params.append("scenario", q.scenario);
   if (q.source_kind) params.append("source_kind", q.source_kind);
+  if (q.source_layers && q.source_layers.length)
+    params.append("source_layers", q.source_layers.join(","));
   return getJSON<PivotReport>(`/api/report/pivot?${params}`);
 }
