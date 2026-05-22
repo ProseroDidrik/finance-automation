@@ -1,12 +1,13 @@
-"""Ladda SIE-filer (Sverige) till fact_balances i DuckDB.
+"""Ladda SIE-filer (Sverige) till fact_balances i Postgres.
 
-SIE-formatet är YTD-baserat. För varje fil:
+#UB/#RES är YTD-baserade; #PSALDO är månadsrörelse. För varje fil:
   #UB 0 <konto> <belopp>            → BS-konto, utgående balans (YTD)
   #RES 0 <konto> <belopp>           → IS-konto, ackumulerat resultat (YTD)
   #PSALDO 0 <YYYYMM> <konto> {} <belopp>
-                                    → per-månad YTD-saldo per konto.
-                                      Ger månadsvis YTD-snapshot även från
-                                      en enda senaste-månad-fil.
+                                    → MÅNADSRÖRELSE för kontot den månaden
+                                      (INTE YTD — summan över årets perioder
+                                      = #RES 0). Endast {}-totalen laddas;
+                                      dimensionssplit-rader hoppas över.
   #KONTO <konto> "<namn>"           → kontoplan
   #ORGNR / #FNAMN / #RAR / #GEN     → metadata
 
@@ -20,8 +21,8 @@ Period-härledning (#PSALDO är det enda fält i SIE som faktiskt anger
   - Saknar filen #PSALDO krävs --period explicit.
 
 Två separata source_kind-laner skrivs till fact_balances:
-  SOURCE_KIND='SIE'         → UB/RES, period=fastställd för filen
-  SOURCE_KIND='SIE_PSALDO'  → PSALDO, period=PSALDO-radens egna YYYYMM
+  SOURCE_KIND='SIE'         → UB/RES, period_type='ytd', period=filens
+  SOURCE_KIND='SIE_PSALDO'  → PSALDO, period_type='monthly', period=radens YYYYMM
 
 Idempotens: senaste laddningen vinner per (company_id, period, source_kind).
 """
@@ -40,6 +41,9 @@ SOURCE_KIND = "SIE"
 SOURCE_KIND_PSALDO = "SIE_PSALDO"
 SOURCE_KIND_SIE_VER = "SIE_VER"
 PERIOD_TYPE = "ytd"
+# SIE_PSALDO är månadsrörelse, INTE YTD — egen period_type så report_pnl.sql
+# routar den genom monthly-grenen (3b) i stället för YTD-subtraktion (3a).
+PERIOD_TYPE_PSALDO = "monthly"
 ENCODINGS = ("utf-8-sig", "cp437", "latin-1")
 
 # #ORGNR: orgnr är antingen en citerad sträng (norska Global-exporter skriver
@@ -56,8 +60,19 @@ RE_RES    = re.compile(r"^#RES\s+0\s+(\S+)\s+(-?\d+(?:[.,]\d+)?)", re.IGNORECASE
 # YTD innevarande RAR. Vi läser #RES -1 (föregående RAR) för att kunna
 # korrigera detta nedan, men ENDAST när #PROGRAM matchar NAV.
 RE_RES_PRIOR = re.compile(r"^#RES\s+-1\s+(\S+)\s+(-?\d+(?:[.,]\d+)?)", re.IGNORECASE)
+# Endast {}-totalen laddas — INTE dimensionssplit-rader ({1 "200"} etc).
+# Tidigare \{[^}]*\} matchade båda → SIE_PSALDO dubbel-/trippelräknades för
+# bolag som dim-taggar #PSALDO (23, 75, 186). Dim-splittar summerar till
+# {}-totalen, så bara totalen ska laddas.
 RE_PSALDO = re.compile(
-    r"^#PSALDO\s+0\s+(\d{6})\s+(\S+)\s+\{[^}]*\}\s+(-?\d+(?:[.,]\d+)?)",
+    r"^#PSALDO\s+0\s+(\d{6})\s+(\S+)\s+\{\s*\}\s+(-?\d+(?:[.,]\d+)?)",
+    re.IGNORECASE,
+)
+# Diagnostik-variant: matchar #PSALDO med VALFRITT objektlist-innehåll och
+# fångar brace-innehållet (grupp 3) så psaldo_dim_coverage kan skilja
+# {}-totaler från dimensionssplittar. Används inte av laddningen.
+RE_PSALDO_ANY = re.compile(
+    r"^#PSALDO\s+0\s+(\d{6})\s+(\S+)\s+\{([^}]*)\}\s+(-?\d+(?:[.,]\d+)?)",
     re.IGNORECASE,
 )
 RE_RAR0   = re.compile(r"^#RAR\s+0\s+(\d{8})\s+(\d{8})", re.IGNORECASE)
@@ -419,6 +434,111 @@ def build_orgnr_lookup(con: db.Conn) -> dict[str, tuple[int, str, str]]:
 RE_PATH_PERIOD = re.compile(r"(?:^|[\\/])extracted[\\/](\d{6})[\\/]", re.IGNORECASE)
 
 
+def psaldo_fact_rows(psaldo_rows: list[tuple], company_id: int, currency: str,
+                     rel_src: str, now: datetime) -> list[tuple]:
+    """Bygg fact_balances-insertrader för SIE_PSALDO-lanen.
+
+    psaldo_rows: tuples (period, code, name, amount, statement_type, row_index).
+
+    #PSALDO är månadsrörelse (inte YTD) → period_type='monthly'. report_pnl.sql
+    routar 'monthly'-rader genom summerings-grenen (3b); 'ytd' skulle ge
+    YTD-subtraktion på en redan-månadssiffra (felaktig P&L för ~17 SE-bolag).
+    Se memory reference-sie-psaldo.
+    """
+    return [
+        (company_id, r[0], PERIOD_TYPE_PSALDO, r[1], r[2], r[3], currency,
+         r[4], SOURCE_KIND_PSALDO, rel_src, r[5], now)
+        for r in psaldo_rows
+    ]
+
+
+def check_psaldo_vs_res(parsed: dict, tol: float = 1.0) -> list[tuple]:
+    """Intern konsistenskontroll: summa(#PSALDO) per konto = #RES 0.
+
+    #PSALDO är månadsrörelse; #RES 0 är YTD-resultat. För ett resultatkonto
+    ska summan av alla #PSALDO-perioder vara lika med #RES 0-värdet (samma
+    SIE-teckenkonvention). En avvikelse > tol indikerar en parse-bugg eller
+    en icke-standard-export (t.ex. Dynamics NAV #RES 0 = ackumulerat över
+    alla år — fångas korrekt här).
+
+    Returnerar list[(account_code, sum_psaldo, res_value, diff)] för konton
+    vars |diff| > tol; tom lista = filen är internt konsistent. Detta är den
+    facit-fria avstämningen — SIE-filen är sin egen facit.
+
+    OBS: meningsfull bara när filens #PSALDO spänner från räkenskapsårets
+    start. Konton som saknas i endera #PSALDO eller #RES hoppas över.
+    """
+    psaldo_sum: dict[str, float] = {}
+    for _period, code, amt in parsed.get("psaldo", []):
+        psaldo_sum[code] = psaldo_sum.get(code, 0.0) + amt
+    res_by_code: dict[str, float] = {}
+    for code, amt in parsed.get("res", []):
+        res_by_code[code] = res_by_code.get(code, 0.0) + amt
+
+    out: list[tuple] = []
+    for code in sorted(psaldo_sum.keys() & res_by_code.keys()):
+        ps, rs = psaldo_sum[code], res_by_code[code]
+        diff = ps - rs
+        if abs(diff) > tol:
+            out.append((code, ps, rs, diff))
+    return out
+
+
+def check_voucher_balance(parsed: dict, tol: float = 0.005) -> list[tuple]:
+    """Intern kontroll: varje verifikat ska balansera (debet = kredit).
+
+    Summan av #TRANS-belopp i ett #VER ska vara 0. Returnerar
+    list[(series, voucher_number, imbalance)] för verifikat vars |summa| > tol;
+    tom lista = alla verifikat balanserar. Kräver parse_sie(..., with_journal=True).
+    """
+    out: list[tuple] = []
+    for v in parsed.get("vouchers", []):
+        imbalance = sum(t["amount"] for t in v["transes"])
+        if abs(imbalance) > tol:
+            out.append((v["series"], v["number"], imbalance))
+    return out
+
+
+def psaldo_dim_coverage(text: str) -> dict:
+    """Spot-check-diagnostik för Bug 2-fixen: hittar konton som {}-only-regexen
+    (RE_PSALDO) skulle tappa — dvs konton som har #PSALDO-rader men ingen
+    {}-totalrad.
+
+    RE_PSALDO laddar bara #PSALDO-rader med tom objektlista ({}). Det antar att
+    varje konto med #PSALDO även har en {}-totalrad. Funktionen verifierar
+    antagandet mot en faktisk fil.
+
+    Ingen kontroll av {}-total mot summan av dim-rader görs: i SIE kan en
+    transaktion bära flera dimensionsTYPER (t.ex. kostnadsställe + projekt) och
+    varje typ återger HELA beloppet → Σ(dim-rader) = (antal dim-typer) × {}.
+    Dim-summan har därför ingen fast relation till {}-totalen; {} ÄR totalen.
+
+    Returnerar dict:
+      total_row_count      — antal {}-totalrader (vad laddningen tar in)
+      all_psaldo_accounts  — antal distinkta konton i någon #PSALDO-rad
+      lost_accounts        — sorterad lista konton UTAN {}-total → skulle tappas
+    """
+    accounts_all: set[str] = set()
+    accounts_total: set[str] = set()
+    total_row_count = 0
+
+    for raw in text.splitlines():
+        m = RE_PSALDO_ANY.match(raw.lstrip())
+        if not m:
+            continue
+        _period, account, braces, _amount = m.groups()
+        accounts_all.add(account)
+        if braces.strip() == "":
+            total_row_count += 1
+            accounts_total.add(account)
+
+    return {
+        "total_row_count": total_row_count,
+        "all_psaldo_accounts": len(accounts_all),
+        "lost_accounts": sorted(accounts_all - accounts_total),
+    }
+
+
 def load_file(con, path: Path, base_path: Path, period_override: str | None,
               orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False,
               override: list[int] | None = None) -> str:
@@ -502,6 +622,22 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         log("INFO", company_id,
             f"NAV-korrigering tillämpad: subtraherat #RES -1 på {n_adjusted} "
             f"konton (program='{program}')")
+
+    # Intern konsistenskontroll (facit-fri) — körs efter NAV-korrigeringen så
+    # #RES jämförs i rätt form. Loggas som WARN; blockerar inte laddningen.
+    psaldo_breaks = check_psaldo_vs_res(parsed)
+    if psaldo_breaks:
+        worst = max(psaldo_breaks, key=lambda b: abs(b[3]))
+        log("WARN", company_id,
+            f"{path.name}: {len(psaldo_breaks)} konton där summa(#PSALDO) != "
+            f"#RES 0 (störst: konto {worst[0]} diff {worst[3]:+.2f})")
+    if include_journal:
+        voucher_breaks = check_voucher_balance(parsed)
+        if voucher_breaks:
+            s, vnum, imb = voucher_breaks[0]
+            log("WARN", company_id,
+                f"{path.name}: {len(voucher_breaks)} obalanserade verifikat "
+                f"(t.ex. {s}{vnum} diff {imb:+.2f})")
 
     # IS/BS-klassning per kontokod: UB → BS, RES → IS. Fallback för PSALDO-koder
     # som ev. saknas i UB/RES: första-siffra-regel (1,2 → BS; annars IS).
@@ -655,9 +791,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                     amount, currency, statement_type, source_kind, source_file,
                     row_index, loaded_at)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                [(company_id, r[0], PERIOD_TYPE, r[1], r[2], r[3], currency,
-                  r[4], SOURCE_KIND_PSALDO, rel_src, r[5], now)
-                 for r in psaldo_rows],
+                psaldo_fact_rows(psaldo_rows, company_id, currency, rel_src, now),
             )
 
         # Journal: senaste laddningen vinner per (bolag, period). En SIE-fil
@@ -763,7 +897,7 @@ def discover_files(source_dir: Path) -> list[Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Ladda SIE-filer (Sverige) till DuckDB (fact_balances)."
+        description="Ladda SIE-filer (Sverige) till Postgres (fact_balances)."
     )
     parser.add_argument("--period", default=None,
                         help="YYYYMM. Override för period-validering "
