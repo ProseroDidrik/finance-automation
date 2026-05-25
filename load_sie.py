@@ -315,21 +315,47 @@ IS_ACCOUNT_CLASSES = ("3", "4", "5", "6", "7", "8")
 # syntesen antar svensk kontoplan och kalenderår.
 SIE_VER_COUNTRIES = ("Sweden", "CA")
 
+# Hybrid-fallback-tröskel: när |journal-cum jan..period − #RES YTD| är större än
+# detta, betraktas journalen som icke-täckande och vi använder #RES istället.
+# Bakgrund: 4–5 SE-bolag (14/18/41/152) levererar SIE där löner och andra
+# personalkostnader rapporteras som #RES men *aldrig som #VER/#TRANS*
+# (lönesystemet exporterar inte verifikatrader). Empirisk validering 2026-05-25:
+# 32/32 stickprov där SIE och SIE_VER skiljer sig >10 % — Mercur följer alltid
+# #RES. Tröskeln 5 % relativt + 100 absolut fångar konton där lönerna saknas
+# helt utan att false-positive:a på små periodiseringsdiffar.
+SIE_VER_FALLBACK_REL = 0.05
+SIE_VER_FALLBACK_ABS = 100.0
+
 
 def synthesize_sie_ver(con, company_id: int, fy_start: str, fy_end: str,
-                       period: str, rel_src: str, now: datetime) -> int:
-    """Syntetisera SIE_VER-rader (YTD-saldon) från fact_journal_sie.
+                       period: str, rel_src: str, now: datetime,
+                       parsed_res: list[tuple[str, float]] | None = None,
+                       parsed_konto: dict[str, str] | None = None,
+                       ) -> tuple[int, int]:
+    """Syntetisera SIE_VER-rader (YTD-saldon) från fact_journal_sie + #RES-fallback.
 
     Anropas inom den öppna transaktionen i load_file, EFTER att journalraderna
     skrivits — läser därför både den aktuella filens verifikat och tidigare
     laddade månader. Aggregerar verifikat per (konto, period), kumulerar till
     YTD och skriver source_kind='SIE_VER'. Bara IS-konton (kontoklass 3–8).
 
+    **Hybrid-fallback per konto** (när parsed_res anges): för IS-konton i #RES
+    där journal-cum jan..period avviker mer än SIE_VER_FALLBACK_REL × |#RES|
+    (med abs golv SIE_VER_FALLBACK_ABS) anses journalen icke-täckande. Då
+    skrivs en jämnt fördelad YTD-serie över FY-perioderna fram till `period`:
+
+        YTD[i] = #RES × (i+1) / len(periods)
+
+    Jämnfördelningen är **en fabrikation** — vi vet inte den faktiska månads-
+    fördelningen för konton som saknar verifikat. För compare-script och YTD-
+    rapporter blir summa jan..period rätt. Månadsrapporter kommer visa
+    löner utsmetade jämnt över hela FY:t istället för verklig payroll-rytm.
+
     DELETE täcker hela FY:t (fy_start..fy_end) → idempotent och rensar även
     ev. stale senare-månadsrader. INSERT skrivs bara för fy_start..period.
 
-    Returnerar antal SIE_VER-rader som skrevs (0 om inga verifikat finns —
-    då behålls #RES-baserad SIE som fallback via best_source).
+    Returnerar (n_rows_skrivna, n_fallback_konton). n_fallback_konton = antal
+    IS-konton där #RES-fallback aktiverades.
     """
     periods = fy_periods(fy_start, period)
 
@@ -352,6 +378,38 @@ def synthesize_sie_ver(con, company_id: int, fy_start: str, fy_end: str,
         if account_name is not None or code not in names:
             names[code] = account_name
 
+    # --- Hybrid-fallback: identifiera konton där #RES tas över för journal ---
+    fallback_konton: set[str] = set()
+    fallback_rows: list[tuple[str, str, float]] = []
+    if parsed_res:
+        # Aggregera #RES till {code: ytd_value} och filtrera IS-konton.
+        res_by_code: dict[str, float] = {}
+        for code, amt in parsed_res:
+            if code and code[:1] in IS_ACCOUNT_CLASSES:
+                res_by_code[code] = res_by_code.get(code, 0.0) + amt
+        # Journal-cum jan..period per konto.
+        journal_cum: dict[str, float] = {}
+        for code, _p, amount in journal:
+            journal_cum[code] = journal_cum.get(code, 0.0) + amount
+        n_periods = len(periods)
+        for code, res_ytd in res_by_code.items():
+            jc = journal_cum.get(code, 0.0)
+            if abs(res_ytd) < SIE_VER_FALLBACK_ABS:
+                # #RES är nära noll — låt journal styra (eller skip om även 0).
+                continue
+            tol = max(SIE_VER_FALLBACK_ABS,
+                      SIE_VER_FALLBACK_REL * abs(res_ytd))
+            if abs(jc - res_ytd) <= tol:
+                continue  # journal matchar #RES tillräckligt — använd journal.
+            fallback_konton.add(code)
+            # Jämn YTD-fördelning över FY-perioderna fram till `period`.
+            for i, p in enumerate(periods):
+                fallback_rows.append(
+                    (code, p, res_ytd * (i + 1) / n_periods),
+                )
+            if code not in names and parsed_konto:
+                names[code] = parsed_konto.get(code)
+
     # Idempotens: rensa hela FY:t innan INSERT.
     con.execute(
         """DELETE FROM fact_balances
@@ -360,9 +418,13 @@ def synthesize_sie_ver(con, company_id: int, fy_start: str, fy_end: str,
         [company_id, SOURCE_KIND_SIE_VER, fy_start, fy_end],
     )
 
-    ytd = cumulate_ytd(journal, periods)
+    # Kumulera journal — exkludera fallback-konton (de får #RES-fördelning).
+    journal_for_ytd = [(code, p, amt) for code, p, amt in journal
+                       if code not in fallback_konton]
+    ytd = cumulate_ytd(journal_for_ytd, periods)
+    ytd.extend(fallback_rows)
     if not ytd:
-        return 0
+        return 0, 0
 
     idx_per_period: dict[str, int] = {}
     insert_rows: list[tuple] = []
@@ -381,7 +443,7 @@ def synthesize_sie_ver(con, company_id: int, fy_start: str, fy_end: str,
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         insert_rows,
     )
-    return len(insert_rows)
+    return len(insert_rows), len(fallback_konton)
 
 
 def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
@@ -824,14 +886,21 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # fact_journal_sie och är alltid minst lika korrekta som #RES-baserad SIE
         # (SIE_VER är en materialiserad vy av journalen).
         sie_ver_count = 0
+        sie_ver_fallback = 0
         if include_journal and country in SIE_VER_COUNTRIES and not parsed["psaldo"]:
             if fy_start.endswith("01"):
-                sie_ver_count = synthesize_sie_ver(
-                    con, company_id, fy_start, fy_end, period, rel_src, now)
+                sie_ver_count, sie_ver_fallback = synthesize_sie_ver(
+                    con, company_id, fy_start, fy_end, period, rel_src, now,
+                    parsed_res=parsed["res"], parsed_konto=parsed["konto"])
                 if sie_ver_count == 0:
                     log("INFO", company_id,
                         "SIE_VER: inga verifikat i fact_journal_sie — "
                         "behåller #RES-baserad SIE som fallback.")
+                elif sie_ver_fallback > 0:
+                    log("INFO", company_id,
+                        f"SIE_VER: hybrid-fallback aktiverad för "
+                        f"{sie_ver_fallback} konton (journal otäckande, "
+                        f"#RES jämnt fördelat över FY).")
             else:
                 log("WARN", company_id,
                     f"SIE_VER: brutet räkenskapsår (FY-start {fy_start}) — "
@@ -861,7 +930,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
              f"sie_rows={len(sie_rows)} psaldo_rows={len(psaldo_rows)} "
              f"psaldo_periods={len(psaldo_periods)} "
              f"journal_rows={len(journal_rows)} journal_periods={len(journal_periods)} "
-             f"sie_ver_rows={sie_ver_count} "
+             f"sie_ver_rows={sie_ver_count} sie_ver_fallback={sie_ver_fallback} "
              f"sum_ub={total_ub:.2f} sum_res={total_res:.2f}",
              now],
         )
@@ -873,7 +942,9 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
 
     psaldo_msg = f" PSALDO={len(psaldo_rows)}({len(psaldo_periods)} mån)" if psaldo_rows else ""
     journal_msg = f" JOURNAL={len(journal_rows)}({len(journal_periods)} mån)" if journal_rows else ""
-    sie_ver_msg = f" SIE_VER={sie_ver_count}" if sie_ver_count else ""
+    sie_ver_msg = (f" SIE_VER={sie_ver_count}"
+                   + (f"(fallback={sie_ver_fallback})" if sie_ver_fallback else "")
+                   if sie_ver_count else "")
     cutoff_msg = (f"  CUTOFF<= {period_override}: skippade PSALDO={psaldo_skipped} "
                   f"vouchers={journal_skipped}"
                   if period_override and (psaldo_skipped or journal_skipped) else "")
