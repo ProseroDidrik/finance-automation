@@ -55,14 +55,19 @@ def _col_letter(cell_ref: str) -> str:
 
 
 def iter_rows(path: Path) -> Iterator[dict[str, str]]:
-    """Yield dict {col_letter: value} per datarad (skipping title + header)."""
+    """Yield dict {col_letter: value} per datarad (skipping title + header).
+
+    Stödjer både shared strings (xl/sharedStrings.xml — Excel-default) och
+    inline strings (openpyxl-output utan delade strängar).
+    """
     with zipfile.ZipFile(path) as z:
-        with z.open("xl/sharedStrings.xml") as f:
-            sst_root = ET.parse(f).getroot()
         sst: list[str] = []
-        for si in sst_root.findall("s:si", NS):
-            t = si.find("s:t", NS)
-            sst.append(t.text if t is not None and t.text is not None else "")
+        if "xl/sharedStrings.xml" in z.namelist():
+            with z.open("xl/sharedStrings.xml") as f:
+                sst_root = ET.parse(f).getroot()
+            for si in sst_root.findall("s:si", NS):
+                t = si.find("s:t", NS)
+                sst.append(t.text if t is not None and t.text is not None else "")
 
         with z.open("xl/worksheets/sheet1.xml") as f:
             ws_root = ET.parse(f).getroot()
@@ -82,10 +87,19 @@ def iter_rows(path: Path) -> Iterator[dict[str, str]]:
         for c in r.findall("s:c", NS):
             ref = c.get("r") or ""
             col = _col_letter(ref)
+            t_attr = c.get("t")
+            if t_attr == "inlineStr":
+                # Inline string: <c t="inlineStr"><is><t>value</t></is></c>
+                is_el = c.find("s:is", NS)
+                if is_el is not None:
+                    parts = [t.text or "" for t in is_el.findall("s:t", NS)]
+                    if parts:
+                        cells[col] = "".join(parts)
+                continue
             v = c.find("s:v", NS)
             if v is None or v.text is None:
                 continue
-            if c.get("t") == "s":
+            if t_attr == "s":
                 try:
                     cells[col] = sst[int(v.text)]
                 except (ValueError, IndexError):
