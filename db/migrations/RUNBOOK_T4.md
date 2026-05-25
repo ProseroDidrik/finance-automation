@@ -119,9 +119,36 @@ AzureDiagnostics
 - ✅ `pgaudit` extension installerad och i `shared_preload_libraries`
 - ✅ `pgaudit.log = 'WRITE,ROLE,DDL'` live
 - ✅ `log_connections = on` (var redan på)
-- ✅ Log Analytics workspace `log-finauto-6427` skapad
+- ✅ Log Analytics workspace `log-finauto-6427` skapad (30d retention)
 - ✅ Diagnostic setting `pg-audit-to-law` → PostgreSQLLogs + PostgreSQLFlexSessions
-- ⏳ Test-event syns i LA (LA-ingestion ~5 min, verifieras separat)
+- ⏳ **LA-ingestion ej verifierad live** — 8 min polling utan träff på smoke-event
+  (`CREATE ROLE t4_smoke_20260525121231; DROP ROLE …`). Förväntat: 15-30 min
+  vanligt för helt ny LA workspace + diagnostic setting (pipeline "kallstart").
+  Verifiera när som helst nästa timme/dag med KQL nedan.
+
+### Verify LA-ingestion (kör 15-60 min efter T4-deploy)
+
+```powershell
+$law = az monitor log-analytics workspace show -g rg-finauto-6427 -n log-finauto-6427 --query customerId -o tsv
+
+# Något över huvud taget från Postgres?
+az monitor log-analytics query --workspace $law --analytics-query @"
+AzureDiagnostics
+| where ResourceProvider == 'MICROSOFT.DBFORPOSTGRESQL'
+| summarize Count=count(), Latest=max(TimeGenerated) by Category
+"@ -o table
+
+# Specifikt vårt smoke-event från 2026-05-25 12:12
+az monitor log-analytics query --workspace $law --analytics-query @"
+AzureDiagnostics
+| where ResourceProvider == 'MICROSOFT.DBFORPOSTGRESQL'
+| where Message contains 't4_smoke_20260525121231'
+| project TimeGenerated, Message
+"@ -o jsonc
+```
+
+När loggarna börjar dyka upp: spara hit-tiden i denna fil så vi vet vad
+faktisk ingestion-latens var första gången.
 
 ## Påverkan på övrigt
 
