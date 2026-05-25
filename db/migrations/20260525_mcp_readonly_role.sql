@@ -7,7 +7,7 @@
 --
 -- Körs som `pgadmin`. Idempotent — kan köras flera gånger.
 -- Lösenordet skickas via psql-variabel, inte i filen:
---   psql "$DATABASE_URL_ADMIN" -v mcp_pw="<lösen>" -f <denna fil>
+--   psql "$DATABASE_URL_ADMIN" -v mcp_pw=<lösen> -f <denna fil>
 
 \set ON_ERROR_STOP on
 

@@ -45,7 +45,7 @@ Alternativ med psql om det installeras:
 
 ```powershell
 psql "$env:DATABASE_URL_ADMIN" -v ON_ERROR_STOP=1 `
-  -v mcp_pw="<lösenord>" -f db/migrations/<file>.sql
+  -v mcp_pw=<lösenord> -f db/migrations/<file>.sql
 ```
 
 Verifiera sedan via `verify.sql` (psql) eller skriv en Python-verifyfil med
