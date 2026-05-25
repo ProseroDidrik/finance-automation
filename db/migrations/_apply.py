@@ -96,6 +96,16 @@ def _find_inline_comment(line: str) -> int | None:
 
 
 def main() -> int:
+    # Windows-konsol är cp1252 default; våra migrationer + \echo-rader
+    # innehåller UTF-8-tecken (→, ★, å/ö). Reconfigure stdout/stderr så
+    # printen inte kraschar på unikod. Säker även om migrationen har
+    # commitats — bara utskriften skulle ha failat.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass  # äldre Python eller pipe utan reconfigure
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sql_file", help="Sökväg till migration-.sql")
     parser.add_argument(

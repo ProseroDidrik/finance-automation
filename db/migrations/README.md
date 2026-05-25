@@ -57,3 +57,4 @@ strukturerad PASS/FAIL-output (se commit-historik för T1-exempel).
 |---|---|---|---|---|
 | 2026-05-25 | `20260525_mcp_readonly_role.sql` | T1 | Read-only-roll för MCP | ✅ live i prod (verifierad via deployed MCP, current_user=mcp_readonly) |
 | 2026-05-25 | `20260525_etl_writer_role.sql`   | T2 | DML-roll för ETL-loaders (ingen DDL) | ✅ live i prod + db.py fail-fast aktiv (loaders kräver DATABASE_URL_ETL — se RUNBOOK_T2.md) |
+| 2026-05-25 | `20260525_reporting_views.sql`   | T3 | PII-vyer (reporting.*) + REVOKE mcp_readonly på PII-råtabeller | ✅ live i prod, e2e via deployed MCP (PII → permission denied, reporting.personnel → 3495 rader, 69 ms). Konservativa defaults; salary_local/termination_reason AWAITING_DPO. Externa MCP-testare måste byta till reporting.* — se RUNBOOK_T3.md för meddelande |

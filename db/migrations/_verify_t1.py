@@ -80,16 +80,23 @@ def main() -> int:
                 not cur.fetchone()[0],
             )
 
-            # T1.C — SELECT på alla public-tabeller (BASE TABLES bara).
-            # pg_tables filtrerar bort extension-vyer (pg_stat_statements m.fl.)
-            # som ligger i public men inte ägs av admin.
+            # T1.C — public-tabellsrättigheter.
+            # Notera: T3 drog medvetet in mcp_readonly:s SELECT på PII-tabeller
+            # (fact_personnel, fact_journal_sie, fact_journal_saft) eftersom
+            # läsning där måste gå via reporting-vyerna istället. Här kollar
+            # vi därför separat:
+            #   - PII-tabeller   → SELECT ska vara FALSE (T3-effekt)
+            #   - Övriga tabeller → SELECT=true, INSERT/UPDATE/DELETE=false (T1)
+            # pg_tables filtrerar bort extension-vyer.
+            PII_TABLES = {"fact_personnel", "fact_journal_sie", "fact_journal_saft"}
             cur.execute(
                 "SELECT tablename FROM pg_tables "
                 "WHERE schemaname='public' ORDER BY 1"
             )
             tables = [r[0] for r in cur.fetchall()]
             check(f"T1.C0  hittade {len(tables)} public-tabeller", len(tables) > 0)
-            bad = []
+            bad_normal = []
+            bad_pii = []
             for t in tables:
                 cur.execute(
                     "SELECT has_table_privilege('mcp_readonly', %s, 'SELECT'),"
@@ -99,12 +106,22 @@ def main() -> int:
                     (f"public.{t}",) * 4,
                 )
                 s, i, u, d = cur.fetchone()
-                if not (s and not i and not u and not d):
-                    bad.append(f"{t}(S={s},I={i},U={u},D={d})")
+                if t in PII_TABLES:
+                    # Förväntat efter T3: ingen rättighet alls
+                    if s or i or u or d:
+                        bad_pii.append(f"{t}(S={s},I={i},U={u},D={d})")
+                else:
+                    if not (s and not i and not u and not d):
+                        bad_normal.append(f"{t}(S={s},I={i},U={u},D={d})")
             check(
-                "T1.C   alla tabeller: SELECT=t, INSERT/UPDATE/DELETE=f",
-                not bad,
-                "; ".join(bad) if bad else "",
+                "T1.C1  icke-PII-tabeller: SELECT=t, INSERT/UPDATE/DELETE=f",
+                not bad_normal,
+                "; ".join(bad_normal) if bad_normal else "",
+            )
+            check(
+                "T1.C2  PII-tabeller (T3): mcp_readonly saknar all access",
+                not bad_pii,
+                "; ".join(bad_pii) if bad_pii else "",
             )
 
             # T1.D — public-schema-rättigheter
