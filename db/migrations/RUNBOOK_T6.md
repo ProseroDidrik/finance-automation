@@ -23,8 +23,20 @@
 ### TLS — explicit-sätta parametrar
 - **`require_secure_transport`**: `on` (system-default) → `on` (user-override)
   — säkrar att en framtida Azure-default-ändring inte tar bort TLS-kravet.
-- **`ssl_min_protocol_version`**: `TLSV1.2` (system-default) → `TLSV1.2` (user-override)
+- **`ssl_min_protocol_version`**: `TLSv1.2` (system-default) → `TLSv1.2` (user-override)
   — samma defensiva mönster. TLS 1.0/1.1 kan inte tystas in av en framtida default.
+
+> ⚠️ **Incident 2026-05-25 (~50 min downtime):** Första försöket satte värdet
+> till `TLSV1.2` (versal V) via `az postgres flexible-server parameter set`.
+> `allowedValues` är `TLSv1.2,TLSv1.3` (gemen v). CLI:n accepterade utan
+> validation, men servern gick i degraderat state — TCP OK, SSL-handshake
+> timeout, mgmt-plane returnerade `InternalServerError` på all
+> `parameter set` + `restart` via CLI. Webapp + MCP nere.
+>
+> **Fix:** Direkt ARM PUT via `az rest` (kringgår CLI-validation-lagret) med
+> `value=TLSv1.2` + ARM POST restart. Server upp inom 60s.
+>
+> Se [[feedback-az-param-set-no-validation]] för CLI-anrop.
 
 ## Post-state (verifierat 2026-05-25)
 
@@ -37,7 +49,7 @@
 | Parameter | Värde | Source |
 |---|---|---|
 | `require_secure_transport` | `on` | **user-override** ✅ |
-| `ssl_min_protocol_version` | `TLSV1.2` | **user-override** ✅ |
+| `ssl_min_protocol_version` | `TLSv1.2` | **user-override** ✅ (rättat case efter incident) |
 
 ## Verifierings-kommandon
 
