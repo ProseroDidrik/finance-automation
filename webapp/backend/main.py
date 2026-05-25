@@ -628,6 +628,10 @@ async def personnel_employees(
 
 _GRANULARITIES = {"month", "quarter", "half", "year"}
 _REPORT_CURRENCIES = {"SEK", "LOCAL"}
+# T9: DoS-cap på pivot-buckets. period_buckets() multiplicerar period-range med
+# granularity — orimligt långt range kan generera tusentals buckets, blåsa upp
+# SQL-storleken och dräneer connection-poolen. 60 räcker för 5 år månadsvis.
+_MAX_BUCKETS = 60
 
 
 def _build_buckets(
@@ -699,6 +703,13 @@ async def report_pivot(
         raise HTTPException(status_code=400, detail=str(e))
     if not buckets:
         return {"buckets": [], "companies": [], "rows": [], "report_currency": report_currency}
+    if len(buckets) > _MAX_BUCKETS:
+        # DoS-cap: smala range eller höj granularity. Tysta tak är värre — säg ifrån.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Period-range genererar {len(buckets)} buckets — max {_MAX_BUCKETS}. "
+                   f"Smala period_from/period_to eller höj granularity.",
+        )
 
     with open_db() as con:
         company_ids_list = _resolve_company_ids(con, country, company_ids)

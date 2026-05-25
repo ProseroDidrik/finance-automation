@@ -59,9 +59,11 @@ def main() -> int:
                     "default_transaction_read_only=on" in cfg,
                     ",".join(cfg),
                 )
+                # T9-followup höjde 30s → 60s för att compare_coverage ska
+                # rymma inom timeout. Se 20260525_mcp_readonly_timeout_60s.sql.
                 check(
-                    "T1.A6 statement_timeout=30s",
-                    "statement_timeout=30s" in cfg,
+                    "T1.A6 statement_timeout=60s",
+                    "statement_timeout=60s" in cfg,
                     ",".join(cfg),
                 )
 

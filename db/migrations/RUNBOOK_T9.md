@@ -122,14 +122,62 @@ Remove-Item $tmp
 
 Och: revert SQL-filerna i git.
 
+## Advisor-fångade follow-ups (samma session, samma PR)
+
+Efter T9-commit:n körde advisor genom och fångade 5 saker. Tre fixade inline:
+
+### T3.c — Column-level grants på journal-tabellerna
+
+compare_coverage timar ut (>30s) när den queryar `reporting.journal_sie/saft`
+eftersom regex-maskningen evalueras per rad även när vi bara summerar `amount`.
+Lösning: ny migration `20260525_journal_column_grants.sql` ger mcp_readonly
+SELECT på alla kolumner UTOM voucher_text/transaction_text/line_description.
+Webapp coverage-SQL pekas tillbaka till public.fact_journal_* (snabbare, säkert
+eftersom fritext fortfarande är kolumn-blockerad). 9/9 column-grants verifierade.
+
+### T9-fu — Höj mcp_readonly timeout 30s → 60s
+
+Även med column-grants tog compare_coverage 4 månader 29-39s. Migration
+`20260525_mcp_readonly_timeout_60s.sql` höjer mcp_readonly:s default
+statement_timeout till 60s. Påverkar både MCP och webapp. Acceptabel paus
+för Claude-konversation.
+
+### T9.b — KV-refera Easy Auth-secret
+
+`MICROSOFT_PROVIDER_AUTHENTICATION_SECRET` låg som klartext-appsetting på
+App Service (för Easy Auth-providern). Skapad ny KV-secret `easyauth-provider-secret`
+och uppdaterat appsetting till `@Microsoft.KeyVault(...)`-ref. Webapp restartad,
+/api/health 200 OK.
+
+### Bucket-cap i report_pivot (DoS-prevention)
+
+`_MAX_BUCKETS = 60` i main.py. Orimligt långa period-range (t.ex. 50 år
+månadsvis) skulle annars generera tusentals SQL-placeholders.
+
+## Inte fixat (DPO-fråga + framtida ärende)
+
+### Pseudonymen `EMP_{id}` är trivialt avpseudonymiserbar
+
+`reporting.personnel.employee_ref = 'EMP_' || id::text` är 1:1-mappad mot
+fact_personnel:s auto-increment-id. Vem som helst med access till BÅDA
+`public.fact_personnel` (admin, etl_writer) och `reporting.personnel`
+(mcp_readonly/webapp) kan trivialt JOIN:a på `id` och avpseudonymisera allt.
+Det är inte "true pseudonymisering" — fungerar bara som access-gate.
+
+**Tillägg till DPO-frågorna från T3:** "Räcker access-gate-pseudonymisering,
+eller behöver vi byta surrogat-id till ett random UUID som inte mappas till
+radens id?" Om det senare: kräver ny kolumn i fact_personnel + ett mapping-
+register som bara HR-roll ser. Större ändring.
+
 ## Beroenden / nästa steg
 
 - **T7 (rotera pgadmin)**: NU helt fri. Inga tjänster (MCP, ETL, webapp) beror på
   admin-credential i prod. Lokal dev kräver `DATABASE_URL_ADMIN` temporärt för
   `py db.py` — det fortsätter fungera efter rotation om man uppdaterar lokalt.
-- **T9.b** (separera webapp_reader från mcp_readonly): om audit-loggning per
-  komponent blir behov.
-- **T9.c** (KV-refera `MICROSOFT_PROVIDER_AUTHENTICATION_SECRET`): separat,
-  liten ändring.
+  Förbered T7 med grep efter `database-url` (admin-namnet) i hela repot +
+  audit av Key Vault Secrets User-principals på `kv-finauto-6427/database-url`.
 - **Frontend personnel-detail**: anpassa till nya API-fälten (`employee_ref`,
   `birth_year`, inga salary/termination).
+- **Compare_coverage optimering**: 39s första körningen är gränsfall. Lägga
+  till ett (period, account_code)-index på fact_journal_saft skulle hjälpa.
+  Backlog.
