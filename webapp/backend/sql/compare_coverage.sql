@@ -62,7 +62,9 @@ saft_by_file AS (
     SELECT company_id, period, source_file, account_code,
            SUM(amount)    AS amount,
            MAX(loaded_at) AS loaded_at
-    FROM fact_journal_saft
+    -- T9: byt till reporting.journal_saft (mcp_readonly saknar SELECT på public).
+    -- Aggregat-fälten är oförändrade i vyn; bara line_description är maskad.
+    FROM reporting.journal_saft
     WHERE period >= '@period_lo@' AND period <= '@period_hi@'
     GROUP BY 1, 2, 3, 4
 ),
@@ -76,7 +78,8 @@ saft_acct AS (
 fact_acct AS (
     SELECT company_id, period, 'SIE' AS source_kind, 'A' AS scenario,
            account_code, SUM(amount) AS amount
-    FROM fact_journal_sie
+    -- T9: byt till reporting.journal_sie (samma motivering som ovan).
+    FROM reporting.journal_sie
     WHERE period >= '@period_lo@' AND period <= '@period_hi@'
     GROUP BY 1, 2, 3, 4, 5
     UNION ALL

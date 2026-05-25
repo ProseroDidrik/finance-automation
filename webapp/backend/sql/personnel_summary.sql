@@ -5,10 +5,14 @@
 --
 -- Output: en rad per (company × year) med UB/Began/Slutat. Frontend pivotar.
 
+-- T9 (2026-05-25): byt fact_personnel → reporting.personnel.
+-- Webapp körs som mcp_readonly som saknar SELECT på public.fact_personnel
+-- (T3 PII-minimering). Aggregat-fälten (count, employed_from/to) finns
+-- oförändrade i vyn så denna query påverkas inte funktionellt.
 WITH years(y) AS (SELECT unnest(%s::INTEGER[]) AS y),
      base AS (
          SELECT *
-         FROM fact_personnel
+         FROM reporting.personnel
          WHERE country = %s
      )
 SELECT

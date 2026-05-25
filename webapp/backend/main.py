@@ -482,14 +482,19 @@ async def compare_coverage_accounts(
 
 @app.get("/api/personnel/countries")
 async def personnel_countries():
-    """Länder med data i fact_personnel + radantal + senaste snapshot."""
+    """Länder med data i reporting.personnel + radantal + senaste snapshot.
+
+    T9 (2026-05-25): bytte fact_personnel → reporting.personnel. Webapp körs
+    som mcp_readonly som saknar SELECT på public.fact_personnel (T3 PII).
+    Aggregat-fälten oförändrade i vyn.
+    """
     with open_db() as con:
         rows = con.execute(
             """SELECT country,
                       COUNT(*)                         AS n_rows,
                       COUNT(DISTINCT company_id)       AS n_companies,
                       MAX(snapshot_date)               AS snapshot_date
-               FROM fact_personnel
+               FROM reporting.personnel
                GROUP BY country
                ORDER BY country"""
         ).fetchall()
@@ -515,10 +520,11 @@ async def personnel_summary(country: str = Query(..., description="Sweden|Norway
     ligger i framtiden, t.ex. uppsägning till nästa år).
     """
     with open_db() as con:
+        # T9: reporting.personnel istället för public.fact_personnel.
         bounds = con.execute(
             """SELECT MIN(EXTRACT(year FROM employed_from))::INTEGER,
                       MAX(EXTRACT(year FROM employed_from))::INTEGER
-               FROM fact_personnel WHERE country = %s""",
+               FROM reporting.personnel WHERE country = %s""",
             [country],
         ).fetchone()
     if bounds is None or bounds[0] is None:
@@ -560,7 +566,17 @@ async def personnel_summary(country: str = Query(..., description="Sweden|Norway
 async def personnel_employees(
     company_id: int = Query(..., description="dim_company.company_id"),
 ):
-    """Anställda för ett bolag, sorterade på employed_from desc (NULL sist)."""
+    """Anställda för ett bolag, sorterade på employed_from desc (NULL sist).
+
+    T9 (2026-05-25) — PII-minimering: byter från fact_personnel till
+    reporting.personnel. API-svaret ändras:
+      - employee_name      → employee_ref (pseudonym 'EMP_{id}')
+      - birth_date         → birth_year   (heltal eller null)
+      - termination_reason → BORTTAGEN (AWAITING_DPO)
+      - salary_local       → BORTTAGEN (AWAITING_DPO)
+    Frontend måste anpassas till nytt API-svar. Behovet av råa fält måste
+    gå via separat behörighet/verktyg, inte huvud-webappen (Maestro är bred).
+    """
     with open_db() as con:
         meta = con.execute(
             "SELECT name, country, currency FROM dim_company WHERE company_id = %s",
@@ -569,32 +585,30 @@ async def personnel_employees(
         if meta is None:
             raise HTTPException(status_code=404, detail=f"Bolag {company_id} hittades inte")
         rows = con.fetch_dicts(
-            """SELECT employee_name, title, birth_date,
-                      employed_from, employed_to, termination_reason,
+            """SELECT employee_ref, title, birth_year,
+                      employed_from, employed_to,
                       employment_pct, productivity, billable_pct,
-                      gender, category, salary_local,
+                      gender, category,
                       location, apprenticeship_end, pension_apprentice
-               FROM fact_personnel
+               FROM reporting.personnel
                WHERE company_id = %s
-               ORDER BY employed_from DESC NULLS LAST, employee_name""",
+               ORDER BY employed_from DESC NULLS LAST, employee_ref""",
             [company_id],
         )
 
     employees = []
     for r in rows:
         employees.append({
-            "employee_name":      _safe_str(r["employee_name"]),
+            "employee_ref":       _safe_str(r["employee_ref"]),
             "title":              _safe_str(r["title"]),
-            "birth_date":         _safe_date(r["birth_date"]),
+            "birth_year":         int(r["birth_year"]) if r["birth_year"] is not None else None,
             "employed_from":      _safe_date(r["employed_from"]),
             "employed_to":        _safe_date(r["employed_to"]),
-            "termination_reason": _safe_str(r["termination_reason"]),
             "employment_pct":     _safe_num(r["employment_pct"]),
             "productivity":       _safe_num(r["productivity"]),
             "billable_pct":       _safe_num(r["billable_pct"]),
             "gender":             _safe_str(r["gender"]),
             "category":           _safe_str(r["category"]),
-            "salary_local":       _safe_num(r["salary_local"]),
             "location":           _safe_str(r["location"]),
             "apprenticeship_end": _safe_date(r["apprenticeship_end"]),
             "pension_apprentice": _safe_str(r["pension_apprentice"]),
