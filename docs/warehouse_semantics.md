@@ -34,13 +34,41 @@ man läser dem utan att räkna fel.
 | `dim_account_map` | kontoplan + P&L-trädet (rekursivt via `parent_id`, rot = `'P&L'`) |
 | `dim_exchange_rate` | (period, currency, rate_type='avg'\|'constant') → SEK per enhet utländsk |
 | `fact_balances` | **huvudfakta**: saldon per (bolag, period, konto, källa, scenario) |
-| `fact_journal_sie` | transaktionsrader (Sverige) — opt-in via load_sie.py |
-| `fact_journal_saft` | transaktionsrader (Norge) — opt-in via load_saft.py |
-| `fact_personnel` | snapshot per anställd (en rad / person, inte tidsserie) |
+| `fact_journal_sie` | transaktionsrader (Sverige) — opt-in via load_sie.py. ⚠️ MCP: använd `reporting.journal_sie` |
+| `fact_journal_saft` | transaktionsrader (Norge) — opt-in via load_saft.py. ⚠️ MCP: använd `reporting.journal_saft` |
+| `fact_personnel` | snapshot per anställd. ⚠️ MCP: använd `reporting.personnel` |
 | `dim_supplier_register` | `(country, levprefix)` → `supplier_name`, `kategori`, `segment` |
 | `fact_supplier_spend` | spend per (bolag, leverantör, år, period_kind) — endast helår/H1 |
 | `backup_from_mercur` | Mercur-facit för datatäckning (se § Facit nedan) |
 | `load_history` | log över alla körningar |
+| `reporting.personnel` | **PII-minimerad personalvy** — pseudonym `EMP_{id}`, `birth_year` istället för datum |
+| `reporting.journal_sie` | **SIE-verifikat med PNR maskat** till `[PNR]` i `voucher_text` + `transaction_text` |
+| `reporting.journal_saft` | **SAF-T-rader med PNR maskat** till `[PNR]` i `line_description` + `transaction_description` |
+
+### Mental model 0 — PII-läsning via reporting-vyer (T3 2026-05-25)
+
+MCP-rollen `mcp_readonly` har **ingen direktaccess** på `public.fact_personnel`,
+`public.fact_journal_sie` eller `public.fact_journal_saft`. Försök ger
+`ERROR: permission denied`. Använd alltid:
+
+```sql
+-- ❌ ger permission denied:
+SELECT * FROM fact_personnel WHERE company_id = 134;
+
+-- ✅ funkar, med pseudonym + grovkornad födelseinfo:
+SELECT employee_ref, birth_year, employment_pct, location
+FROM reporting.personnel
+WHERE company_id = 134;
+```
+
+Vyerna är 1:1-mappning av rådata med tre justeringar:
+- `employee_name` → `employee_ref` (pseudonym `EMP_{id}`)
+- `birth_date` → `birth_year`
+- Svenska personnummer i fritext (regex `[0-9]{6}[-+][0-9]{4}`) → `[PNR]`
+- `salary_local`, `termination_reason` borttagna (AWAITING_DPO)
+
+Behöver du verkligen rådata: lägg en uppgift om utökad åtkomst — den ska gå
+via en separat roll, inte via mcp_readonly.
 
 ---
 
@@ -332,6 +360,58 @@ extra dagar adderar bokningar). Större diff (50 %+) eller systematisk
 ~5× ratio är troligen **kontoplansmappning** — bolagets SIE-kontoplan
 matchar inte Mercurs konsoliderade BAS-mappning. Bolag 164 (El &
 Fastighetsdrift) är ett känt exempel.
+
+### Förväntat brus i SAFT-jämförelse: Tripletex `ClosingBalance` vs GL
+
+`load_saft.py` läser kontosaldon ur `Account/ClosingCreditBalance` (det
+auktoritativa saldot i SAF-T-XML:n) — inte ur summan av GL-entries.
+Mercurs egen NO-parser räknar i stället månadsrörelse från
+`GeneralLedgerEntries`. För 33 av 35 NO-bolag är de identiska och allt
+matchar exakt. För **2 av 7 Tripletex-bolag** (158 Asker, 189 Lås &
+Prosjekt, per 2026-04) ligger `ClosingBalance` några hundra tusen NOK
+högre än cumsum av GL-entries i samma fil — alltså transaktioner som
+påverkar saldot men inte exporteras som rena GL-rader (troligen
+periodlåsta justeringar eller aviavtryck i Tripletex). Detta är *inte*
+en ETL-bug, och inte filspecifikt — diffen återkommer per fil från
+samma två bolag oavsett när SAFT genereras.
+
+Empiriska siffror (2026-04, konto 3000):
+
+| Bolag | ClosingBalance (fact) | GL cumsum (Mercur) | Diff |
+|---|---:|---:|---:|
+| 158 Asker | 3 203 730 | 3 094 350 | +109 380 (+3,4 %) |
+| 189 Lås & Prosjekt | 8 144 680 | 7 881 520 | +263 160 (+3,2 %) |
+
+Övriga 5 TT-bolag (36, 91, 111, 148, 237) har 0 diff. PowerOffice-bolagen
+19 och 171 har försumbar diff (<0,1 %) som sannolikt är öresavrundning.
+
+**Praktisk konsekvens:** rapporter mot `fact_balances` ger det
+auktoritativa balanssaldot (vad bokföringssystemet rapporterar);
+`compare_all_file_vs_db` mot Mercur kommer visa ~3 % avvikelse för dessa
+två bolag och det är förväntat — inte indikation på att SAFT-fil eller
+ETL behöver åtgärdas. För att förändra det måste antingen bolaget
+ändra sin Tripletex-exportkonfiguration eller Mercur byta till
+ClosingBalance-baserad inläsning.
+
+Identifiera per session med:
+```sql
+WITH gl AS (
+  SELECT company_id, SUM(-amount) AS gl_sum
+  FROM fact_journal_saft
+  WHERE account_code = '3000'
+    AND transaction_date BETWEEN DATE '2026-01-01' AND DATE '2026-04-30'
+  GROUP BY 1)
+SELECT fb.company_id, c.name, SUM(-fb.amount) AS fact, gl.gl_sum,
+       SUM(-fb.amount) - gl.gl_sum AS diff
+FROM fact_balances fb
+JOIN dim_company c USING (company_id)
+LEFT JOIN gl USING (company_id)
+WHERE fb.source_kind = 'SAFT' AND fb.scenario = 'A'
+  AND fb.period = '202604' AND fb.account_code = '3000'
+GROUP BY 1, 2, gl.gl_sum
+HAVING ABS(SUM(-fb.amount) - COALESCE(gl.gl_sum, 0)) > 1000
+ORDER BY 5 DESC;
+```
 
 ### Framtida-period-filter i compare_coverage
 

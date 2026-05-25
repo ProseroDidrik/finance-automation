@@ -150,30 +150,91 @@ class Conn:
             self.close()
 
 
-def _database_url() -> str:
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL saknas. Lokalt:\n"
-            '  $env:DATABASE_URL = "postgresql://dev:dev@localhost:5432/finance"\n'
-            "Lokal Postgres via Docker: docker compose up -d postgres"
-        )
-    return url
+# T2 (2026-05-25): role-medveten anslutning. ETL och admin har separata
+# credentials så loaders aldrig kör som pgadmin (azure_pg_admin, rolbypassrls).
+#   role='etl'    → DATABASE_URL_ETL    (etl_writer, DML men ingen DDL)
+#                   fallback DATABASE_URL (för lokal dev/bakåtkompat)
+#                   fail-fast om current_user är medlem i azure_pg_admin
+#   role='admin'  → DATABASE_URL_ADMIN  (pgadmin, för db.py:main schema-init)
+#                   fallback DATABASE_URL
+#   role='legacy' → DATABASE_URL rakt av (för webapp ConnectionPool; T9-scope)
+
+_ROLE_ENV = {
+    "etl":    ("DATABASE_URL_ETL",   "DATABASE_URL"),
+    "admin":  ("DATABASE_URL_ADMIN", "DATABASE_URL"),
+    "legacy": ("DATABASE_URL",),
+}
+
+
+def _database_url(role: str = "legacy") -> str:
+    if role not in _ROLE_ENV:
+        raise ValueError(f"okänd role {role!r} (förväntat: etl|admin|legacy)")
+    for var in _ROLE_ENV[role]:
+        url = os.environ.get(var)
+        if url:
+            return url
+    tried = " eller ".join(_ROLE_ENV[role])
+    raise RuntimeError(
+        f"{tried} saknas i env (för role={role!r}). Lokalt:\n"
+        '  $env:DATABASE_URL = "postgresql://dev:dev@localhost:5432/finance"\n'
+        "Lokal Postgres via Docker: docker compose up -d postgres\n"
+        "Mot Azure: se db/migrations/RUNBOOK_T2.md för DATABASE_URL_ETL-uppsättning."
+    )
 
 
 def database_url() -> str:
-    """Publik accessor för DATABASE_URL — t.ex. för webappens connection pool."""
-    return _database_url()
+    """Publik accessor för DATABASE_URL — webappens connection pool m.fl.
+
+    Returnerar råa DATABASE_URL (legacy). T9 hanterar webappens egen rollindelning.
+    """
+    return _database_url("legacy")
 
 
-def connect(read_only: bool = False) -> Conn:
+def connect(read_only: bool = False, role: str = "etl") -> Conn:
     """Öppna en warehouse-anslutning.
 
     read_only=True  → autocommit=True (webapp/SELECT-paths håller inga transaktioner).
     read_only=False → autocommit=False (loaders kör explicit BEGIN/COMMIT).
+    role='etl'      → fail-fast om current_user är pgadmin/azure_pg_admin-medlem.
+                      Default — alla loaders (load_*.py, delete_db.py) ska gå hit.
+    role='admin'    → ingen rollkontroll. Bara för db.py:main() / explicit DDL.
+
+    Fail-fast-kollen körs BARA när read_only=False. Read-only-script
+    (check_*.py, verify_*.py) kan inte skada data så de undantas — annars
+    skulle T2 indirekt kräva DATABASE_URL_ETL även för debug-script som
+    historiskt körts med ren DATABASE_URL=admin.
     """
-    conn = psycopg.connect(_database_url(), autocommit=read_only)
-    return Conn(conn)
+    url = _database_url(role)
+    conn = psycopg.connect(url, autocommit=read_only)
+    wrapped = Conn(conn)
+    if role == "etl" and not read_only:
+        _enforce_non_admin(wrapped)
+    return wrapped
+
+
+def _enforce_non_admin(con: Conn) -> None:
+    """Avbryt om vi råkar köra skrivande ETL med admin-credentials.
+
+    Använder `pg_has_role` med 'MEMBER'-mode så transitivt medlemskap fångas
+    (om någon framtida roll ärver via mellan-roll). Stänger anslutningen
+    och raisar RuntimeError så loadern dör snabbt med tydlig text istället
+    för att skriva data med fel rättigheter.
+    """
+    with con.raw.cursor() as cur:
+        cur.execute("""
+            SELECT current_user,
+                   pg_has_role(current_user, 'azure_pg_admin', 'MEMBER')
+                OR pg_has_role(current_user, 'pg_write_all_data', 'MEMBER')
+                OR current_user = 'pgadmin'
+        """)
+        user, is_admin = cur.fetchone()
+    if is_admin:
+        con.close()
+        raise RuntimeError(
+            f"ETL ansluten som '{user}' som är admin/azure_pg_admin-medlem — förbjudet.\n"
+            "Sätt DATABASE_URL_ETL till etl_writer-credentials. Se db/migrations/RUNBOOK_T2.md.\n"
+            "Tillfälligt admin-bypass (engångskörning): connect(role='admin')."
+        )
 
 
 SCHEMA_SQL = """
@@ -555,11 +616,15 @@ def relpath_from_base(path: Path, base: Path) -> str:
 
 
 def main() -> None:
-    """CLI: initiera schema + synka dim_company. `py db.py`"""
-    with connect() as con:
+    """CLI: initiera schema + synka dim_company. `py db.py`
+
+    Schema-init kräver DDL → kör som admin (DATABASE_URL_ADMIN > DATABASE_URL).
+    Loaders ska istället gå via connect() default (role='etl', etl_writer).
+    """
+    with connect(role="admin") as con:
         init_schema(con)
         n = sync_dim_company(con)
-        print(f"[OK]     dim_company  {n} bolag synkade  ({_database_url()})")
+        print(f"[OK]     dim_company  {n} bolag synkade  ({_database_url('admin')})")
 
 
 if __name__ == "__main__":

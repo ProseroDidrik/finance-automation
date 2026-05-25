@@ -19,7 +19,12 @@ Valuta: filens 'Value Local FX'-block (kol 55-106) = lokal valuta = exakt det
         fact_balances.amount lagrar. 'Value SEK'-blocket ignoreras - Mercurs
         SEK-omrakning misslyckades ("Valutaomrakning misslyckades" i headern).
 Kontoklass: dim_account_map, narmaste GROUP-forfader uppat via parent_id.
-Konsoliderade bolag har ingen egen kalldata - DB harleds som summa av barnen.
+Konsoliderade bolag (kind='consolidated') skippas - se filter i main().
+
+Forvantat brus i NO-SAFT:
+  Bolag 158 och 189 (Tripletex) avviker konsekvent ~3 % pa intaktskonton
+  for att ClosingBalance > sum(GL-entries) i samma fil. Inte ETL-bug. Se
+  docs/warehouse_semantics.md (sektion "Tripletex ClosingBalance vs GL").
 """
 import os
 import re
@@ -329,15 +334,21 @@ def main():
                            "kind": (r[3] or "").lower(),
                            "parent_id": int(r[4]) if r[4] is not None else None}
     country_of = {c: m["country"] for c, m in meta.items()}
-    scope = [c for c in cid_order if c in meta]
+    # Konsoliderade bolag (kind='consolidated') skippas - jamforelsen ar bara
+    # meningsfull for bolag som har egen kalldata. Mercur-filen listar dem som
+    # egna CID-rader men de speglar bara summan av barnbolagen.
+    scope = [c for c in cid_order
+             if c in meta and meta[c]["kind"] != "consolidated"]
     skipped = [c for c in cid_order if c not in meta]
+    skipped_consolidated = [c for c in cid_order
+                            if c in meta and meta[c]["kind"] == "consolidated"]
     leaf_map = build_account_group_map(con, groups)
 
     children = defaultdict(list)
     for c, m in meta.items():
         if m["parent_id"] is not None:
             children[m["parent_id"]].append(c)
-    consolidated = [c for c in scope if meta[c]["kind"] == "consolidated"]
+    consolidated = []  # ingen derivering nodvandig - se filter ovan
 
     print("[3/6] Hamtar fact_balances + bygger DB-vyer ...")
     need = set(scope)
@@ -581,6 +592,9 @@ def main():
     print("Bolag i scope: %d   Manadsrader: %d" % (len(scope), tot))
     if skipped:
         print("Bolag i filen som saknas i dim_company (hoppade): %s" % skipped)
+    if skipped_consolidated:
+        print("Konsoliderade bolag (skippade - ingen egen kalldata): %s"
+              % skipped_consolidated)
     for k in ("ok", "periodiseringsbrus", "avvik", "saknas_i_db"):
         pct = (cnt[k] / tot * 100) if tot else 0.0
         print("  %-20s: %5d  (%5.1f%%)" % (k, cnt[k], pct))

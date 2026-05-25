@@ -62,7 +62,11 @@ saft_by_file AS (
     SELECT company_id, period, source_file, account_code,
            SUM(amount)    AS amount,
            MAX(loaded_at) AS loaded_at
-    FROM fact_journal_saft
+    -- T9 + T3.c (2026-05-25): column-level grants på public.fact_journal_saft
+    -- för mcp_readonly tillåter aggregat-access utan att läcka line_description.
+    -- ~4x snabbare än att gå via reporting.journal_saft (regex-maskning evalueras
+    -- per rad även när bara amount summeras).
+    FROM public.fact_journal_saft
     WHERE period >= '@period_lo@' AND period <= '@period_hi@'
     GROUP BY 1, 2, 3, 4
 ),
@@ -76,7 +80,10 @@ saft_acct AS (
 fact_acct AS (
     SELECT company_id, period, 'SIE' AS source_kind, 'A' AS scenario,
            account_code, SUM(amount) AS amount
-    FROM fact_journal_sie
+    -- T9 + T3.c: public.fact_journal_sie via column-grants (snabbare än
+    -- reporting.journal_sie för aggregat — voucher_text/transaction_text
+    -- är fortfarande skyddade på kolumn-nivå).
+    FROM public.fact_journal_sie
     WHERE period >= '@period_lo@' AND period <= '@period_hi@'
     GROUP BY 1, 2, 3, 4, 5
     UNION ALL

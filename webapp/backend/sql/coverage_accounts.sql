@@ -42,7 +42,8 @@ backup_acct AS (
 -- Valj senast laddade fil for (bolag, period). Tom nar source_kind <> 'SAFT'.
 saft_pick AS (
     SELECT j.source_file
-    FROM fact_journal_saft j
+    -- T9 + T3.c: public.fact_journal_saft via column-grants (snabbare än vyn).
+    FROM public.fact_journal_saft j
     JOIN params p ON j.company_id = p.company_id AND j.period = p.period
     WHERE p.source_kind = 'SAFT'
     ORDER BY j.loaded_at DESC
@@ -53,7 +54,8 @@ fact_acct AS (
     SELECT j.account_code,
            MAX(j.account_name) AS account_name,
            SUM(j.amount)       AS fact_amt
-    FROM fact_journal_sie j
+    -- T9 + T3.c: public.fact_journal_sie via column-grants.
+    FROM public.fact_journal_sie j
     JOIN params p ON j.company_id = p.company_id AND j.period = p.period
     WHERE p.source_kind = 'SIE'
     GROUP BY 1
@@ -61,7 +63,8 @@ fact_acct AS (
     SELECT j.account_code,
            NULL::text    AS account_name,
            SUM(j.amount) AS fact_amt
-    FROM fact_journal_saft j
+    -- T9 + T3.c: public.fact_journal_saft via column-grants (snabbare än vyn).
+    FROM public.fact_journal_saft j
     JOIN params p ON j.company_id = p.company_id AND j.period = p.period
     WHERE p.source_kind = 'SAFT'
       AND j.source_file = (SELECT source_file FROM saft_pick)

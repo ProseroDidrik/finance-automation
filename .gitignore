@@ -19,3 +19,13 @@ _scratch/
 # Windows-temp auth-tokens (colon-encoded paths)
 *Temp*auth.json
 CUsersDidWac*
+
+# Secrets — T7 säkerhetsremediering (aldrig committa)
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+secrets/
+.secrets/
