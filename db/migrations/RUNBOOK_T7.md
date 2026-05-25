@@ -140,10 +140,12 @@ Dev-secrets hämtas alltid från KV via `az` — aldrig hårdkodade i .env eller
 
 ## Bevarad rest-risk / follow-ups
 
-1. **gitleaks i pre-commit + CI** — SPEC kräver `gitleaks detect rent` som
-   accept-kriterium. Manuell scan ovan motsvarar samma resultat (repo ren),
-   men verktyget är inte installerat. Att installera + konfigurera gitleaks
-   + lägga till pre-commit-hook + CI-step föreslås som följande PR.
+1. ~~**gitleaks i pre-commit + CI**~~ ✅ **DONE** (PR efter #15) — `.gitleaks.toml`
+   med allowlist + `.github/workflows/secret-scan.yml` (PR + push + weekly cron).
+   Initial scan: 164 commits, 0 leaks. En historisk träff (commit b0200759,
+   `clientId` = Azure AD App-ID, publik per design) commit-fingerprint-allowlistad.
+   Pre-commit-hook hoppade — CI fångar före merge, lägg till `pre-commit`-config
+   senare om utvecklare upplever det som värdefullt.
 2. **KV-secret rotation policy** — `database-url-readonly`, `database-url-etl`,
    `easyauth-provider-secret`, `mcp-bearer-token` har **ingen automatisk
    rotation**. Manuell rotation rekommenderas årligen, eller vid läckage-misstanke.

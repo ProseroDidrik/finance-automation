@@ -377,6 +377,9 @@ async def compare_coverage(
 
     Jämförelsen sker på månadsbasis. Default: returnerar bara perioder
     ≥ 202601 (facit-fasen 2026). Sätt period_from=202201 för full historik.
+
+    Cachad per (period_lo, period_hi) med RESPONSE_CACHE_TTL (5 min). Datan
+    ändras bara när load_*.py körs, så stale risk är < 5 min latens.
     """
     # compare_coverage.sql filtrerar de tunga CTE:rna på [period_lo, period_hi]
     # så bara begärt år processas. Värdena substitueras som LITERALER i WHERE
@@ -389,27 +392,31 @@ async def compare_coverage(
     period_lo = period_from or "202601"
     period_hi = min(period_to or "999912",
                     prev_period(f"{_today.year}{_today.month:02d}"))
-    sql = (_sql(SQL_COVERAGE)
-           .replace("@period_lo@", period_lo)
-           .replace("@period_hi@", period_hi))
-    with open_db() as con:
-        rows = con.fetch_dicts(sql, [])
-    return [
-        {
-            "company_id":   int(r["company_id"]) if r["company_id"] is not None else None,
-            "company_name": _safe_str(r["company_name"]),
-            "country":      _safe_str(r["country"]),
-            "period":       _safe_str(r["period"]),
-            "source_kind":  _safe_str(r["source_kind"]),
-            "scenario":     _safe_str(r["scenario"]),
-            "backup_rows":  _safe_num(r["backup_rows"]),
-            "fact_rows":    _safe_num(r["fact_rows"]),
-            "backup_sum":   _safe_num(r["backup_sum"]),
-            "fact_sum":     _safe_num(r["fact_sum"]),
-            "status":       _safe_str(r["status"]),
-        }
-        for r in rows
-    ]
+
+    def _produce():
+        sql = (_sql(SQL_COVERAGE)
+               .replace("@period_lo@", period_lo)
+               .replace("@period_hi@", period_hi))
+        with open_db() as con:
+            rows = con.fetch_dicts(sql, [])
+        return [
+            {
+                "company_id":   int(r["company_id"]) if r["company_id"] is not None else None,
+                "company_name": _safe_str(r["company_name"]),
+                "country":      _safe_str(r["country"]),
+                "period":       _safe_str(r["period"]),
+                "source_kind":  _safe_str(r["source_kind"]),
+                "scenario":     _safe_str(r["scenario"]),
+                "backup_rows":  _safe_num(r["backup_rows"]),
+                "fact_rows":    _safe_num(r["fact_rows"]),
+                "backup_sum":   _safe_num(r["backup_sum"]),
+                "fact_sum":     _safe_num(r["fact_sum"]),
+                "status":       _safe_str(r["status"]),
+            }
+            for r in rows
+        ]
+
+    return _cached(f"coverage:{period_lo}:{period_hi}", _produce)
 
 
 _ACCOUNTS_SOURCE_KINDS = {"IMP", "SIE", "SAFT", "MAN", "IMP_ADJ"}
