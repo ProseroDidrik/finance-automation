@@ -23,6 +23,8 @@
 ### TLS — explicit-sätta parametrar
 - **`require_secure_transport`**: `on` (system-default) → `on` (user-override)
   — säkrar att en framtida Azure-default-ändring inte tar bort TLS-kravet.
+- **`ssl_min_protocol_version`**: `TLSV1.2` (system-default) → `TLSV1.2` (user-override)
+  — samma defensiva mönster. TLS 1.0/1.1 kan inte tystas in av en framtida default.
 
 ## Post-state (verifierat 2026-05-25)
 
@@ -35,7 +37,7 @@
 | Parameter | Värde | Source |
 |---|---|---|
 | `require_secure_transport` | `on` | **user-override** ✅ |
-| `ssl_min_protocol_version` | `TLSv1.2` | system-default |
+| `ssl_min_protocol_version` | `TLSV1.2` | **user-override** ✅ |
 
 ## Verifierings-kommandon
 

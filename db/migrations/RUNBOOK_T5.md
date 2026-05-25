@@ -1,6 +1,6 @@
 # RUNBOOK T5 — Backup/PITR
 
-**Status:** ✅ retention höjd live (2026-05-25); PITR-drill table-top mot Azure SLA, ej kört
+**Status:** ⚠️ **partially met** — retention höjd live (2026-05-25) ✅; PITR-drill **table-top** mot Azure SLA, **faktisk restore ej körd** (SPEC sa "lyckat PITR-test")
 **SPEC:** `finance-warehouse_security_remediation_SPEC.md` §T5
 **Owner:** [DevOps] — Claude Code exekverade `az`-kommandot direkt
 **Server:** `psql-finauto-6427` (rg-finauto-6427)

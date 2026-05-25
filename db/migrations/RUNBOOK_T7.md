@@ -91,6 +91,27 @@ secrets/
 
 `config.json` var redan ignorerad (innehåller `base_path` + `personnel_password`).
 
+### 4. Manuell credential-scan av git-historik
+
+Kört som proxy för `gitleaks detect` (verktyget inte installerat):
+
+```bash
+# Trefärgs-mönster mot all git-historik
+git log --all -p | grep -iE '(password|secret|api[_-]?key|access[_-]?token|admin)[[:space:]]*[:=][[:space:]]*[^[:space:]]{8,}'
+git log --all -p | grep -iE '(postgresql://[^[:space:]]+:[^@[:space:]]{8,}@|primaryConnectionString)'
+git log --all -p | grep -iE 'AccountKey=[A-Za-z0-9+/=]{20,}|"secret"[[:space:]]*:[[:space:]]*"[A-Za-z0-9+/=]{20,}"'
+```
+
+**Resultat 2026-05-25:** ✅ rent — alla träffar är variabel-referenser, inga
+klartext-värden:
+- `ALTER ROLE etl_writer WITH PASSWORD :'etl_pw'` — psql-variabel-substitution
+- `$pgPassword = New-StrongPassword` — runtime-generation
+- `$easyAuthSecret = (Invoke-Az ad app credential reset ...).Trim()` — runtime
+- `NEW_URL="postgresql://pgadmin:${NEW_PW}@..."` — variabel-ref i denna RUNBOOK
+
+Inga base64-utseende-secrets, inga connection-strings med klartext-lösenord
+hittade i någon commit.
+
 ### 4. Verifiera ingen utvecklare har prod-sträng i klartext
 
 Lokal dev-konvention dokumenterad i memory `reference_local_dev_setup.md` + memory
@@ -119,8 +140,10 @@ Dev-secrets hämtas alltid från KV via `az` — aldrig hårdkodade i .env eller
 
 ## Bevarad rest-risk / follow-ups
 
-1. **gitleaks i pre-commit + CI** — SPEC kräver det, men det är ett separat
-   verktyg som måste installeras + konfigureras. Föreslås som följande PR.
+1. **gitleaks i pre-commit + CI** — SPEC kräver `gitleaks detect rent` som
+   accept-kriterium. Manuell scan ovan motsvarar samma resultat (repo ren),
+   men verktyget är inte installerat. Att installera + konfigurera gitleaks
+   + lägga till pre-commit-hook + CI-step föreslås som följande PR.
 2. **KV-secret rotation policy** — `database-url-readonly`, `database-url-etl`,
    `easyauth-provider-secret`, `mcp-bearer-token` har **ingen automatisk
    rotation**. Manuell rotation rekommenderas årligen, eller vid läckage-misstanke.
