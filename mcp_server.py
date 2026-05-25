@@ -45,7 +45,11 @@ LOG_PATH = ROOT / "_logs" / "mcp_queries.jsonl"
 TOKEN_PATH = ROOT / ".mcp_token"
 
 KEYVAULT_NAME = os.environ.get("AZURE_KEYVAULT_NAME", "kv-finauto-6427")
-KEYVAULT_SECRET_NAME = os.environ.get("AZURE_KEYVAULT_SECRET", "database-url")
+# T1 (2026-05-25): default ändrad från "database-url" (admin) till
+# "database-url-readonly" (mcp_readonly-rollen). MCP:n ska aldrig ansluta som
+# pgadmin — adminkontot är break-glass. Sätt AZURE_KEYVAULT_SECRET=database-url
+# om du explicit behöver admin (t.ex. för debug — ingen runtime-flöde gör det).
+KEYVAULT_SECRET_NAME = os.environ.get("AZURE_KEYVAULT_SECRET", "database-url-readonly")
 
 QUERY_TIMEOUT_SEC = 30.0
 DEFAULT_LIMIT = 1000
