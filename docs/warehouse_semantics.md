@@ -34,13 +34,41 @@ man läser dem utan att räkna fel.
 | `dim_account_map` | kontoplan + P&L-trädet (rekursivt via `parent_id`, rot = `'P&L'`) |
 | `dim_exchange_rate` | (period, currency, rate_type='avg'\|'constant') → SEK per enhet utländsk |
 | `fact_balances` | **huvudfakta**: saldon per (bolag, period, konto, källa, scenario) |
-| `fact_journal_sie` | transaktionsrader (Sverige) — opt-in via load_sie.py |
-| `fact_journal_saft` | transaktionsrader (Norge) — opt-in via load_saft.py |
-| `fact_personnel` | snapshot per anställd (en rad / person, inte tidsserie) |
+| `fact_journal_sie` | transaktionsrader (Sverige) — opt-in via load_sie.py. ⚠️ MCP: använd `reporting.journal_sie` |
+| `fact_journal_saft` | transaktionsrader (Norge) — opt-in via load_saft.py. ⚠️ MCP: använd `reporting.journal_saft` |
+| `fact_personnel` | snapshot per anställd. ⚠️ MCP: använd `reporting.personnel` |
 | `dim_supplier_register` | `(country, levprefix)` → `supplier_name`, `kategori`, `segment` |
 | `fact_supplier_spend` | spend per (bolag, leverantör, år, period_kind) — endast helår/H1 |
 | `backup_from_mercur` | Mercur-facit för datatäckning (se § Facit nedan) |
 | `load_history` | log över alla körningar |
+| `reporting.personnel` | **PII-minimerad personalvy** — pseudonym `EMP_{id}`, `birth_year` istället för datum |
+| `reporting.journal_sie` | **SIE-verifikat med PNR maskat** till `[PNR]` i `voucher_text` + `transaction_text` |
+| `reporting.journal_saft` | **SAF-T-rader med PNR maskat** till `[PNR]` i `line_description` + `transaction_description` |
+
+### Mental model 0 — PII-läsning via reporting-vyer (T3 2026-05-25)
+
+MCP-rollen `mcp_readonly` har **ingen direktaccess** på `public.fact_personnel`,
+`public.fact_journal_sie` eller `public.fact_journal_saft`. Försök ger
+`ERROR: permission denied`. Använd alltid:
+
+```sql
+-- ❌ ger permission denied:
+SELECT * FROM fact_personnel WHERE company_id = 134;
+
+-- ✅ funkar, med pseudonym + grovkornad födelseinfo:
+SELECT employee_ref, birth_year, employment_pct, location
+FROM reporting.personnel
+WHERE company_id = 134;
+```
+
+Vyerna är 1:1-mappning av rådata med tre justeringar:
+- `employee_name` → `employee_ref` (pseudonym `EMP_{id}`)
+- `birth_date` → `birth_year`
+- Svenska personnummer i fritext (regex `[0-9]{6}[-+][0-9]{4}`) → `[PNR]`
+- `salary_local`, `termination_reason` borttagna (AWAITING_DPO)
+
+Behöver du verkligen rådata: lägg en uppgift om utökad åtkomst — den ska gå
+via en separat roll, inte via mcp_readonly.
 
 ---
 

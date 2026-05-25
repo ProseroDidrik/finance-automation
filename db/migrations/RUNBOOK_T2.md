@@ -25,6 +25,19 @@ faller anslutningen tillbaka på `DATABASE_URL`, ser admin, **avbryter med
 RuntimeError**. Read-only-script (`connect(read_only=True)`) påverkas INTE
 — de undantas från fail-fast eftersom de inte kan skada data.
 
+### ⚠️ Känd issue efter T3: webapp `/api/personnel/*` failar lokalt om
+`DATABASE_URL=readonly`
+
+Efter T3 (PII-vyer) saknar `mcp_readonly` SELECT på `public.fact_personnel`.
+Webapp-poolen läser fortfarande `public.fact_personnel` i
+`webapp/backend/main.py:12-14`-endpointsen — de returnerar 500 lokalt om
+poolen är ansluten som mcp_readonly. **Två workarounds tills T9:**
+
+1. Kör webapp tillfälligt med admin-URL: `$env:DATABASE_URL = (az ... database-url)`
+   innan `uvicorn webapp.backend.main:app` — bryter T1.b lokalt men `/api/personnel/*` funkar.
+2. Uppdatera webapp att queryra `reporting.personnel` istället (egentligen T9-scope
+   men kan göras opportunistiskt om du behöver webappen lokalt nu).
+
 ### ⚠️ Viktigt: undvik `DATABASE_URL=admin` lokalt
 
 Lokal MCP (`.mcp.json` startar `mcp_server.py`) ärver shell-env. Om

@@ -216,6 +216,24 @@ Aktiveras av `load_saft.py --include-journal`.
 | `line_description` | | |
 | `currency`, `source_file`, `loaded_at` | | |
 
+### `reporting.*` — PII-minimerade vyer (T3 2026-05-25)
+
+MCP-rollen `mcp_readonly` har INTE direktaccess på `public.fact_personnel`,
+`public.fact_journal_sie` eller `public.fact_journal_saft` — all läsning av
+personinformation och journal-fritext måste gå genom dessa vyer. Försök mot
+public-tabellerna ger `ERROR: permission denied`.
+
+| Vy | Källa | Maskering |
+|---|---|---|
+| `reporting.personnel` | `public.fact_personnel` | `employee_name` → `employee_ref` (pseudonym `EMP_{id}`); `birth_date` → `birth_year` (heltal); `salary_local`, `termination_reason` borttagna (AWAITING_DPO) |
+| `reporting.journal_sie` | `public.fact_journal_sie` | Svenska personnummer-mönster `[0-9]{6}[-+][0-9]{4}` i `voucher_text` + `transaction_text` ersätts med `[PNR]` |
+| `reporting.journal_saft` | `public.fact_journal_saft` | Samma `[PNR]`-maskning i `line_description` + `transaction_description` |
+
+ETL-roll `etl_writer` behåller full DML på public-PII-tabellerna — loaders
+påverkas inte. Webapp-pool (ansluter via `db.database_url()` → legacy
+`DATABASE_URL`) behöver `reporting.*` om den körs som mcp_readonly lokalt
+(annars failar `/api/personnel/*` med permission denied — T9 fixar permanent).
+
 ### `load_history` — laddnings-revision
 En rad per (laddat fil) ELLER per kontoplans-laddning. Används för att felsöka
 "vad hände senast" och spåra warn/error-mönster.

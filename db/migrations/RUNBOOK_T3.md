@@ -107,6 +107,34 @@ with psycopg.connect(os.environ['DATABASE_URL_ADMIN'], autocommit=True) as c:
 "@
 ```
 
+## ⚠️ Pending deployment — deployed MCP visar inte reporting.* än
+
+DB-skyddet är aktivt direkt (mcp_readonly har permission denied på PII-
+tabellerna), men **describe_schema** på deployed MCP returnerar fortfarande
+bara `public.*`-tabellistan tills `mcp_server.py:_build_schema_snapshot()`-
+fix:en deployas. Tre filändringar plockas upp av `.github/workflows/deploy-mcp.yml`
+när vi pushar till main:
+
+- `mcp_server.py` (utvidgad SQL för pg_class — visar reporting.*-vyer)
+- `SCHEMA.md` (sektion om reporting-vyer)
+- `docs/warehouse_semantics.md` (Mental model 0 — PII-läsning)
+
+Tills dess: testare som queryar `public.fact_personnel` får tydligt
+`ERROR: permission denied for table fact_personnel`. Pinga dem manuellt
+att byta till `reporting.personnel` (meddelande-mall ovan).
+
+**Triggar deploy manuellt om brådskande:**
+```powershell
+# Behöver Docker + ACR-push-rättigheter (samma som CI:n):
+$IMAGE = "crfinauto6427.azurecr.io/finance-mcp:$(git rev-parse HEAD)"
+docker build -f webapp/Dockerfile.mcp -t $IMAGE .
+az acr login --name crfinauto6427
+docker push $IMAGE
+az webapp config container set -g rg-finauto-6427 -n app-finauto-mcp-6427 `
+  --container-image-name $IMAGE
+az webapp restart -g rg-finauto-6427 -n app-finauto-mcp-6427
+```
+
 ## Beroenden / nästa steg
 
 - **T7 (rotera pgadmin)**: nu fri — MCP, ETL och PII-läsning går genom

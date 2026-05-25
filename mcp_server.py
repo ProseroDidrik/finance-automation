@@ -187,20 +187,29 @@ def _build_schema_snapshot() -> str:
     with _get_pool().connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT c.relname, c.reltuples::bigint
+            -- public.* base tables OCH reporting.* vyer (T3: PII-vyer som
+            -- mcp_readonly måste gå genom). Utan reporting.* skulle testare
+            -- bara se public.fact_personnel etc. och få permission denied.
+            SELECT n.nspname, c.relname, c.reltuples::bigint
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE c.relkind = 'r' AND n.nspname = 'public'
-            ORDER BY c.relname
+            WHERE (c.relkind = 'r' AND n.nspname = 'public')
+               OR (c.relkind = 'v' AND n.nspname = 'reporting')
+            ORDER BY n.nspname, c.relname
             """
         )
         rows = cur.fetchall()
 
     parts.append("\n## Live snapshot (≈ rader, uppskattning)\n")
-    parts.append("| Tabell | ≈ Rader |")
+    parts.append("> `reporting.*` är PII-minimerade vyer (T3 2026-05-25). "
+                 "MCP-rollen `mcp_readonly` SAKNAR direktaccess på "
+                 "`public.fact_personnel`, `fact_journal_sie`, `fact_journal_saft` "
+                 "— använd alltid `reporting.personnel/journal_sie/journal_saft` istället.\n")
+    parts.append("| Tabell / Vy | ≈ Rader |")
     parts.append("|---|---:|")
-    for name, count in rows:
-        parts.append(f"| `{name}` | {max(count, 0):,} |")
+    for nspname, name, count in rows:
+        fq = f"{nspname}.{name}" if nspname != "public" else name
+        parts.append(f"| `{fq}` | {max(count, 0):,} |")
 
     # Semantik-reglerna (period_type, best_source, etc.) — finns både i
     # repo:t (docs/warehouse_semantics.md) och som lokal skill i Claude Code.
