@@ -28,25 +28,31 @@ Datum är *körningsdatum* (när migrationen skrevs), inte semantisk version. Sl
 
 ## Körning
 
-Migrationer körs manuellt av en med admin-rättigheter (`pgadmin` eller en
-Entra-grupp med owner-rättigheter). Lokalt:
+Vi har INTE psql installerat lokalt — använd `_apply.py` (psycopg-baserad runner,
+hanterar `\set`, `\echo`, `:'var'`-substitution så .sql-filerna också går att
+köra med psql om det installeras senare).
 
 ```powershell
-# Hemligheten skickas via -v, inte i filen.
-psql "$env:DATABASE_URL_ADMIN" -v ON_ERROR_STOP=1 `
-  -v mcp_pw="<lösenord från Key Vault>" `
-  -f db/migrations/20260525_mcp_readonly_role.sql
+# Admin-URL från Key Vault, lösenord skickas via --var (aldrig i fil/argv-historik).
+$env:DATABASE_URL_ADMIN = az keyvault secret show --vault-name kv-finauto-6427 `
+  --name database-url --query value -o tsv
+
+C:\path\to\.venv\Scripts\python.exe db\migrations\_apply.py `
+  db\migrations\<file>.sql --var <varname>=<value>
 ```
 
-Verifiera sedan:
+Alternativ med psql om det installeras:
 
 ```powershell
 psql "$env:DATABASE_URL_ADMIN" -v ON_ERROR_STOP=1 `
-  -f db/migrations/20260525_mcp_readonly_role.verify.sql
+  -v mcp_pw="<lösenord>" -f db/migrations/<file>.sql
 ```
+
+Verifiera sedan via `verify.sql` (psql) eller skriv en Python-verifyfil med
+strukturerad PASS/FAIL-output (se commit-historik för T1-exempel).
 
 ## Migrationslogg
 
 | Datum | Migration | T# | Kort | Status |
 |---|---|---|---|---|
-| 2026-05-25 | `20260525_mcp_readonly_role.sql` | T1 | Read-only-roll för MCP | ⏳ pending DevOps |
+| 2026-05-25 | `20260525_mcp_readonly_role.sql` | T1 | Read-only-roll för MCP | ✅ live i prod (verifierad via deployed MCP, current_user=mcp_readonly) |

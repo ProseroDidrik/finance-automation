@@ -14,9 +14,9 @@
 ------------------------------------------------------------------------
 -- 1) Skapa rollen om den inte finns. Utan lösenord — sätts i steg 2.
 ------------------------------------------------------------------------
--- `:'mcp_pw'`-substitution inuti DO $$ ... $$ är opålitlig
--- (dollar-quoting krockar med psql-variabler i vissa versioner).
--- Splittra istället: DO skapar struktur, ALTER sätter värde.
+-- psql-variabelsubstitution inuti DO-block är opålitlig (dollar-quoting
+-- krockar med psql-variabel-syntax i vissa versioner). Splittra istället:
+-- DO-blocket skapar strukturen, en separat ALTER-sats sätter värdet.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mcp_readonly') THEN
