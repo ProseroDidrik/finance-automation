@@ -1,0 +1,63 @@
+# gitleaks-konfiguration för finance-automation.
+#
+# Aktiveras av .github/workflows/secret-scan.yml. T7-accept-kriterium från
+# säkerhetsremedieringen 2026-05-25 (PR #15).
+#
+# Allowlist nedan motsvarar manuell scan körd 2026-05-25 — alla träffar var
+# variabel-referenser, inte klartext-läckor. Listan ska hållas KORT och
+# specifik. Lägg INTE till bredare regex utan att verifiera mot live-historik.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist för verifierade false-positives 2026-05-25"
+
+# Specifika historiska commits där träffen är verifierat ofarlig.
+# Använd hellre denna än bred path-allowlist — minskar risken att framtida
+# riktiga läckor tystas av oavsiktlig regex-bredd.
+commits = [
+    # b0200759 (2026-05-15) committade en Windows-temp-auth.json-fil med
+    # Unicode-encoded colon-path (C[U+F03A]UsersDidWacAppDataLocalTempauth.json).
+    # Filen är .gitignored sedan dess via 'CUsersDidWac*'-mönster. Träffen är
+    # en 'clientId' = Azure AD App Registration-ID, som är PUBLIK per design
+    # (delas i dokumentation, Easy Auth-config, App Service-settings).
+    # gitleaks flaggar som generic-api-key pga entropy 3.79.
+    "b0200759bf97ece415657d424e4454a4844b1bec",
+]
+
+# Sökvägs-allowlist: filer som diskuterar lösenord-mönster men inte innehåller dem
+paths = [
+    # RUNBOOK-dokumentation — beskriver lösenords-strategin med variabel-namn
+    '''db/migrations/RUNBOOK_T\d+\.md''',
+    '''db/migrations/README\.md''',
+    # gitleaks-konfigen själv (den här filen)
+    '''\.gitleaks\.toml''',
+    # Workflow-konfigen
+    '''\.github/workflows/secret-scan\.yml''',
+    # _scratch är .gitignored men vissa lokala kopior kan finnas
+    '''_scratch/''',
+    # Test-data + _params (kontonamn, OrgNr — inte secrets)
+    '''_params/''',
+]
+
+# Regex-allowlist för variabel-substitution-mönster
+# (matchar HELA raden så gitleaks's "secret-värde-extraktion" tystas)
+regexes = [
+    # PowerShell/bash variabel-substitution inom connection strings
+    '''postgresql://[a-z_]+:\$\{?[A-Za-z_]+\}?@''',
+    '''postgresql://\$\{?[A-Za-z_]+\}?:\$\{?[A-Za-z_]+\}?@''',
+    # psql :'varname'-substitution
+    '''PASSWORD\s+:'[a-z_]+'\s*''',
+    # PowerShell New-StrongPassword-mönster
+    '''\$\w*[Pp]assword\s*=\s*New-StrongPassword''',
+    # Runtime-fångad credential från az/Invoke-Az
+    '''\$\w*[Ss]ecret\s*=\s*\(Invoke-Az [^)]+\)\.Trim\(\)''',
+    # Token-namn (inte värde): "mcp-bearer-token", "database-url", "easyauth-provider-secret"
+    '''['"]\s*(mcp-bearer-token|database-url(?:-readonly|-etl)?|easyauth-provider-secret)\s*['"]''',
+    # KV-secret-referens i appsettings (@Microsoft.KeyVault(SecretUri=...))
+    '''@Microsoft\.KeyVault\(SecretUri=https://[a-z0-9-]+\.vault\.azure\.net/secrets/''',
+]
+
+# Commit-allowlist: ingen — alla läckor ska fångas, även gamla commits.
+# Om en false-positive uppstår i en specific commit, lägg till regex ovan istället.
