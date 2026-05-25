@@ -64,12 +64,13 @@ COMPANY_DEFS: dict[str, dict] = {
         is_max=4999, bs_min=5000, skip_formatting=False,
         file_glob="190_*.xlsx",
     ),
-    # 216 SIKOM: 5-siffriga konton (0XXXX=IS, 1XXXX-2XXXX=BS, normalize4 ger
-    # acc4=0XXX för IS, 1000-2599 för BS). Filen innehåller bold subtotaler
-    # ("I ALT", "RESULTAT FØR ...") som skapar dubbelräkning — skip_bold=True
-    # filtrerar bort dem (oavsett underline, till skillnad från 178).
+    # 216 SIKOM: enbart resultaträkning (RESULTATOPGØRELSE), inga BS-konton.
+    # Kontona lagras som 5-siffriga strängar i källan ("01020"–"07XXX") och
+    # bevaras byte-för-byte ut till INL.xlsx (se acc_raw i read_saldobalance).
+    # Filen innehåller bold subtotaler ("I ALT", "RESULTAT FØR ...") som
+    # skapar dubbelräkning — skip_bold=True filtrerar bort dem.
     "216": dict(
-        is_max=999, bs_min=1000, skip_formatting=False, skip_bold=True,
+        is_max=9999, bs_min=None, skip_formatting=False, skip_bold=True,
         file_glob="216_*.xlsx",
     ),
     "229": dict(
@@ -200,7 +201,10 @@ def read_saldobalance(
     exclude: list[int] | None = None,
 ) -> tuple[list, list]:
     """
-    Returns (is_rows, bs_rows), each a list of (account_int, name_str, amount_float).
+    Returns (is_rows, bs_rows), each a list of (account_code_str, name_str, amount_float).
+    account_code_str bevarar källcellens strängform (inkl. inledande nollor som i
+    216:s "0XXXX"). Internt används en int-tolkning (acc_int) för normalize4,
+    seen_accs-dedup och exclude-check.
 
     Amounts use kredit-debet sign convention (income positive, costs negative).
     Stops at a Nulkontrol ACCOUNT ROW (account present + "nulkontrol" in any cell).
@@ -244,47 +248,59 @@ def read_saldobalance(
                 in_nulkontrol = True
             continue
 
+        # Bevara källcellens strängform (incl. inledande nollor) när cellen är
+        # en ren digit-sträng — t.ex. 216:s "01020". För numeriska celler eller
+        # exotiska representationer faller vi tillbaka till int-formen.
+        # acc_int används internt för normalize4/seen_accs/exclude; acc_raw
+        # skrivs till INL.xlsx (→ fact_balances.account_code).
         try:
-            acc = int(float(str(acc_cell.value).strip()))
+            acc_int = int(float(str(acc_cell.value).strip()))
         except (ValueError, TypeError):
             continue
+        acc_raw = str(acc_int)
+        if isinstance(acc_cell.value, str):
+            s = acc_cell.value.strip()
+            if s.isdigit() and int(s) == acc_int:
+                acc_raw = s
 
-        # Stop on a numeric "Nulkontrol" account row (e.g. acc=9990 in 178).
+        # Stop on a numeric "Nulkontrol" account row (e.g. acc_int=9990 in 178).
         if any("nulkontrol" in str(c.value).lower() for c in row if c.value is not None):
             break
 
         # Skip accounts already processed (månedsopdelt double-section files)
-        if acc in seen_accs:
+        if acc_int in seen_accs:
             continue
-        seen_accs.add(acc)
+        seen_accs.add(acc_int)
 
-        if exclude and acc in exclude:
+        if exclude and acc_int in exclude:
             continue
 
         # In the Nulkontrol section, IS accounts carry YTD values — skip them.
         # BS accounts (after the YTD-IS section) are still valid to collect.
-        acc4 = normalize4(acc)
+        acc4 = normalize4(acc_int)
         if in_nulkontrol and acc4 <= is_max_4d:
             continue
 
         # Skip bold+underline summary rows (178)
         if skip_formatting:
+            skip = False
             for cell in row[:3]:
                 f = cell.font
                 if f and f.bold and f.underline:
-                    acc = -1
+                    skip = True
                     break
-            if acc == -1:
+            if skip:
                 continue
 
         # Skip bold-only summary rows (216: "I ALT"/"RESULTAT FØR..." subtotaler)
         if skip_bold:
+            skip = False
             for cell in row[:3]:
                 f = cell.font
                 if f and f.bold:
-                    acc = -1
+                    skip = True
                     break
-            if acc == -1:
+            if skip:
                 continue
 
         # Name
@@ -310,9 +326,9 @@ def read_saldobalance(
             continue
 
         if acc4 <= is_max_4d:
-            is_rows.append((acc, name, amt))
+            is_rows.append((acc_raw, name, amt))
         elif bs_min_4d is not None and acc4 >= bs_min_4d:
-            bs_rows.append((acc, name, amt))
+            bs_rows.append((acc_raw, name, amt))
 
     wb.close()
     return is_rows, bs_rows
@@ -370,19 +386,27 @@ def read_bs_from_ytd(filepath: Path, bs_min_4d: int) -> list:
         acc_cell = row[col_acc]
         if acc_cell.value is None:
             continue
+        # Bevara källcellens strängform (incl. inledande nollor) när cellen är
+        # en ren digit-sträng. För numeriska celler faller vi tillbaka till
+        # int-formen. acc_int används för normalize4/seen_accs; acc_raw skrivs ut.
         try:
-            acc = int(float(str(acc_cell.value).strip()))
+            acc_int = int(float(str(acc_cell.value).strip()))
         except (ValueError, TypeError):
             continue
+        acc_raw = str(acc_int)
+        if isinstance(acc_cell.value, str):
+            s = acc_cell.value.strip()
+            if s.isdigit() and int(s) == acc_int:
+                acc_raw = s
 
         if any("nulkontrol" in str(c.value).lower() for c in row if c.value is not None):
             break
 
-        if acc in seen_accs:
+        if acc_int in seen_accs:
             continue
-        seen_accs.add(acc)
+        seen_accs.add(acc_int)
 
-        acc4 = normalize4(acc)
+        acc4 = normalize4(acc_int)
         if acc4 < bs_min_4d:
             continue
 
@@ -396,7 +420,7 @@ def read_bs_from_ytd(filepath: Path, bs_min_4d: int) -> list:
         if amt == 0.0:
             continue
 
-        bs_rows.append((acc, name, amt))
+        bs_rows.append((acc_raw, name, amt))
 
     wb.close()
     return bs_rows
