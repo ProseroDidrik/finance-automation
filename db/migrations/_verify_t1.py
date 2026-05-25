@@ -80,10 +80,12 @@ def main() -> int:
                 not cur.fetchone()[0],
             )
 
-            # T1.C — SELECT på alla public-tabeller, ingen DML
+            # T1.C — SELECT på alla public-tabeller (BASE TABLES bara).
+            # pg_tables filtrerar bort extension-vyer (pg_stat_statements m.fl.)
+            # som ligger i public men inte ägs av admin.
             cur.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema='public' ORDER BY 1"
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname='public' ORDER BY 1"
             )
             tables = [r[0] for r in cur.fetchall()]
             check(f"T1.C0  hittade {len(tables)} public-tabeller", len(tables) > 0)

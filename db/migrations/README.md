@@ -56,3 +56,4 @@ strukturerad PASS/FAIL-output (se commit-historik för T1-exempel).
 | Datum | Migration | T# | Kort | Status |
 |---|---|---|---|---|
 | 2026-05-25 | `20260525_mcp_readonly_role.sql` | T1 | Read-only-roll för MCP | ✅ live i prod (verifierad via deployed MCP, current_user=mcp_readonly) |
+| 2026-05-25 | `20260525_etl_writer_role.sql`   | T2 | DML-roll för ETL-loaders (ingen DDL) | ✅ live i prod + db.py fail-fast aktiv (loaders kräver DATABASE_URL_ETL — se RUNBOOK_T2.md) |
