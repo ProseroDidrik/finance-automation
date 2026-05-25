@@ -378,6 +378,19 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         log("ERROR", company_id, f"Kunde inte härleda period från {path.name}")
         return "error"
 
+    # Vakt mot fel-fil-i-fel-mapp: om --period är satt och filens egen
+    # PeriodEnd är *tidigare* än override, är det garanterat fel fil (t.ex.
+    # en januari-SAF-T som hamnat i extracted/202604/). Header *senare* än
+    # override är OK — Tema Total m.fl. exporterar helårs-SAF-T med
+    # PeriodEnd=YYYY12 även när bara YTD-data finns.
+    if period_override:
+        header_period = derive_period(parsed, None)
+        if header_period and header_period < period_override:
+            log("ERROR", company_id,
+                f"{path.name}: filens PeriodEnd={header_period} < "
+                f"--period={period_override}. Fel fil i fel mapp? Skippar.")
+            return "error"
+
     # Konfliktkoll: finns redan SAFT för perioder >= filens period inom FY?
     fy_start, fy_end = derive_fy_range(parsed, period)
     has_override = is_override_for(override, company_id)
