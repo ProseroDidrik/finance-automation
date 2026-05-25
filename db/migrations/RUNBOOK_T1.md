@@ -215,3 +215,68 @@ az keyvault secret delete --vault-name kv-finauto-6427 --name database-url-reado
 
 T2 (etl_writer) följer samma mönster och bör köras direkt efter att T1 är grön.
 T7 (rotera pgadmin) bör vänta tills T1+T2 är klara — annars låser vi ute MCP/ETL.
+
+---
+
+## Hur T1 faktiskt kördes 2026-05-25 (live-spår)
+
+Runbook ovan beskriver psql-vägen. I praktiken kördes T1 utan psql installerat
+— använd den här sektionen som facit vid nästa rotation.
+
+**Verktyg:** `az` 2.86.0 + `.venv\Scripts\python.exe` (psycopg 3.3.4). Inget psql.
+
+**Sekvens som faktiskt fungerade:**
+
+1. **Admin-URL från KV:** `az keyvault secret show --vault-name kv-finauto-6427
+   --name database-url --query value -o tsv` → `$env:DATABASE_URL_ADMIN`.
+
+2. **Lösenord:** CSPRNG via `[System.Security.Cryptography.RandomNumberGenerator]`,
+   40 tecken base64-trimmat.
+
+3. **Migration:**
+   `.venv\Scripts\python.exe db\migrations\_apply.py
+   db\migrations\20260525_mcp_readonly_role.sql --var mcp_pw=$mcpPw`
+   Returnerade två postgres-notices ("no privileges were granted for
+   pg_stat_statements{_info}") — förväntat, det är extension-vyer som pgadmin
+   inte äger.
+
+4. **Verifiering:** `_verify_t1.py` — 13/13 PASS.
+
+5. **Smoke-test som mcp_readonly:** Python inline, läste 574 063 rows från
+   `fact_balances`, INSERT blockerades med `psycopg.errors.ReadOnlySqlTransaction`.
+
+6. **KV-secret:** `az keyvault secret set --vault-name kv-finauto-6427
+   --name database-url-readonly --value $mcpUrl --tags purpose=mcp_readonly
+   task=T1`. Read-back-verifierad genom att ansluta med värdet från KV.
+
+7. **App Service appsetting:** Här krånglade `az webapp config appsettings set`:
+   - `--settings DATABASE_URL=@Microsoft.KeyVault(...)` → `az` tolkar `@`
+     som "läs från fil", värdet blev `null`.
+   - `--settings @file.json` med array-format → `az` accepterade men returnerade
+     value=null och förändrade inte appsetting (ingen synlig fel).
+   - `--settings-file` → finns inte i `az webapp config appsettings set`.
+
+   **Fungerande approach: `az rest` PUT mot ARM-endpoint:**
+   ```powershell
+   $sub = az account show --query id -o tsv
+   $base = "https://management.azure.com/subscriptions/$sub/resourceGroups/$RG/" +
+           "providers/Microsoft.Web/sites/$APP/config/appsettings"
+   # OBS: POST på /list (Azures quirk), inte GET
+   $current = az rest --method post --url "$base/list?api-version=2022-03-01" | ConvertFrom-Json
+   # Bygg properties-dict — undvik $current.properties.PSObject.Properties
+   # (det flätar in name/value/slotSetting-skräp). Använd ConvertFrom-Json -AsHashtable
+   # eller hårdkoda nycklarna.
+   ...
+   az rest --method put --url "$base?api-version=2022-03-01" --body "@$tmpBody"
+   ```
+
+   **Fälla som biten oss:** PowerShell:s `PSObject.Properties`-iteration över
+   `$current.properties` lade till `name`, `value`, `slotSetting` som extra
+   appsettings — städades med `az webapp config appsettings delete
+   --setting-names name slotSetting value`.
+
+8. **End-to-end-verify:** HTTPS POST till
+   `https://app-finauto-mcp-6427.azurewebsites.net/mcp` med MCP streamable-http
+   JSON-RPC (initialize → notifications/initialized → tools/call query_sql med
+   `SELECT current_user, current_setting('default_transaction_read_only')`).
+   Svar: `mcp_readonly | on`. T1 ✅.
