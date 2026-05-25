@@ -333,6 +333,58 @@ extra dagar adderar bokningar). Större diff (50 %+) eller systematisk
 matchar inte Mercurs konsoliderade BAS-mappning. Bolag 164 (El &
 Fastighetsdrift) är ett känt exempel.
 
+### Förväntat brus i SAFT-jämförelse: Tripletex `ClosingBalance` vs GL
+
+`load_saft.py` läser kontosaldon ur `Account/ClosingCreditBalance` (det
+auktoritativa saldot i SAF-T-XML:n) — inte ur summan av GL-entries.
+Mercurs egen NO-parser räknar i stället månadsrörelse från
+`GeneralLedgerEntries`. För 33 av 35 NO-bolag är de identiska och allt
+matchar exakt. För **2 av 7 Tripletex-bolag** (158 Asker, 189 Lås &
+Prosjekt, per 2026-04) ligger `ClosingBalance` några hundra tusen NOK
+högre än cumsum av GL-entries i samma fil — alltså transaktioner som
+påverkar saldot men inte exporteras som rena GL-rader (troligen
+periodlåsta justeringar eller aviavtryck i Tripletex). Detta är *inte*
+en ETL-bug, och inte filspecifikt — diffen återkommer per fil från
+samma två bolag oavsett när SAFT genereras.
+
+Empiriska siffror (2026-04, konto 3000):
+
+| Bolag | ClosingBalance (fact) | GL cumsum (Mercur) | Diff |
+|---|---:|---:|---:|
+| 158 Asker | 3 203 730 | 3 094 350 | +109 380 (+3,4 %) |
+| 189 Lås & Prosjekt | 8 144 680 | 7 881 520 | +263 160 (+3,2 %) |
+
+Övriga 5 TT-bolag (36, 91, 111, 148, 237) har 0 diff. PowerOffice-bolagen
+19 och 171 har försumbar diff (<0,1 %) som sannolikt är öresavrundning.
+
+**Praktisk konsekvens:** rapporter mot `fact_balances` ger det
+auktoritativa balanssaldot (vad bokföringssystemet rapporterar);
+`compare_all_file_vs_db` mot Mercur kommer visa ~3 % avvikelse för dessa
+två bolag och det är förväntat — inte indikation på att SAFT-fil eller
+ETL behöver åtgärdas. För att förändra det måste antingen bolaget
+ändra sin Tripletex-exportkonfiguration eller Mercur byta till
+ClosingBalance-baserad inläsning.
+
+Identifiera per session med:
+```sql
+WITH gl AS (
+  SELECT company_id, SUM(-amount) AS gl_sum
+  FROM fact_journal_saft
+  WHERE account_code = '3000'
+    AND transaction_date BETWEEN DATE '2026-01-01' AND DATE '2026-04-30'
+  GROUP BY 1)
+SELECT fb.company_id, c.name, SUM(-fb.amount) AS fact, gl.gl_sum,
+       SUM(-fb.amount) - gl.gl_sum AS diff
+FROM fact_balances fb
+JOIN dim_company c USING (company_id)
+LEFT JOIN gl USING (company_id)
+WHERE fb.source_kind = 'SAFT' AND fb.scenario = 'A'
+  AND fb.period = '202604' AND fb.account_code = '3000'
+GROUP BY 1, 2, gl.gl_sum
+HAVING ABS(SUM(-fb.amount) - COALESCE(gl.gl_sum, 0)) > 1000
+ORDER BY 5 DESC;
+```
+
 ### Framtida-period-filter i compare_coverage
 
 `compare_coverage.sql:cutoff`-CTE:n filtrerar bort backup-rader där
