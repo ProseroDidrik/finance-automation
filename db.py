@@ -198,36 +198,37 @@ def connect(read_only: bool = False, role: str = "etl") -> Conn:
     role='etl'      → fail-fast om current_user är pgadmin/azure_pg_admin-medlem.
                       Default — alla loaders (load_*.py, delete_db.py) ska gå hit.
     role='admin'    → ingen rollkontroll. Bara för db.py:main() / explicit DDL.
+
+    Fail-fast-kollen körs BARA när read_only=False. Read-only-script
+    (check_*.py, verify_*.py) kan inte skada data så de undantas — annars
+    skulle T2 indirekt kräva DATABASE_URL_ETL även för debug-script som
+    historiskt körts med ren DATABASE_URL=admin.
     """
     url = _database_url(role)
     conn = psycopg.connect(url, autocommit=read_only)
     wrapped = Conn(conn)
-    if role == "etl":
+    if role == "etl" and not read_only:
         _enforce_non_admin(wrapped)
     return wrapped
 
 
 def _enforce_non_admin(con: Conn) -> None:
-    """Avbryt om vi råkar köra ETL med admin-credentials.
+    """Avbryt om vi råkar köra skrivande ETL med admin-credentials.
 
-    Kollar att current_user inte är `pgadmin` och inte medlem i
-    `azure_pg_admin` / `pg_write_all_data`. Stänger anslutningen och
-    raisar RuntimeError annars — så loadern dör snabbt med tydlig text
-    istället för att skriva data med fel rättigheter.
+    Använder `pg_has_role` med 'MEMBER'-mode så transitivt medlemskap fångas
+    (om någon framtida roll ärver via mellan-roll). Stänger anslutningen
+    och raisar RuntimeError så loadern dör snabbt med tydlig text istället
+    för att skriva data med fel rättigheter.
     """
     with con.raw.cursor() as cur:
         cur.execute("""
             SELECT current_user,
-                   EXISTS(
-                       SELECT 1 FROM pg_auth_members m
-                       JOIN pg_roles r ON r.oid = m.roleid
-                       JOIN pg_roles u ON u.oid = m.member
-                       WHERE u.rolname = current_user
-                         AND r.rolname IN ('azure_pg_admin', 'pg_write_all_data')
-                   )
+                   pg_has_role(current_user, 'azure_pg_admin', 'MEMBER')
+                OR pg_has_role(current_user, 'pg_write_all_data', 'MEMBER')
+                OR current_user = 'pgadmin'
         """)
-        user, is_admin_member = cur.fetchone()
-    if user == "pgadmin" or is_admin_member:
+        user, is_admin = cur.fetchone()
+    if is_admin:
         con.close()
         raise RuntimeError(
             f"ETL ansluten som '{user}' som är admin/azure_pg_admin-medlem — förbjudet.\n"

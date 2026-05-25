@@ -20,37 +20,67 @@ db.py uppdaterad med fail-fast).
 
 ## Vad du behöver göra för att loaders ska fungera lokalt
 
-ETL kräver nu `DATABASE_URL_ETL` — utan den faller `connect()` tillbaka på
-`DATABASE_URL`, ser att det är admin, och **avbryter med RuntimeError**.
+Skrivande loaders (`connect()`) kräver nu `DATABASE_URL_ETL` — utan den
+faller anslutningen tillbaka på `DATABASE_URL`, ser admin, **avbryter med
+RuntimeError**. Read-only-script (`connect(read_only=True)`) påverkas INTE
+— de undantas från fail-fast eftersom de inte kan skada data.
 
-**Sätt en gång i din PowerShell-profil** (`$PROFILE`):
+### ⚠️ Viktigt: undvik `DATABASE_URL=admin` lokalt
+
+Lokal MCP (`.mcp.json` startar `mcp_server.py`) ärver shell-env. Om
+`DATABASE_URL` är satt och pekar på admin-secret, **nullifieras T1.b**
+(mcp_server.py:48 går aldrig till KV-fallbacken som T1.b ändrade default
+för). Lokal MCP fortsätter köra som pgadmin trots T1+T1.b.
+
+**Rekommenderad setup** (`$PROFILE`):
 
 ```powershell
-# Lokal dev mot Azure Postgres
-$env:DATABASE_URL     = (az keyvault secret show --vault-name kv-finauto-6427 `
-                          --name database-url --query value -o tsv)
+# DATABASE_URL pekar på READ-ONLY-secret. Det matchar:
+#  - Lokal MCP (via .mcp.json) — kör som mcp_readonly ✅
+#  - Webapp (via db.database_url() → ConnectionPool) — bara SELECT:ar,
+#    så mcp_readonly räcker tills T9 ger den egen roll.
+$env:DATABASE_URL = (az keyvault secret show --vault-name kv-finauto-6427 `
+                       --name database-url-readonly --query value -o tsv)
+
+# DATABASE_URL_ETL — bara loaders ser denna. Skrivande etl_writer.
 $env:DATABASE_URL_ETL = (az keyvault secret show --vault-name kv-finauto-6427 `
                           --name database-url-etl --query value -o tsv)
-# DATABASE_URL behålls för webapp (T9 byter webapp till egen roll) och
-# som fallback för db.py:main(). DATABASE_URL_ETL används av alla loaders.
+
+# DATABASE_URL_ADMIN — break-glass för db.py:main() / schema-init.
+# Sätt bara temporärt när du faktiskt kör `py db.py`.
+# Inte i $PROFILE — håll admin-credential ute ur default shell-env.
 ```
 
-Eller — om du föredrar att INTE ha admin-credentials default i shell:
+### Verifiera
 
 ```powershell
-# Bara ETL-credential exponerad
-$env:DATABASE_URL_ETL = (az keyvault secret show --vault-name kv-finauto-6427 `
-                          --name database-url-etl --query value -o tsv)
-# Webapp kommer kräva att DATABASE_URL sätts separat när du startar uvicorn.
-# db.py:main() (`py db.py`) kommer också kräva DATABASE_URL_ADMIN explicit.
-```
-
-**Verifiera:**
-
-```powershell
-# Loader-flöde
-py -c "import db; con = db.connect(); print(con.execute('SELECT current_user').fetchone())"
+# Loader-flöde (skrivande)
+py -c "import db; print(db.connect().execute('SELECT current_user').fetchone())"
 # Förväntat: ('etl_writer',)
+
+# Read-only-script (suggest_categories, check_*, verify_*) — funkar oavsett URL
+py -c "import db; print(db.connect(read_only=True).execute('SELECT current_user').fetchone())"
+# Förväntat (med setup ovan): ('mcp_readonly',)  — läs-script går genom readonly nu
+
+# Admin-väg (för db.py:main eller engångs-DDL)
+$env:DATABASE_URL_ADMIN = (az keyvault secret show --vault-name kv-finauto-6427 `
+                            --name database-url --query value -o tsv)
+py db.py
+# Förväntat: dim_company sync OK
+Remove-Item env:DATABASE_URL_ADMIN  # rensa direkt efteråt
+```
+
+### Alternativ: bara ETL-credential exponerad
+
+Om du föredrar absolut minst-privilegium default i shell:
+
+```powershell
+# Bara skrivande ETL-credential
+$env:DATABASE_URL_ETL = (az keyvault secret show --vault-name kv-finauto-6427 `
+                          --name database-url-etl --query value -o tsv)
+# Webapp + MCP kräver då explicit DATABASE_URL när du startar dem.
+# Mer säker men friktion: glömmer du sätta DATABASE_URL går varken
+# `uvicorn webapp.backend.main:app` eller MCP igång.
 ```
 
 ## Vad som faktiskt kördes 2026-05-25 (live-spår)
