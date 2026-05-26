@@ -5,7 +5,8 @@ _logs/
 _uploads/
 __pycache__/
 *.pyc
-.claude/
+.claude/*
+!.claude/settings.json
 config.json
 *.xlsx
 *.csv

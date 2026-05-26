@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem *)"
+    ],
+    "deny": [
+      "Read(./_params/**)",
+      "Read(./_logs/**)",
+      "Read(./_uploads/**)",
+      "Read(./_scratch/**)",
+      "Read(./_statistics/**)",
+      "Read(./data/**)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./.mcp_token)",
+      "Read(./*.pem)",
+      "Read(./*.key)",
+      "Read(./*.pfx)",
+      "Read(./*.p12)",
+      "Read(./secrets/**)",
+      "Read(./.secrets/**)",
+      "Read(./*.duckdb)",
+      "Read(./counterparty_check_*.csv)",
+      "Read(C:/Users/DidWac/Prosero Dropbox/**)"
+    ]
+  },
+  "enabledPlugins": {
+    "ui-ux-pro-max@ui-ux-pro-max-skill": true
+  }
+}
