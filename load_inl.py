@@ -237,7 +237,22 @@ def main() -> None:
 
     con = db.connect()
     try:
-        db.init_schema(con)
+        # init_schema kräver DDL → körs egentligen av `py db.py` med admin-rollen
+        # innan ETL-laddningar. Vi behåller anropet defensivt för lokal dev där
+        # samma user gör allt, men under T2 (separata ETL/admin-roller) failar
+        # det med InsufficientPrivilege — det är inte ett verkligt fel, det
+        # betyder bara att schema redan är initierat av admin.
+        try:
+            db.init_schema(con)
+        except Exception as e:
+            if "InsufficientPrivilege" in type(e).__name__ \
+                    or "permission denied" in str(e).lower():
+                log("INFO", "schema",
+                    "Hoppar over init_schema (ETL-rollen utan DDL — "
+                    "antar att schema redan finns)")
+                con.raw.rollback()  # rensa failed transaction
+            else:
+                raise
         counts = {"ok": 0, "warn": 0, "skip": 0, "error": 0}
         for f in files:
             status = load_file(con, f, base_path,
