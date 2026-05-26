@@ -1,0 +1,124 @@
+{
+  "_doc": [
+    "Klassificerings-overrides for compare_all_file_vs_db.py.",
+    "Klass C = 'väntar på extern leverans' — bolag/grupp där en avvikelse mot",
+    "Mercur-facit är dokumenterad och inte en ETL-bug. Skiljs ut fran 'avvik'",
+    "(klass A = riktiga ETL-buggar) sa att malet 'avvik = 0' blir matbart.",
+    "",
+    "Schema per entry:",
+    "  company_id   (int)    bolagets BolagsID",
+    "  klass        (str)    'C' (extern action) eller 'B' (dokumenterat Mercur-brus)",
+    "  since_period (str)    YYYYMM — gäller from och med den perioden",
+    "  until_period (str)    valfri YYYYMM — gäller tom (NULL = oppen)",
+    "  reason       (str)    1-rads beskrivning",
+    "  ticket_link  (str)    sokvag till dok eller issue",
+    "  groups       (list)   valfri lista av GROUP-namn (parent_id i dim_account_map).",
+    "                        Om null/saknas: gäller alla grupper for bolaget.",
+    "                        Mater finkornighet — anvand bara nar du vet vilka konton",
+    "                        som specifikt paverkas. Storsta delen av tiden: lamna null.",
+    "",
+    "Hur det fungerar i compare_all_file_vs_db.py:",
+    "  En cell som annars skulle bli 'avvik' eller 'saknas_i_db' blir 'extern_action'",
+    "  om en override matchar (cid, grp, period). 'ok' paverkas inte (om det stammer",
+    "  ar overriden oversflodig — sla pa --warn-stale for att se sadana fall).",
+    "  Bolagets verdict beraknas exklusive extern_action-rader; om bolaget skulle vara",
+    "  'ren' utan extern_action men har ≥1 sadan rad blir verdiktet",
+    "  'extern_action_pending'.",
+    "",
+    "Underhall:",
+    "  - Nya entries ska refera till docs/avstamning-*.md eller annan persistent",
+    "    plats sa anledningen overlever bytet av maintainer.",
+    "  - Nar extern leverans kommer in: kor om compare, satt 'until_period' till",
+    "    perioden FORE leveransen blev fullstandig (entryt ska da matcha 0 rader).",
+    "    Ta bort entryt vid nasta city-sweep om det fortfarande matchar 0."
+  ],
+  "version": 1,
+  "overrides": [
+    {
+      "company_id": 51,
+      "klass": "C",
+      "since_period": "202604",
+      "reason": "SIE saknar loner/rantor 7XXX/8XXX (~7.4M)",
+      "ticket_link": "docs/avstamning-2026-04-extern-actions.md#2",
+      "groups": null
+    },
+    {
+      "company_id": 145,
+      "klass": "C",
+      "since_period": "202601",
+      "reason": "IMP saknar Tax jan + ICT mar",
+      "ticket_link": "docs/avstamning-2026-04-extern-actions.md#4",
+      "groups": null
+    },
+    {
+      "company_id": 158,
+      "klass": "C",
+      "since_period": "202601",
+      "reason": "Tripletex SAFT bokar hela arets avskrivning i januari + ClosingBalance>GL",
+      "ticket_link": "docs/avstamning-2026-04-extern-actions.md#5--6-bolag-158-asker--189-las--prosjekt--tripletex-export-konfig",
+      "groups": null
+    },
+    {
+      "company_id": 189,
+      "klass": "C",
+      "since_period": "202601",
+      "reason": "Tripletex aggregerar 16 underkonton till 3000 + ClosingBalance>GL (~3,2 % avvik intaktssidan)",
+      "ticket_link": "docs/avstamning-2026-04-extern-actions.md#5--6-bolag-158-asker--189-las--prosjekt--tripletex-export-konfig",
+      "groups": null
+    },
+    {
+      "company_id": 229,
+      "klass": "C",
+      "since_period": "202602",
+      "until_period": "202602",
+      "reason": "INL 202602 saknar Mercur-manuella konteringar — Zipp leverans ofullstandig",
+      "ticket_link": "docs/avstamning-2026-04-extern-actions.md#3",
+      "groups": null
+    },
+    {
+      "company_id": 93,
+      "klass": "C",
+      "since_period": "202601",
+      "until_period": "202604",
+      "reason": "Hassleholm SIE har jan-dubbelbokning pa 5010 (+58.6k) och 5615 (+16.5k) + 4010-perioderingsdiff mellan feb/mar (~248k flyttat) mot Mercur. ETL ar verifierat ratt; ber ekonomi korrigera eller bekrafta",
+      "ticket_link": "docs/avstamning-2026-04-extern-actions.md#7",
+      "groups": null
+    },
+    {
+      "company_id": 14,
+      "klass": "B",
+      "since_period": "202601",
+      "until_period": "202604",
+      "reason": "Lassmeden Alexandersson: Premises-gruppen har manadsavvik mot Mercur (jan/feb/mar/apr) men YTD jan-apr inom 0.34 %. Klassisk periodiseringsflytt mellan bolagets bokforing och Mercurs manadsstangning. ETL verifierad.",
+      "ticket_link": "memory/reference_mercur_config_not_sie.md#3-periodiseringsflytt",
+      "groups": ["Premises"]
+    },
+    {
+      "company_id": 82,
+      "klass": "B",
+      "since_period": "202601",
+      "until_period": "202604",
+      "reason": "Samuelsson & Partner: 5615-leasing periodiseras over 5+ manader i Mercur (74k i maj som inte ar i scope) -- jan-apr-summan i Mercur ar darfor lagre. Premises samma monster. YTD korrigeras nar maj inkluderas. ETL verifierad.",
+      "ticket_link": "memory/reference_mercur_config_not_sie.md#3-periodiseringsflytt",
+      "groups": ["Premises", "Transportation"]
+    },
+    {
+      "company_id": 172,
+      "klass": "B",
+      "since_period": "202603",
+      "until_period": "202603",
+      "reason": "Norrbotten Transportation 202603: 3k diff, smaposter periodbrus -- under 1 % YTD-tolerans men over 0.5 %-cell-troskel",
+      "ticket_link": "memory/reference_mercur_config_not_sie.md#3-periodiseringsflytt",
+      "groups": ["Transportation"]
+    },
+    {
+      "company_id": 216,
+      "klass": "B",
+      "since_period": "202603",
+      "until_period": "202603",
+      "reason": "Sikom DK Transportation 202603: 6452 kr residual fran kontoplans-precision-mismatch (1 fact-konto saknas vs facit). Padding+klassning fixad b669563, kontoplans-precision aterstar. Se [[project-avstamning-202604]].",
+      "ticket_link": "memory/project_avstamning_202604.md",
+      "groups": ["Transportation"]
+    }
+  ]
+}

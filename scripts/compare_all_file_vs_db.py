@@ -26,6 +26,8 @@ Forvantat brus i NO-SAFT:
   for att ClosingBalance > sum(GL-entries) i samma fil. Inte ETL-bug. Se
   docs/warehouse_semantics.md (sektion "Tripletex ClosingBalance vs GL").
 """
+import argparse
+import json
 import os
 import re
 import subprocess
@@ -45,6 +47,10 @@ for _f in sorted(os.listdir(os.path.join(REPO, "_uploads"))):
         SRC_FILE = os.path.join(REPO, "_uploads", _f)
 OUT_FILE = os.path.join(REPO, "_uploads",
                         "Alla bolag - jamforelse fil vs warehouse.xlsx")
+OVERRIDES_FILE = os.path.join(REPO, "scripts", "compare_overrides.json")
+
+# PERIODS satts i __main__ fran --periods (default = 2026 jan-apr). Globalen
+# laser av MANGA funktioner nedan -- enklare an att tradda igenom signaturer.
 PERIODS = ["202601", "202602", "202603", "202604"]
 
 # Kallor som filen innehaller. Prioritet per land (hogst forst).
@@ -82,6 +88,57 @@ def get_db_url():
     if not url.startswith("postgres"):
         sys.exit("Kunde inte hamta DATABASE_URL: " + (out.stderr or out.stdout)[:300])
     os.environ["DATABASE_URL"] = url
+
+
+# --------------------------------------------------------------------------
+# 0b. Klassificerings-overrides (Klass C = vantar pa extern leverans)
+# --------------------------------------------------------------------------
+def load_overrides(path=OVERRIDES_FILE):
+    """Returnerar listan av override-dictar (tom om filen saknas).
+
+    Format: se scripts/compare_overrides.json._doc. Saknad fil betyder att
+    inga overrides ar konfigurerade -- skriptet kor som tidigare (allt riktigt
+    avvik klassas som 'avvik').
+    """
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as fh:
+        doc = json.load(fh)
+    ovs = doc.get("overrides", [])
+    # Validera grundsanity sa silent typos i overrides-filen inte tyst tappar
+    # rader (det vore tvarat-emot syftet med klassificeringen).
+    for i, ov in enumerate(ovs):
+        for key in ("company_id", "klass", "since_period", "reason"):
+            if key not in ov:
+                sys.exit("compare_overrides.json[%d]: saknar '%s'" % (i, key))
+        if ov["klass"] not in ("C", "B"):
+            sys.exit("compare_overrides.json[%d]: klass maste vara 'C' eller "
+                     "'B', inte %r" % (i, ov["klass"]))
+        if not re.fullmatch(r"\d{6}", str(ov["since_period"])):
+            sys.exit("compare_overrides.json[%d]: since_period maste vara "
+                     "YYYYMM, inte %r" % (i, ov["since_period"]))
+    return ovs
+
+
+def match_override(overrides, cid, grp, period):
+    """Returnerar matchande override-dict eller None.
+
+    Senaste matchande entry vinner (om flera matchar ar det loggas-fel i
+    over-rides-filen -- ta inte hand om duplikat tyst).
+    """
+    hit = None
+    for ov in overrides:
+        if ov["company_id"] != cid:
+            continue
+        if period < ov["since_period"]:
+            continue
+        if ov.get("until_period") is not None and period > ov["until_period"]:
+            continue
+        groups = ov.get("groups")
+        if groups is not None and grp not in groups:
+            continue
+        hit = ov
+    return hit
 
 
 # --------------------------------------------------------------------------
@@ -300,6 +357,14 @@ FILL = {
     "periodiseringsbrus": PatternFill("solid", fgColor="FFF2CC"),
     "avvik": PatternFill("solid", fgColor="F8CBAD"),
     "saknas_i_db": PatternFill("solid", fgColor="D9D9D9"),
+    # extern_action = dokumenterad vantan pa extern leverans (Klass C). Bla
+    # for att inte signalera 'fel' (rod) eller 'ok' (gron) -- det ar inget av
+    # delarna utan en pending-state.
+    "extern_action": PatternFill("solid", fgColor="BDD7EE"),
+    # mercur_brus = dokumenterad konfig-/perioderingsdiff mot Mercur (Klass B).
+    # ETL ar verifierad korrekt och ingen extern action behovs -- mest till for
+    # att skilja det fran riktiga 'avvik' i sammanfattningarna. Ljusgra/blagra.
+    "mercur_brus": PatternFill("solid", fgColor="D6DCE4"),
 }
 NUMFMT = "#,##0.00"
 
@@ -323,6 +388,11 @@ def main():
     get_db_url()
     sys.path.insert(0, REPO)
     from db import connect
+
+    overrides = load_overrides()
+    if overrides:
+        print("[0/6] Laser %d klassificerings-overrides fran %s" %
+              (len(overrides), os.path.basename(OVERRIDES_FILE)))
 
     print("[1/6] Laser Mercur-filen: " + os.path.basename(SRC_FILE))
     file_data, cid_names, cid_order = parse_file()
@@ -414,26 +484,38 @@ def main():
             rows_for_cid.append((grp, fvals, dvals, file_ytd, db_ytd,
                                  ydiff, ytd_status, ytd_ok))
 
-        err = sum(abs(fy - (dy if dy is not None else 0.0))
-                  for _g, _f, _d, fy, dy, *_ in rows_for_cid)
-        tol = max(200.0, 0.01 * abs_file)
-        if src is None:
-            verdict = "ingen data"
-        elif err <= tol:
-            verdict = "ren"
-        else:
-            verdict = "avvik"
-        health[cid] = (verdict, abs_file, abs_db)
-
+        # Verdict-beraknas i tva pass for att kunna isolera extern_action:
+        # forst monthly_rows (inkl klass-C-overstryk), sedan summera dem.
+        cell_rows = []
         for grp, fvals, dvals, file_ytd, db_ytd, ydiff, ytd_status, ytd_ok \
                 in rows_for_cid:
+            # YTD-status kan ocksa overskridas av en override -- om diff:en
+            # springer fran en period som en override matchar, ska YTD-radens
+            # status reflektera det. Klass C -> 'extern_action' (vantar pa
+            # extern leverans), Klass B -> 'mercur_brus' (dokumenterad
+            # konfig-/perioderingsdiff, ingen action). Vi accepterar
+            # overstrykning om NAGON av perioderna i scope matchar overriden
+            # (t.ex. Zipp 229 har override bara for 202602 -- YTD jan-apr ska
+            # anda klassas eftersom diff:en kommer fran feb).
+            ytd_status_out = ytd_status
+            if ytd_status == "avvik":
+                ytd_klass = None
+                for p in PERIODS:
+                    m = match_override(overrides, cid, grp, p)
+                    if m is not None:
+                        ytd_klass = m["klass"]
+                        break
+                if ytd_klass == "C":
+                    ytd_status_out = "extern_action"
+                elif ytd_klass == "B":
+                    ytd_status_out = "mercur_brus"
             ytd_rows.append([
                 cid, name, land, grp, src or "-", round(file_ytd, 2),
                 round(db_ytd, 2) if db_ytd is not None else None,
                 round(ydiff, 2) if ydiff is not None else None,
                 round(ydiff / file_ytd * 100, 2)
                 if (ydiff is not None and abs(file_ytd) > 0.005) else None,
-                ytd_status,
+                ytd_status_out,
             ])
             for p in PERIODS:
                 fv = fvals.get(p)
@@ -453,8 +535,17 @@ def main():
                         status = "avvik"
                     else:
                         status = "periodiseringsbrus"
+                # Klass-overstrykning: Klass C (extern_action) vs Klass B
+                # (mercur_brus). Bara avvik/saknas_i_db konverteras -- 'ok'
+                # lamnas i fred sa vi senare kan upptacka overflodiga
+                # overrides (alla matchande rader = ok => override behovs inte).
+                if status in ("avvik", "saknas_i_db"):
+                    m = match_override(overrides, cid, grp, p)
+                    if m is not None:
+                        status = "extern_action" if m["klass"] == "C" \
+                                else "mercur_brus"
                 diff = (fv or 0.0) - (dv or 0.0) if dv is not None else None
-                monthly_rows.append([
+                cell_rows.append([
                     cid, name, land, grp, p, src or "-",
                     round(fv, 2) if fv is not None else None,
                     round(dv, 2) if dv is not None else None,
@@ -463,6 +554,46 @@ def main():
                     if (diff is not None and fv not in (None, 0)) else None,
                     status,
                 ])
+        monthly_rows.extend(cell_rows)
+
+        # Verdict: rakna bara strikta avvik (exklusive extern_action) mot
+        # tolerans. Bolag med riktigt fel -> 'avvik'. Bolag som skulle vara
+        # ren men har >=1 extern_action -> 'extern_action_pending' (signal:
+        # warta pa kunden, inte var fel). Klass-B-overrides hanteras inte i
+        # verdict idag -- de paverkar bara per-cell-status.
+        #
+        # Trade-off: vi exkluderar HELA GRUPPEN fran err-summan om nagon av
+        # gruppens celler ar extern_action. Det ar konservativt -- en bolag
+        # med en extern_action-cell + en *riktig* avvik-cell i samma grupp
+        # kan da felaktigt bli ren. I praktiken har vi inte sett detta (Zipps
+        # 229 feb-override paverkar bara feb), men om det dyker upp byt till
+        # cell-niva-exkludering: sum av abs(monthly_diff) over icke-overridda
+        # celler istallet for abs(ytd_diff) per grupp.
+        excluded_groups = {r[3] for r in cell_rows
+                           if r[10] in ("extern_action", "mercur_brus")}
+        err_excl = sum(
+            abs(fy - (dy if dy is not None else 0.0))
+            for _g, _f, _d, fy, dy, *_ in rows_for_cid
+            if _g not in excluded_groups
+        )
+        tol = max(200.0, 0.01 * abs_file)
+        has_extern = any(r[10] == "extern_action" for r in cell_rows)
+        has_brus = any(r[10] == "mercur_brus" for r in cell_rows)
+        if src is None:
+            verdict = "ingen data"
+        elif err_excl <= tol:
+            # Prioritet: extern_action (action behovs) > mercur_brus (ingen
+            # action) > ren. Bolag med BADE extern_action och mercur_brus
+            # rapporteras som extern_action_pending sa de inte glomms bort.
+            if has_extern:
+                verdict = "extern_action_pending"
+            elif has_brus:
+                verdict = "mercur_brus_dokumenterat"
+            else:
+                verdict = "ren"
+        else:
+            verdict = "avvik"
+        health[cid] = (verdict, abs_file, abs_db)
 
     print("[5/6] Sammanstaller ...")
     cid_summary = []
@@ -475,8 +606,10 @@ def main():
         verdict, abs_file, abs_db = health[cid]
         cid_summary.append([
             cid, meta[cid]["name"], meta[cid]["country"], best.get(cid, "-"),
-            verdict, cnt["ok"], cnt["periodiseringsbrus"], cnt["avvik"],
-            cnt["saknas_i_db"], sum(1 for r in yt if r[9] == "avvik"),
+            verdict, cnt["ok"], cnt["periodiseringsbrus"],
+            cnt["mercur_brus"], cnt["extern_action"], cnt["avvik"],
+            cnt["saknas_i_db"],
+            sum(1 for r in yt if r[9] == "avvik"),
             round(max((abs(r[7]) for r in yt if r[7] is not None), default=0.0), 2),
             round(abs_file, 0), round(abs_db, 0),
         ])
@@ -492,7 +625,8 @@ def main():
         nbolag = sum(1 for c in scope if meta[c]["country"] == land)
         land_summary.append([
             land, nbolag, cnt["ok"], cnt["periodiseringsbrus"],
-            cnt["avvik"], cnt["saknas_i_db"],
+            cnt["mercur_brus"], cnt["extern_action"], cnt["avvik"],
+            cnt["saknas_i_db"],
         ])
 
     grp_summary = []
@@ -502,8 +636,8 @@ def main():
         for r in mine:
             cnt[r[10]] += 1
         grp_summary.append([
-            grp, cnt["ok"], cnt["periodiseringsbrus"], cnt["avvik"],
-            cnt["saknas_i_db"],
+            grp, cnt["ok"], cnt["periodiseringsbrus"], cnt["mercur_brus"],
+            cnt["extern_action"], cnt["avvik"], cnt["saknas_i_db"],
         ])
 
     # ---- arbetsbok --------------------------------------------------------
@@ -539,31 +673,33 @@ def main():
 
     ws = wb.create_sheet("Sammanfattning CID")
     ws.append(["CID", "Namn", "Land", "Kalla", "DB-halsa", "Manad OK",
-               "Periodbrus", "Manad avvik", "Saknas", "YTD-avvik grp",
-               "Max abs YTD-diff", "abs Filen", "abs DB"])
+               "Periodbrus", "Mercur-brus", "Extern action", "Manad avvik",
+               "Saknas", "YTD-avvik grp", "Max abs YTD-diff",
+               "abs Filen", "abs DB"])
     for r in cid_summary:
         ws.append(r)
-    style_header(ws, 13)
+    style_header(ws, 15)
     for i in range(2, len(cid_summary) + 2):
-        for c in (11, 12, 13):
+        for c in (13, 14, 15):
             ws.cell(row=i, column=c).number_format = NUMFMT
-    widths(ws, zip("ABCDEFGHIJKLM",
-                   (6, 30, 9, 12, 14, 9, 11, 12, 8, 14, 17, 15, 15)))
+    widths(ws, zip("ABCDEFGHIJKLMNO",
+                   (6, 30, 9, 12, 22, 9, 11, 12, 12, 12, 8, 14, 17, 15, 15)))
 
     ws = wb.create_sheet("Sammanfattning Land")
-    ws.append(["Land", "Bolag", "Manad OK", "Periodbrus", "Manad avvik",
-               "Saknas"])
+    ws.append(["Land", "Bolag", "Manad OK", "Periodbrus", "Mercur-brus",
+               "Extern action", "Manad avvik", "Saknas"])
     for r in land_summary:
         ws.append(r)
-    style_header(ws, 6)
-    widths(ws, zip("ABCDEF", (12, 8, 10, 12, 12, 9)))
+    style_header(ws, 8)
+    widths(ws, zip("ABCDEFGH", (12, 8, 10, 12, 13, 13, 12, 9)))
 
     ws = wb.create_sheet("Sammanfattning GROUP")
-    ws.append(["GROUP", "Manad OK", "Periodbrus", "Manad avvik", "Saknas"])
+    ws.append(["GROUP", "Manad OK", "Periodbrus", "Mercur-brus",
+               "Extern action", "Manad avvik", "Saknas"])
     for r in grp_summary:
         ws.append(r)
-    style_header(ws, 5)
-    widths(ws, zip("ABCDE", (24, 10, 12, 12, 9)))
+    style_header(ws, 7)
+    widths(ws, zip("ABCDEFG", (24, 10, 12, 13, 13, 12, 9)))
 
     # ---- Avvikelser: storsta YTD-glappen ---------------------------------
     ws = wb.create_sheet("Avvikelser")
@@ -571,6 +707,9 @@ def main():
                "Databas YTD", "Glapp (fil-db)", "Status"])
     avv = []
     for r in ytd_rows:
+        # Avvikelser-fliken visar bara akta avvik + saknas (extern_action har
+        # egen rad i sammanfattningarna och behover inte radas upp har; det
+        # vore brus eftersom de redan ar dokumenterade).
         if r[9] in ("avvik", "saknas_i_db"):
             gap = r[7] if r[7] is not None else r[5]   # ydiff annars file_ytd
             avv.append((abs(gap or 0.0), r, gap))
@@ -601,7 +740,8 @@ def main():
     if skipped_consolidated:
         print("Konsoliderade bolag (skippade - ingen egen kalldata): %s"
               % skipped_consolidated)
-    for k in ("ok", "periodiseringsbrus", "avvik", "saknas_i_db"):
+    for k in ("ok", "periodiseringsbrus", "mercur_brus", "extern_action",
+              "avvik", "saknas_i_db"):
         pct = (cnt[k] / tot * 100) if tot else 0.0
         print("  %-20s: %5d  (%5.1f%%)" % (k, cnt[k], pct))
     print("\nDB-halsa per bolag:")
@@ -610,8 +750,60 @@ def main():
         vc[health[cid][0]].append(cid)
     for v, ids in sorted(vc.items(), key=lambda t: -len(t[1])):
         print("  %-12s: %3d  %s" % (v, len(ids), ids))
+
+    # Cell-niva-avvik som ar kvar EFTER klass-C-overstrykning -- visa dem
+    # rakt ut sa man inte behover oppna xlsx:en. Sorterat efter abs(diff)
+    # for att triage-arbetet kan attack-prioritera de storsta forst.
+    avvik_cells = [r for r in monthly_rows if r[10] == "avvik"]
+    if avvik_cells:
+        avvik_cells.sort(key=lambda r: abs(r[8] or 0.0), reverse=True)
+        print("\nKvarvarande cell-avvik (%d st, ej tackta av klass-C-override):"
+              % len(avvik_cells))
+        print("  %-5s %-25s %-9s %-23s %-7s %12s %12s %12s" %
+              ("CID", "Namn", "Land", "GROUP", "Period", "Filen",
+               "Databas", "Diff"))
+        for r in avvik_cells[:20]:
+            print("  %-5s %-25s %-9s %-23s %-7s %12s %12s %12s" %
+                  (r[0], (r[1] or "")[:25], (r[2] or "")[:9],
+                   (r[3] or "")[:23], r[4],
+                   ("%.0f" % r[6]) if r[6] is not None else "-",
+                   ("%.0f" % r[7]) if r[7] is not None else "-",
+                   ("%.0f" % r[8]) if r[8] is not None else "-"))
+        if len(avvik_cells) > 20:
+            print("  ... (%d till -- se Manadsmatris-fliken)"
+                  % (len(avvik_cells) - 20))
     print("\nKlar: " + OUT_FILE)
 
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser(
+        description="Jamfor Mercur-manadsrapporten mot Postgres-warehouse. "
+                    "Producerar en xlsx-rapport med klassificerade celler "
+                    "(ok / periodiseringsbrus / extern_action / avvik / saknas)."
+    )
+    ap.add_argument(
+        "--periods", "-p", nargs="+", default=PERIODS,
+        metavar="YYYYMM",
+        help="Perioder att jamfora (space-separerade). Default: " +
+             " ".join(PERIODS),
+    )
+    args = ap.parse_args()
+    for p in args.periods:
+        if not re.fullmatch(r"\d{6}", p):
+            sys.exit("Ogiltig period: %r (forvantar YYYYMM)" % p)
+    PERIODS = sorted(args.periods)
+    # derive_monthly() antar att forsta perioden = startsaldo 0 (rakenskapsarets
+    # forsta manad). Om PERIODS inte borjar pa YYYY01 blir YTD-derivering for
+    # SIE_VER/SIE/SAFT fel -- forsta manaden far hela YTD-saldot som "rorelse".
+    # IMP/SIE_PSALDO ar monthly och paverkas inte.
+    if not PERIODS[0].endswith("01"):
+        sys.exit(
+            "Forsta perioden i --periods maste vara YYYY01 (rakenskapsarets "
+            "start) for att YTD-derivering ska fungera. Forst angiven: %r. "
+            "TODO: stod for arbitrary startperiod kraver lasning av IB fran "
+            "manaden innan." % PERIODS[0]
+        )
+    if len({p[:4] for p in PERIODS}) > 1:
+        sys.exit("--periods maste tillhora samma kalenderar (YTD-deriveringen "
+                 "antar det).")
     main()

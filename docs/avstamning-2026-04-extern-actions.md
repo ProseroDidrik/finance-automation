@@ -95,12 +95,45 @@ mot `fact_balances` direkt — bara mot Mercur-backup.
 
 ---
 
-## Bolag som INTE kräver action (sammanfattning från avstämning-memory)
+### 7. Bolag 93 Hässleholm — be ekonomi om jan-dubbelbokning + perioderingsfix
 
-- **93 Hässleholm (SE)** — verifierat 2026-05-26: 207k diff på 4 konton
-  (4010+5010+5615+5220). Klassisk Mercur-config-periodisering enligt
-  [[reference-mercur-config-not-sie]]. Hör hemma med de 14 SE-bolag listade
-  i avstämning-memory rad 59. Ingen action.
+**Symtom (utredd på djupet 2026-05-26):** 4 konton avviker mellan bolagets SIE
+och Mercur-backupen:
+
+| Konto | Diff (YTD jan-apr) | Mönster |
+|---|---:|---|
+| 5010 (lokalhyra?) | +58,6k | **Dubbelbokning i januari** — exakt 2× månadshyran 58 620,80 |
+| 5615 | +16,5k | **Dubbelbokning i januari** — ungefär 2× |
+| 4010 | +133k (≈4,7 %) | Period-flytt mellan feb och mar (~248k flyttat) |
+| 5220 | +18,7k | Småposter, blandat mönster |
+
+**ETL är verifierad korrekt 2026-05-26.** `fact_journal_sie` speglar bolagets
+SIE-fil exakt; `compare_all_file_vs_db.py` jämför rätt mot Mercur-backupen.
+Diff:en kommer från reell bokföringsskillnad — bolaget har:
+- Bokat samma januari-belopp två gånger på 5010 och 5615
+- Periodiserat 4010-kostnader mellan februari och mars i sin SIE, men Mercur
+  fryste månaden på en tidigare snapshot
+
+**Detta är inte samma sak som "Mercur är statisk konfig"** — den hypotesen
+från ett tidigare post-mortem var fel. Det är reell källskillnad.
+
+**Action:** Kontakta Prosero-Hässleholms ekonomi och be om:
+- Granska om 5010 och 5615 verkligen ska vara dubbelbokade i januari, eller om
+  det är felbokning som ska korrigeras
+- Bekräfta att 4010-perioderingen mellan feb/mar är medveten (kvartalsfaktura
+  som spillde över?)
+
+**Status om ej svar:** Diff är dokumenterad och spårad i `compare_overrides.json`
+(klass C, period 202601-202604). Inverkan på koncernrapporter är marginell —
+båda källorna har konsekvent jan-apr-summor inom ~5 % för dessa konton.
+
+---
+
+## Bolag som INTE kräver action
+
+(Lista uppdateras när nya fall verifieras. Tidigare nämnda 14 SE-bolag som
+"Mercur-config-brus" finns inte som distinkt kategori — den hypotesen är
+korrigerad efter 93-utredningen 2026-05-26.)
 
 ## Spårning
 
