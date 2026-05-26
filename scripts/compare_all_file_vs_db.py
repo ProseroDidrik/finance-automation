@@ -361,6 +361,10 @@ FILL = {
     # for att inte signalera 'fel' (rod) eller 'ok' (gron) -- det ar inget av
     # delarna utan en pending-state.
     "extern_action": PatternFill("solid", fgColor="BDD7EE"),
+    # mercur_brus = dokumenterad konfig-/perioderingsdiff mot Mercur (Klass B).
+    # ETL ar verifierad korrekt och ingen extern action behovs -- mest till for
+    # att skilja det fran riktiga 'avvik' i sammanfattningarna. Ljusgra/blagra.
+    "mercur_brus": PatternFill("solid", fgColor="D6DCE4"),
 }
 NUMFMT = "#,##0.00"
 
@@ -487,16 +491,24 @@ def main():
                 in rows_for_cid:
             # YTD-status kan ocksa overskridas av en override -- om diff:en
             # springer fran en period som en override matchar, ska YTD-radens
-            # status reflektera det (Klass C, inte rod 'avvik'). Vi accepterar
+            # status reflektera det. Klass C -> 'extern_action' (vantar pa
+            # extern leverans), Klass B -> 'mercur_brus' (dokumenterad
+            # konfig-/perioderingsdiff, ingen action). Vi accepterar
             # overstrykning om NAGON av perioderna i scope matchar overriden
             # (t.ex. Zipp 229 har override bara for 202602 -- YTD jan-apr ska
-            # anda klassas extern_action eftersom diff:en kommer fran feb).
+            # anda klassas eftersom diff:en kommer fran feb).
             ytd_status_out = ytd_status
-            if ytd_status == "avvik" and any(
-                match_override(overrides, cid, grp, p) is not None
-                for p in PERIODS
-            ):
-                ytd_status_out = "extern_action"
+            if ytd_status == "avvik":
+                ytd_klass = None
+                for p in PERIODS:
+                    m = match_override(overrides, cid, grp, p)
+                    if m is not None:
+                        ytd_klass = m["klass"]
+                        break
+                if ytd_klass == "C":
+                    ytd_status_out = "extern_action"
+                elif ytd_klass == "B":
+                    ytd_status_out = "mercur_brus"
             ytd_rows.append([
                 cid, name, land, grp, src or "-", round(file_ytd, 2),
                 round(db_ytd, 2) if db_ytd is not None else None,
@@ -523,13 +535,15 @@ def main():
                         status = "avvik"
                     else:
                         status = "periodiseringsbrus"
-                # Klass C-overstrykning: dokumenterad vantan pa extern leverans.
-                # Bara avvik/saknas_i_db konverteras -- 'ok' lamnas i fred sa
-                # vi senare kan upptacka overflodiga overrides (alla matchande
-                # rader = ok => override behovs inte).
+                # Klass-overstrykning: Klass C (extern_action) vs Klass B
+                # (mercur_brus). Bara avvik/saknas_i_db konverteras -- 'ok'
+                # lamnas i fred sa vi senare kan upptacka overflodiga
+                # overrides (alla matchande rader = ok => override behovs inte).
                 if status in ("avvik", "saknas_i_db"):
-                    if match_override(overrides, cid, grp, p) is not None:
-                        status = "extern_action"
+                    m = match_override(overrides, cid, grp, p)
+                    if m is not None:
+                        status = "extern_action" if m["klass"] == "C" \
+                                else "mercur_brus"
                 diff = (fv or 0.0) - (dv or 0.0) if dv is not None else None
                 cell_rows.append([
                     cid, name, land, grp, p, src or "-",
@@ -555,18 +569,28 @@ def main():
         # 229 feb-override paverkar bara feb), men om det dyker upp byt till
         # cell-niva-exkludering: sum av abs(monthly_diff) over icke-overridda
         # celler istallet for abs(ytd_diff) per grupp.
-        excluded_groups = {r[3] for r in cell_rows if r[10] == "extern_action"}
+        excluded_groups = {r[3] for r in cell_rows
+                           if r[10] in ("extern_action", "mercur_brus")}
         err_excl = sum(
             abs(fy - (dy if dy is not None else 0.0))
             for _g, _f, _d, fy, dy, *_ in rows_for_cid
             if _g not in excluded_groups
         )
         tol = max(200.0, 0.01 * abs_file)
-        has_extern = bool(excluded_groups)
+        has_extern = any(r[10] == "extern_action" for r in cell_rows)
+        has_brus = any(r[10] == "mercur_brus" for r in cell_rows)
         if src is None:
             verdict = "ingen data"
         elif err_excl <= tol:
-            verdict = "extern_action_pending" if has_extern else "ren"
+            # Prioritet: extern_action (action behovs) > mercur_brus (ingen
+            # action) > ren. Bolag med BADE extern_action och mercur_brus
+            # rapporteras som extern_action_pending sa de inte glomms bort.
+            if has_extern:
+                verdict = "extern_action_pending"
+            elif has_brus:
+                verdict = "mercur_brus_dokumenterat"
+            else:
+                verdict = "ren"
         else:
             verdict = "avvik"
         health[cid] = (verdict, abs_file, abs_db)
@@ -583,7 +607,8 @@ def main():
         cid_summary.append([
             cid, meta[cid]["name"], meta[cid]["country"], best.get(cid, "-"),
             verdict, cnt["ok"], cnt["periodiseringsbrus"],
-            cnt["extern_action"], cnt["avvik"], cnt["saknas_i_db"],
+            cnt["mercur_brus"], cnt["extern_action"], cnt["avvik"],
+            cnt["saknas_i_db"],
             sum(1 for r in yt if r[9] == "avvik"),
             round(max((abs(r[7]) for r in yt if r[7] is not None), default=0.0), 2),
             round(abs_file, 0), round(abs_db, 0),
@@ -600,7 +625,8 @@ def main():
         nbolag = sum(1 for c in scope if meta[c]["country"] == land)
         land_summary.append([
             land, nbolag, cnt["ok"], cnt["periodiseringsbrus"],
-            cnt["extern_action"], cnt["avvik"], cnt["saknas_i_db"],
+            cnt["mercur_brus"], cnt["extern_action"], cnt["avvik"],
+            cnt["saknas_i_db"],
         ])
 
     grp_summary = []
@@ -610,8 +636,8 @@ def main():
         for r in mine:
             cnt[r[10]] += 1
         grp_summary.append([
-            grp, cnt["ok"], cnt["periodiseringsbrus"], cnt["extern_action"],
-            cnt["avvik"], cnt["saknas_i_db"],
+            grp, cnt["ok"], cnt["periodiseringsbrus"], cnt["mercur_brus"],
+            cnt["extern_action"], cnt["avvik"], cnt["saknas_i_db"],
         ])
 
     # ---- arbetsbok --------------------------------------------------------
@@ -647,32 +673,33 @@ def main():
 
     ws = wb.create_sheet("Sammanfattning CID")
     ws.append(["CID", "Namn", "Land", "Kalla", "DB-halsa", "Manad OK",
-               "Periodbrus", "Extern action", "Manad avvik", "Saknas",
-               "YTD-avvik grp", "Max abs YTD-diff", "abs Filen", "abs DB"])
+               "Periodbrus", "Mercur-brus", "Extern action", "Manad avvik",
+               "Saknas", "YTD-avvik grp", "Max abs YTD-diff",
+               "abs Filen", "abs DB"])
     for r in cid_summary:
         ws.append(r)
-    style_header(ws, 14)
+    style_header(ws, 15)
     for i in range(2, len(cid_summary) + 2):
-        for c in (12, 13, 14):
+        for c in (13, 14, 15):
             ws.cell(row=i, column=c).number_format = NUMFMT
-    widths(ws, zip("ABCDEFGHIJKLMN",
-                   (6, 30, 9, 12, 19, 9, 11, 12, 12, 8, 14, 17, 15, 15)))
+    widths(ws, zip("ABCDEFGHIJKLMNO",
+                   (6, 30, 9, 12, 22, 9, 11, 12, 12, 12, 8, 14, 17, 15, 15)))
 
     ws = wb.create_sheet("Sammanfattning Land")
-    ws.append(["Land", "Bolag", "Manad OK", "Periodbrus", "Extern action",
-               "Manad avvik", "Saknas"])
+    ws.append(["Land", "Bolag", "Manad OK", "Periodbrus", "Mercur-brus",
+               "Extern action", "Manad avvik", "Saknas"])
     for r in land_summary:
         ws.append(r)
-    style_header(ws, 7)
-    widths(ws, zip("ABCDEFG", (12, 8, 10, 12, 13, 12, 9)))
+    style_header(ws, 8)
+    widths(ws, zip("ABCDEFGH", (12, 8, 10, 12, 13, 13, 12, 9)))
 
     ws = wb.create_sheet("Sammanfattning GROUP")
-    ws.append(["GROUP", "Manad OK", "Periodbrus", "Extern action",
-               "Manad avvik", "Saknas"])
+    ws.append(["GROUP", "Manad OK", "Periodbrus", "Mercur-brus",
+               "Extern action", "Manad avvik", "Saknas"])
     for r in grp_summary:
         ws.append(r)
-    style_header(ws, 6)
-    widths(ws, zip("ABCDEF", (24, 10, 12, 13, 12, 9)))
+    style_header(ws, 7)
+    widths(ws, zip("ABCDEFG", (24, 10, 12, 13, 13, 12, 9)))
 
     # ---- Avvikelser: storsta YTD-glappen ---------------------------------
     ws = wb.create_sheet("Avvikelser")
@@ -713,8 +740,8 @@ def main():
     if skipped_consolidated:
         print("Konsoliderade bolag (skippade - ingen egen kalldata): %s"
               % skipped_consolidated)
-    for k in ("ok", "periodiseringsbrus", "extern_action", "avvik",
-              "saknas_i_db"):
+    for k in ("ok", "periodiseringsbrus", "mercur_brus", "extern_action",
+              "avvik", "saknas_i_db"):
         pct = (cnt[k] / tot * 100) if tot else 0.0
         print("  %-20s: %5d  (%5.1f%%)" % (k, cnt[k], pct))
     print("\nDB-halsa per bolag:")
@@ -723,6 +750,28 @@ def main():
         vc[health[cid][0]].append(cid)
     for v, ids in sorted(vc.items(), key=lambda t: -len(t[1])):
         print("  %-12s: %3d  %s" % (v, len(ids), ids))
+
+    # Cell-niva-avvik som ar kvar EFTER klass-C-overstrykning -- visa dem
+    # rakt ut sa man inte behover oppna xlsx:en. Sorterat efter abs(diff)
+    # for att triage-arbetet kan attack-prioritera de storsta forst.
+    avvik_cells = [r for r in monthly_rows if r[10] == "avvik"]
+    if avvik_cells:
+        avvik_cells.sort(key=lambda r: abs(r[8] or 0.0), reverse=True)
+        print("\nKvarvarande cell-avvik (%d st, ej tackta av klass-C-override):"
+              % len(avvik_cells))
+        print("  %-5s %-25s %-9s %-23s %-7s %12s %12s %12s" %
+              ("CID", "Namn", "Land", "GROUP", "Period", "Filen",
+               "Databas", "Diff"))
+        for r in avvik_cells[:20]:
+            print("  %-5s %-25s %-9s %-23s %-7s %12s %12s %12s" %
+                  (r[0], (r[1] or "")[:25], (r[2] or "")[:9],
+                   (r[3] or "")[:23], r[4],
+                   ("%.0f" % r[6]) if r[6] is not None else "-",
+                   ("%.0f" % r[7]) if r[7] is not None else "-",
+                   ("%.0f" % r[8]) if r[8] is not None else "-"))
+        if len(avvik_cells) > 20:
+            print("  ... (%d till -- se Manadsmatris-fliken)"
+                  % (len(avvik_cells) - 20))
     print("\nKlar: " + OUT_FILE)
 
 
