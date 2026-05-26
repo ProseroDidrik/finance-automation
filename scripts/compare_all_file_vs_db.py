@@ -53,10 +53,16 @@ PRIORITY = {
     "Sweden":  ["SIE_PSALDO", "SIE_VER", "SIE", "IMP"],
     "Norway":  ["SAFT", "IMP"],
     "Finland": ["IMP"],
-    "Denmark": ["IMP"],
+    # Bolag 81 (Actas DK) levererar SAF-T istället för INL-Excel (undantag,
+    # se CLAUDE.md) — DK måste därför söka SAFT före IMP, annars hittar
+    # compare inget för 81 och konsol 132 visas tomt.
+    "Denmark": ["SAFT", "IMP"],
     "Germany": ["IMP"],
-    "CENTR":   ["IMP"],
-    "CA":      ["SIE", "IMP"],
+    # CENTR-bolag levererar blandade format: SIE (50, 51, 53), SAFT (52 NO-orgnr,
+    # 54 DK-CVR) eller IMP. Sök i prioritetsordning så att bolaget hittas
+    # oavsett källtyp.
+    "CENTR":   ["SIE_PSALDO", "SIE_VER", "SIE", "SAFT", "IMP"],
+    "CA":      ["SIE_PSALDO", "SIE_VER", "SIE", "IMP"],
 }
 SIE_CONV = {"SIE", "SIE_PSALDO", "SIE_VER", "SAFT"}   # intakt-negativt -> flip
 MONTHLY_KINDS = {"SIE_PSALDO", "IMP"}                  # ovriga ar YTD
