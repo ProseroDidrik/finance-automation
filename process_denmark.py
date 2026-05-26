@@ -434,16 +434,6 @@ def move_to_referens(filename: str, dry_run: bool) -> None:
     move_to_referens_safe(src, REFERENS_DIR, dry_run)
 
 
-def archive_by_prefix(prefix: str, dry_run: bool) -> None:
-    """Flytta alla {prefix}_* filer till Referens/ utan att skapa INL.xlsx."""
-    files = sorted(f for f in DENMARK_DIR.glob(f"{prefix}_*") if f.is_file())
-    if not files:
-        return
-    log("INFO", prefix, f"Arkiverar {len(files)} fil(er) → Referens/")
-    for f in files:
-        move_to_referens(f.name, dry_run)
-
-
 # ── Process one saldobalance company ──────────────────────────────────────────
 def process_company(
     code: str,
@@ -580,8 +570,10 @@ def main() -> None:
             if f.is_file():
                 move_to_referens(f.name, args.dry_run)
 
-    if not args.codes or "54" in args.codes:
-        archive_by_prefix("054", args.dry_run)
+    # Bolag 054 (Prosero Security Denmark A/S) levererar SAF-T XML, hanteras
+    # av load_saft.py — lämnas orörd i DENMARK_DIR/ root precis som 081 Actas.
+    # (Tidigare arkiverades den till Referens/ men load_saft.py söker bara i
+    # source_dir, vilket gjorde att SAF-T:n aldrig laddades.)
 
     log("DONE", "process_denmark.py",
         f"{stats['ok']} OK  {stats['warn']} WARN  {stats['skip']} SKIP  {stats['error']} ERROR")
