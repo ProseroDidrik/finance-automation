@@ -130,6 +130,10 @@ distributionen som har allt i januari (= 12 × månadsavskrivning).
 Beslag-Consult (Visma, inte Tripletex) stämmer 100% → bekräftar att problemet
 är Tripletex-exportlogik, inte vår ETL.
 
+**Mönstret är bredare än 6010:** Bolag 36 Lexow Låsservice har samma all-i-jan
+på 5095/5096 (Annen oppgavepliktig godtgjørelse — lönerelaterad post). Andra
+konton med årligen-beräknade-värden drabbas troligen också.
+
 Andra Tripletex-relaterade konton (mindre tydligt mönster):
 - **189 specifikt:** Tripletex aggregerar 16 underkonton till `3000` — ETL kan
   inte särskilja, ~3,2 % avvikelse på intäktssidan.
@@ -145,6 +149,33 @@ Andra Tripletex-relaterade konton (mindre tydligt mönster):
 **Status om ej svar:** Accepterat brus. Påverkar inte rapporter mot
 `fact_balances` direkt (rapporter använder Mercur eller IS_TOTAL) — bara
 journal-jämförelsen mot Mercur-backup.
+
+---
+
+### 8. Bolag 111 Dørautomatikk — feb-koncentration på konto 4400
+
+**Symtom (utredd 2026-05-27):** Konto 4400 (Innkjøp av tjenester) visar
+feb-koncentration i SAFT-export jämfört med Mercur:
+
+```
+per      Mercur       DB (SAFT)      diff
+202602   -298,393     -1,203,678     +905,285   ← DB har 4x i feb
+202603   -450,169     -394,067       -56,103
+202604   -410,630     -104,618       -306,011
+```
+
+DB visar -1.70M YTD, Mercur -1.16M (diff 543k). Inte all-i-jan-mönster —
+sannolikt en stor kvartalsfaktura bokad i feb i bolagets SAFT-system som
+Mercur periodiserat över Q1.
+
+**Action:** Kontakta ekonomi-ansvarig för Dørautomatikk och fråga:
+- Finns det en stor tjänsteleverantörsfaktura bokförd i feb 2026 på 4400?
+- Är den menad att fördelas över flera månader (i så fall fattas
+  periodiseringsbokningar i SAFT-exporten)?
+
+**Status om ej svar:** Dokumenterad diff 543k YTD. Inte ETL-bug.
+
+---
 
 **Övriga NO-diff-klasser** (klassificerade 2026-05-27):
 | Klass | Konton | # bolag | Karaktär |
