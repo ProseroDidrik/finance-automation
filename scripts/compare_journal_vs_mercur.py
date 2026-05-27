@@ -5,8 +5,11 @@ i dim-rader (kostnadsställe, projekt). DB-källan beror på bolag:
   SE        → fact_journal_sie  (raw #VER aggregerat per period+konto, sign-flip)
   NO/DK     → fact_journal_saft (GeneralLedgerEntries aggregerat, sign-flip)
   FI/DK/DE  → fact_balances source_kind='IMP' (redan monthly)
-För SE/NO/DK skiljer sig DB-tabellen från fact_balances SIE/SAFT — de senare är
-YTD-snapshots och föråldras när FY-laddningen kör med --override.
+
+Varför INTE fact_balances SIE/SIE_VER för SE: båda är **YTD** per period (SIE
+från #RES 0, SIE_VER från journal-cumsum). Jämfört mot Mercurs månadsvärden ger
+det 4×-faktor i diff för 202604. Använd fact_journal_sie direkt — det är
+monthly per voucher_date.
 
 Loop per bolag: undviker statement_timeout (Axlås har >1M journal-rader).
 
