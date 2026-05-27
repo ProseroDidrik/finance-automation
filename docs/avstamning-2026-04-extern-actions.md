@@ -1,11 +1,27 @@
 # Avstämning 2026-04 — externa actions
 
-**Sammanställd 2026-05-26.** Avstämningen mot Mercur-backup är formellt i mål
-(92.7% ok). De 7 listade avvikarna är inte ETL-buggar utan kräver externa
-åtgärder eller är accepterade som "förväntat Mercur-config-brus" enligt
+**Sammanställd 2026-05-26. Senast uppdaterad 2026-05-27.** Avstämningen mot
+Mercur-backup är formellt i mål (**92.9% ok** efter att 8 Prosero CENTR/CA-bolag
+laddats in 2026-05-26/27). 0 ETL-avvik, 0 saknas_i_db. De återstående
+extern_action-cellerna är inte ETL-buggar utan kräver externa åtgärder eller är
+accepterade som "förväntat Mercur-config-brus" enligt
 [[reference-mercur-config-not-sie]].
 
 Den här filen samlar de externa kontakterna i ett ställe så ingen tappas bort.
+
+## Status 2026-05-27 efter compare-körning
+
+| Klass | Antal celler | % | Förändring sedan 2026-05-26 |
+|---|---:|---:|---|
+| ok | 5 476 | 92.9% | +0.2 p.p. (CENTR/CA-laddningar) |
+| periodiseringsbrus | 329 | 5.6% | oförändrat |
+| mercur_brus | 14 | 0.2% | oförändrat |
+| extern_action | 73 | 1.2% | oförändrat |
+| **avvik (ETL-bug)** | **0** | **0.0%** | bibehållet ✅ |
+| **saknas_i_db** | **0** | **0.0%** | bibehållet ✅ |
+
+**5 bolag i extern_action_pending:** 93, 158, 189, 229, 145.
+**77 bolag helt rena** (inklusive nyladdade 49/50/51/52/53/54/187 och 162 idag).
 
 ## Action-lista
 
@@ -18,26 +34,26 @@ facit.
 **Action:** Kontakta Mercur-supporten och be dem lägga in 101-konsoliderings-
 config för räkenskapsåret 2026 i Mercur Utfall-vyn.
 
-**Status om ej svar:** Bolag 101 är 1:1-konsol över bolag 1 — det enda barnet.
-Verifiering kan göras indirekt på bolag 1:s siffror. Inte kritiskt.
+**Status 2026-05-27:** Inte i `compare`-scope — listad som konsoliderat-bolag
+utan egen källdata (skippas av compare-skriptet). 101 är 1:1-konsol över bolag 1
+(efter att Begelås 20 dekommissionerades ~2021). Verifiering görs indirekt på
+bolag 1:s siffror, som är "ren". Inte kritiskt. Se [[project_axlas_consol]].
 
 ---
 
-### 2. Bolag 51 Prosero Security Group — be ekonomi om kompletterad SIE
+### 2. ~~Bolag 51 Prosero Security Group~~ — KLAR 2026-05-26
 
-**Symtom:** SIE-filen från bolag 51 saknar löner och räntor (`#VER`/`#TRANS`
-ej exporterade för dessa konton). Sammanlagt ~7,4M på 7XXX/8XXX-konton som
-inte når warehouse.
+**Symtom (ursprungligen):** SIE-filen från bolag 51 saknade löner och räntor —
+`#VER`/`#TRANS` ej exporterade för dessa konton. Sammanlagt ~7,4M på 7XXX/8XXX-
+konton som inte nådde warehouse.
 
-**Action:** Kontakta ekonomi-ansvarig för Prosero Security Group och be om:
-- Kompletterad SIE 202604 där löne- och räntejournal är inkluderade
-- ELLER bekräftelse att löner/räntor bokförs i annat system och inte ska finnas
-  i SIE-exporten
+**Fix 2026-05-26:** Bolag 51 levererade en ny Fortnox-SIE 8 maj med
+löner inkluderade (`ProseroSecurityGroupAB20260508_162116.si`). Laddades in via
+`load_sie.py --period 202604 --override 51` → 178 rader SIE/SIE_PSALDO,
+1 093 vouchers inkl. +2,49 MSEK ny april-löner. Bolag 51 är nu i "ren"-listan i
+compare-resultatet.
 
-**Status om ej svar:** Memory [[sie-ver-hybrid-fallback]] beskriver hybrid-
-fallback som tar `#RES` jämnt fördelat för konton som saknar `#VER`. Aktiveras
-för 51 om `#RES` har värden. Verifiera via `load_history.message`
-(`sie_ver_fallback=N`).
+**Memory:** [[project_202604_prosero_load]], [[reference_sie_ver_hybrid_fallback]].
 
 ---
 
@@ -56,19 +72,40 @@ accepterad.
 
 ---
 
-### 4. Bolag 145 Prosero Security OY (FI) — be om Tax jan + ICT mar
+### 4. Bolag 145 Prosero Security OY (FI) — Tax + INTEX_ICT_CASHPOOL kvarstår
 
-**Symtom:** IMP-laddningen saknar:
-- Tax-konton för januari 2026
-- ICT-kostnader för mars 2026
+**Status 2026-05-27 efter compare-körning:** 2 öppna kontoklasser i YTD jan-apr:
 
-**Action:** Kontakta Prosero Security OY:s ekonomi och be om:
-- IMP.xlsx-komplettering med Tax-konton (TyEL / Veroprosentit / motsvarande)
-  för 202601
-- ICT-rader för 202603
+| Kontoklass | Mercur YTD | DB YTD | Diff | % |
+|---|---:|---:|---:|---:|
+| INTEX_ICT_CASHPOOL | -184 240,82 | -173 992,53 | -10 248,29 | 5,6% |
+| Tax | -341 335,84 | -256 001,88 | **-85 333,96** | 25,0% |
 
-**Status om ej svar:** Mindre diff (sum=0 båda sidor på rapporterad nivå —
-sannolikt klassificerings-grovhet, inte saknad summa).
+**Tax-diff = exakt -85 333,96** = en månads "Advance tax" (konto 9900). DB har
+3 månaders Advance tax, Mercur har 4. Frågan: vilken månad saknas i Postgres,
+eller dubbelräknar Mercur en månad?
+
+**INTEX_ICT_CASHPOOL-diff = -10 248,29:** DB har bara konto 9460 (Interest
+expenses, credit institutions loans = -173 992,53). Mercur har antingen ytterligare
+ränte-konton mappade eller annan kontoklass-definition.
+
+**Fix idag 2026-05-27 (IS/BS-klassning):** De 37 IMP-raderna för 202604 hade
+`statement_type = NULL` eftersom `process_finland.read_income_only_xlsx` läser
+col B (april-månad) ur 145s IS-fil istället för col C (YTD jan-april) — det gav
+sum=365k WARN vid omkörning, så vi byggde istället om INL.xlsx från Postgres-
+data + första-siffra-klassning via `scripts/rebuild_145_inl_from_postgres.py`
+och laddade om med `--override 145`. Resultat: 29 IS + 8 BS, klassningsfel 0.
+
+**Action (kvarstår):** Kontakta Prosero Security OY:s ekonomi och be om:
+- Tax-månadsbreakdown: är 341k YTD eller 256k YTD korrekt för 2026-04?
+- Vilka räntekonton ska ingå i INTEX_ICT_CASHPOOL?
+
+**Öppen kodfråga (inte blockerare):** `process_finland.run_145` bör fixas att
+läsa col C (YTD) istället för col B för 202604+ för robust re-loading. Idag
+matematiskt korrekt men inte reproducerbart från RAW-filerna.
+
+**Memory:** [[project_202604_prosero_load]] (sektion 145), nytt: dagens
+classification-rebuild.
 
 ---
 
@@ -134,6 +171,22 @@ båda källorna har konsekvent jan-apr-summor inom ~5 % för dessa konton.
 (Lista uppdateras när nya fall verifieras. Tidigare nämnda 14 SE-bolag som
 "Mercur-config-brus" finns inte som distinkt kategori — den hypotesen är
 korrigerad efter 93-utredningen 2026-05-26.)
+
+### Verifierade 2026-05-27 (Prosero CENTR/CA + falska larm)
+
+| Bolag | Land | Verifikation | Memory |
+|---|---|---|---|
+| 49 Prosero Digital Access | SE (CA) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
+| 50 Prosero Security AB | SE (CENTR) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
+| 51 Prosero Security Group | SE (CENTR) | Laddad 2026-05-26 — ren (se punkt 2) | [[project_202604_prosero_load]] |
+| 52 Prosero Security AS | NO (CENTR) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
+| 53 Prosero Security Holding | SE (CENTR) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
+| 54 Prosero Denmark VB | DK (CENTR) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
+| 187 Prosero Security GmbH | DE (CENTR) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
+| 162 Doorway | SE | Var redan ren | – |
+| 222 Safexit | SE | Laddad 2026-05-27 (rätt SIE-fil, clean cut 30 apr) | [[project_202604_prosero_load]], [[reference_sie_period_cutoff_gaps]] |
+| 9 Beslag-Consult | NO | Var redan rätt-laddat sedan 2026-05-26 (falskt larm) | [[project_202604_prosero_load]] |
+| 246 HW Mechatronic | DE | Var redan rätt-laddat sedan 2026-05-15 (falskt larm) | [[project_202604_prosero_load]] |
 
 ## Spårning
 
