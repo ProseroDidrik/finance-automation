@@ -109,26 +109,50 @@ classification-rebuild.
 
 ---
 
-### 5 + 6. Bolag 158 Asker + 189 Lås & Prosjekt — Tripletex-export-konfig
+### 5 + 6. Tripletex-bolag (~19 NO-bolag) — SAFT-export-konfig
 
-**Symtom:** Två sammanflätade problem från Tripletex:
-- **158/189:** SAFT-export bokar hela årets avskrivning i januari
-  (`-56 640 = 12 × -4 720` per memory). Mercurs egna NO-parser sprider över FY.
-- **189 specifikt:** Tripletex aggregerar 16 underkonton till `3000` vilket vår
-  ETL inte kan särskilja. Resulterar i ~3,2 % avvikelse på intäktssidan.
-- **Båda:** ClosingBalance > sum(GL-entries) i samma SAFT-fil (känt
-  Tripletex-mönster per [[warehouse-semantics]]).
+**Symtom (utredd 2026-05-27 med journal-baserad jämförelse):**
+Tripletex SAFT-export visar **all-i-januari-mönstret** för konto 6010 Avskrivning:
 
-**Action:** Kontakta ekonomi för Asker och Lås & Prosjekt och be dem:
+```
+Bolag 16 / konto 6010:
+  per      Mercur   DB(SAFT)    diff
+  202601   -3,275   -13,100     9,825   ← DB har 4x i jan
+  202602   -3,275        0     -3,275
+  202603   -3,275        0     -3,275
+  202604   -3,275        0     -3,275
+```
+
+Mercurs egna NO-parser sprider månadsvis; vår SAFT-laddning behåller original-
+distributionen som har allt i januari (= 12 × månadsavskrivning).
+
+**Drabbade:** ~19 NO-bolag har samma 6010-mönster (inte bara 158/189). Bolag 9
+Beslag-Consult (Visma, inte Tripletex) stämmer 100% → bekräftar att problemet
+är Tripletex-exportlogik, inte vår ETL.
+
+Andra Tripletex-relaterade konton (mindre tydligt mönster):
+- **189 specifikt:** Tripletex aggregerar 16 underkonton till `3000` — ETL kan
+  inte särskilja, ~3,2 % avvikelse på intäktssidan.
+- **ClosingBalance > sum(GL-entries)** i samma SAFT-fil per
+  [[warehouse-semantics]].
+
+**Action:** Kontakta ekonomi för Tripletex-bolagen och be dem:
 - Granska Tripletex-export-konfigurationen för avskrivningskonton (årlig vs
-  månatlig fördelning)
-- Granska konto 3000-aggregeringen (16 underkonton som kollapsas)
-- Om möjligt: konfigurera Tripletex att exportera periodiserade siffror eller
-  inkludera underkonton i SAFT-utdata
+  månatlig fördelning) — primärt problem
+- För 189: granska 3000-aggregeringen (16 underkonton som kollapsas)
+- Om möjligt: konfigurera Tripletex att exportera periodiserade siffror
 
-**Status om ej svar:** Accepterat brus per warehouse-semantik. ~3 % avvikelse
-för dessa två bolag är dokumenterad och inte ETL-bug. Påverkar inte rapporter
-mot `fact_balances` direkt — bara mot Mercur-backup.
+**Status om ej svar:** Accepterat brus. Påverkar inte rapporter mot
+`fact_balances` direkt (rapporter använder Mercur eller IS_TOTAL) — bara
+journal-jämförelsen mot Mercur-backup.
+
+**Övriga NO-diff-klasser** (klassificerade 2026-05-27):
+| Klass | Konton | # bolag | Karaktär |
+|---|---|---:|---|
+| A. Tripletex all-i-jan | 6010 | ~19 | Export-konfig |
+| B. Periodisering | 6300, 6420, 6440, 5920, 7500 | 23-32 | Kvartalsfaktura / accrual |
+| C. Kontoaggregering | 3000, 4000 | 16-34 | Mercur grupperar fler underkonton |
+| D. Bolagsspecifik | 4400 (111), 5095 (36) | 1 | Reell datadiff per bolag |
 
 ---
 
