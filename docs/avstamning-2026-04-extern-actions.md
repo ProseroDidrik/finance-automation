@@ -20,8 +20,9 @@ Den här filen samlar de externa kontakterna i ett ställe så ingen tappas bort
 | **avvik (ETL-bug)** | **0** | **0.0%** | bibehållet ✅ |
 | **saknas_i_db** | **0** | **0.0%** | bibehållet ✅ |
 
-**5 bolag i extern_action_pending:** 93, 158, 189, 229, 145.
-**77 bolag helt rena** (inklusive nyladdade 49/50/51/52/53/54/187 och 162 idag).
+**Aktiva externa actions (4 bolag + 1 mass-fråga):** 93, 145, 229, 111 + Tripletex-bolagen (~19 NO).
+**Stängda 2026-05-27:** 51 (klar sedan 26/5).
+**77+ bolag helt rena** (inklusive nyladdade 49/50/51/52/53/54/187 och 162 idag).
 
 ## Action-lista
 
@@ -41,19 +42,10 @@ bolag 1:s siffror, som är "ren". Inte kritiskt. Se [[project_axlas_consol]].
 
 ---
 
-### 2. ~~Bolag 51 Prosero Security Group~~ — KLAR 2026-05-26
+### 2. ~~Bolag 51 Prosero Security Group~~ — STÄNGD 2026-05-26
 
-**Symtom (ursprungligen):** SIE-filen från bolag 51 saknade löner och räntor —
-`#VER`/`#TRANS` ej exporterade för dessa konton. Sammanlagt ~7,4M på 7XXX/8XXX-
-konton som inte nådde warehouse.
-
-**Fix 2026-05-26:** Bolag 51 levererade en ny Fortnox-SIE 8 maj med
-löner inkluderade (`ProseroSecurityGroupAB20260508_162116.si`). Laddades in via
-`load_sie.py --period 202604 --override 51` → 178 rader SIE/SIE_PSALDO,
-1 093 vouchers inkl. +2,49 MSEK ny april-löner. Bolag 51 är nu i "ren"-listan i
-compare-resultatet.
-
-**Memory:** [[project_202604_prosero_load]], [[reference_sie_ver_hybrid_fallback]].
+Flyttat till "Bolag som INTE kräver action" — se sektionen längst ned. Kompletterad
+SIE 8/5 löste löne/ränte-problemet, verifierat 0 diff-celler mot Mercur 2026-05-27.
 
 ---
 
@@ -233,7 +225,7 @@ korrigerad efter 93-utredningen 2026-05-26.)
 |---|---|---|---|
 | 49 Prosero Digital Access | SE (CA) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
 | 50 Prosero Security AB | SE (CENTR) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
-| 51 Prosero Security Group | SE (CENTR) | Laddad 2026-05-26 — ren (se punkt 2) | [[project_202604_prosero_load]] |
+| 51 Prosero Security Group | SE (CENTR) | **STÄNGD 2026-05-26** — kompletterad SIE 8/5 med löner/räntor inkluderade, 0 diff-celler mot Mercur 2026-05-27 | [[project_202604_prosero_load]] |
 | 52 Prosero Security AS | NO (CENTR) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
 | 53 Prosero Security Holding | SE (CENTR) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
 | 54 Prosero Denmark VB | DK (CENTR) | Laddad 2026-05-26 — ren | [[project_202604_prosero_load]] |
