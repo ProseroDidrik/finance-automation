@@ -246,6 +246,7 @@ CREATE SEQUENCE IF NOT EXISTS seq_dim_exchange_rate START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_backup_from_mercur START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_personnel START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_supplier_spend START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_fact_saft_analysis START 1;
 
 CREATE TABLE IF NOT EXISTS dim_company (
     company_id           INTEGER PRIMARY KEY,
@@ -357,6 +358,52 @@ CREATE INDEX IF NOT EXISTS idx_fjsaft_company_period ON fact_journal_saft(compan
 CREATE INDEX IF NOT EXISTS idx_fjsaft_transaction    ON fact_journal_saft(company_id, transaction_id);
 CREATE INDEX IF NOT EXISTS idx_fjsaft_account        ON fact_journal_saft(account_code);
 CREATE INDEX IF NOT EXISTS idx_fjsaft_period         ON fact_journal_saft(period);
+
+-- Dimensioner (SAF-T Analysis nu; SIE #DIM/#OBJEKT framtida via source_format).
+-- dim_* är best-effort namnslagning ur MasterFiles/AnalysisTypeTable; ingen FK
+-- fakta→dim (Line.Analysis kan referera koder utan motsvarande dim-rad).
+CREATE TABLE IF NOT EXISTS dim_analysis_type (
+    company_id      INTEGER NOT NULL,
+    source_format   TEXT NOT NULL,         -- 'SAFT' | 'SIE'
+    analysis_type   TEXT NOT NULL,
+    description     TEXT,
+    loaded_at       TIMESTAMP NOT NULL,
+    PRIMARY KEY (company_id, source_format, analysis_type)
+);
+
+CREATE TABLE IF NOT EXISTS dim_analysis_member (
+    company_id      INTEGER NOT NULL,
+    source_format   TEXT NOT NULL,
+    analysis_type   TEXT NOT NULL,
+    analysis_id     TEXT NOT NULL,
+    description     TEXT,
+    loaded_at       TIMESTAMP NOT NULL,
+    PRIMARY KEY (company_id, source_format, analysis_type, analysis_id)
+);
+
+-- En rad per (journallinje × Analysis-block). period = ValueDate-härledd per
+-- linje (= journalens period); amount = linjens belopp (debit-credit),
+-- MÅNADSRÖRELSE. Multi-axel upprepar beloppet → SUM aldrig över analysis_type.
+CREATE TABLE IF NOT EXISTS fact_saft_analysis (
+    id              BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_saft_analysis'),
+    company_id      INTEGER NOT NULL,
+    period          TEXT NOT NULL,
+    transaction_id  TEXT,
+    line_no         INTEGER NOT NULL,
+    record_id       TEXT,
+    account_code    TEXT NOT NULL,
+    analysis_type   TEXT NOT NULL,
+    analysis_id     TEXT NOT NULL,
+    amount          DOUBLE PRECISION NOT NULL,
+    currency        TEXT NOT NULL,
+    source_file     TEXT NOT NULL,
+    loaded_at       TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fsa_company_period ON fact_saft_analysis(company_id, period);
+CREATE INDEX IF NOT EXISTS idx_fsa_type_member    ON fact_saft_analysis(company_id, analysis_type, analysis_id);
+CREATE INDEX IF NOT EXISTS idx_fsa_account        ON fact_saft_analysis(account_code);
+CREATE INDEX IF NOT EXISTS idx_fsa_period         ON fact_saft_analysis(period);
 
 CREATE TABLE IF NOT EXISTS dim_account_map (
     account_id      TEXT PRIMARY KEY,
