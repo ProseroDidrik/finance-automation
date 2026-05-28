@@ -68,6 +68,7 @@ py load_saft.py --period 202604                       # NO + DK (auto-period fr�
 py load_saft.py --period 202604 --country DK          # bara Danmark (NO/DK; default = båda)
 py load_saft.py --period 202604 --override
 py load_saft.py --period 202604 --no-include-journal  # hoppa över journal
+py load_saft.py --period 202604 --force               # ladda trots XSD-valideringsfel (NO 1.30)
 
 # Radera utfall — --source_kind alltid krav (lager-isolering).
 # IMP på SE/NO → hela FY (SIE+SIE_PSALDO+journal eller SAFT+journal).
@@ -211,7 +212,13 @@ det är varken SIE eller SAF-T.
   #PSALDO månadsrörelse, `SIE_VER` = YTD-saldon syntetiserade ur verifikat) +
   `fact_journal_sie` (#VER/#TRANS).
 - `load_saft.py` — SAF-T → `fact_balances` (`SAFT`, YTD) + `fact_journal_saft`
-  (GeneralLedgerEntries).
+  (GeneralLedgerEntries). Parsningen ligger i `saft_parser.py`.
+- `saft_parser.py` — kanonisk SAF-T-parse/validering (delad, ingen DB): namespace-
+  detektion, `parse_saft`, `iter_saft_journal` (streamande), period-härledning och
+  `validate_xsd` (XSD-grind). Speglar `sie_parser.py`.
+- `saft_schema_no/` — xsdata-genererade NO 1.30-dataclasses + vendorad XSD.
+  Auktoritativ spec + test-tids-validator (INTE runtime-parser — mätt ~11x
+  långsammare än iterparse).
 - `load_history_sie_saft.py` — historisk batch-inläsning av äldre SIE/SAF-T.
 - `delete_db.py` — radering med lager-isolering (kräver alltid `--source_kind`).
 
@@ -223,8 +230,12 @@ det är varken SIE eller SAF-T.
   å/ä/ö måste komma ut rätt.
 - **SAF-T har namespace som måste hanteras.** Roten bär
   `urn:StandardAuditFile-Taxation-Financial:NO` (Norge) eller `:DK` (Danmark).
-  `load_saft.py` detekterar namespace från rotelementet och prefixar alla
+  `saft_parser.py` detekterar namespace från rotelementet och prefixar alla
   element-sökningar med `{ns}`. Land och defaultvaluta härleds ur namespace.
+  Orgnr tas alltid från `Header/Company` (aldrig `AuditFileSender`).
+- **SAF-T XSD-grind (bypassbar).** `validate_xsd` validerar NO 1.30 mot vendorad
+  XSD via `lxml.etree.XMLSchema` (xmllint saknas på Windows). `invalid` blockerar
+  utan `--force`; NO 1.20 + DK saknar XSD och `skipped` (best-effort).
 - **Varje #VER i SIE ska summera till noll.** Debet = kredit per verifikat;
   Σ(#TRANS-belopp) = 0 (`check_voucher_balance`).
 - **Validera före inläsning.** Orgnr måste matcha `dim_company` och period kunna
