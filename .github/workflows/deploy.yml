@@ -63,7 +63,24 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Login till ACR
-        run: az acr login --name "${{ vars.ACR_NAME }}"
+        # Retry med backoff: ACR-login flaxar då och då på transienta
+        # runner→ACR-nätverksblippar (t.ex. "dial tcp …:443: connection
+        # refused" trots frisk, publik Basic-ACR). 5 försök, 10/20/30/40s.
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3 4 5; do
+            if az acr login --name "${{ vars.ACR_NAME }}"; then
+              echo "ACR-login OK (försök $attempt)."
+              exit 0
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              wait=$((attempt * 10))
+              echo "ACR-login misslyckades (försök $attempt) — väntar ${wait}s..."
+              sleep "$wait"
+            fi
+          done
+          echo "ACR-login misslyckades efter 5 försök."
+          exit 1
 
       - name: Build & push image
         run: |
