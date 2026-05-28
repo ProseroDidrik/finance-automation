@@ -38,6 +38,7 @@ try:
 except ImportError:
     sys.exit("Saknar openpyxl — kör:  py -m pip install openpyxl")
 
+import sie_parser
 from shared import safe_dest, load_config, log, begin_run, prev_month_period
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -53,42 +54,23 @@ SIE_EXTENSIONS = {".se", ".si", ".sie"}
 
 # ── SIE-läsning ────────────────────────────────────────────────────────────────
 
-def read_sie_lines(path: Path) -> list[str]:
-    """Läser SIE-fil med encoding-fallback: utf-8-sig → cp437 → latin-1.
-    SIE-standarden anger PC8-format = IBM CP437. Filer från nyare program
-    kan vara UTF-8. latin-1 är sista fallback för Windows-1252-varianter."""
-    for enc in ("utf-8-sig", "cp437", "latin-1"):
-        try:
-            return path.read_text(encoding=enc).splitlines()
-        except (UnicodeDecodeError, ValueError):
-            continue
-    raise ValueError(f"Kan inte läsa {path.name} — okänd teckenkodning")
-
-
 def parse_sie(path: Path) -> dict:
-    """
-    Returnerar dict med nycklarna:
-      orgnr (str|None), rar_start (str|None), rar_end (str|None), fnamn (str|None)
-    """
+    """Returnerar dict: orgnr, rar_start, rar_end, fnamn (str|None).
+
+    Delegerar parsningen till sie_parser (enda källan) och plockar de fyra
+    fält process_sweden behöver för rename + periodvalidering. Vid läsfel
+    returneras {"error": ...} — oförändrat kontrakt mot anroparen."""
     result: dict = {"orgnr": None, "rar_start": None, "rar_end": None, "fnamn": None}
     try:
-        lines = read_sie_lines(path)
-    except ValueError as e:
-        result["error"] = str(e)
+        text = sie_parser.read_text_with_fallback(path)
+    except (UnicodeDecodeError, ValueError) as e:
+        result["error"] = f"Kan inte läsa {path.name} — {e}"
         return result
-
-    for line in lines:
-        line = line.strip()
-        # #ORGNR 556071-2340
-        if m := re.match(r"^#ORGNR\s+(\S+)", line, re.IGNORECASE):
-            result["orgnr"] = m.group(1).strip('"')
-        # #RAR 0 20260101 20261231  (space eller tab som separator)
-        elif m := re.match(r"^#RAR\s+0\s+(\d{8})\s+(\d{8})", line, re.IGNORECASE):
-            result["rar_start"] = m.group(1)
-            result["rar_end"]   = m.group(2)
-        # #FNAMN "Axlås Solidlås AB"
-        elif m := re.match(r'^#FNAMN\s+"?(.+?)"?\s*$', line, re.IGNORECASE):
-            result["fnamn"] = m.group(1)
+    p = sie_parser.parse_sie(text)
+    result["orgnr"] = p["orgnr"]
+    result["rar_start"] = p["rar_start"]
+    result["rar_end"] = p["rar_end"]
+    result["fnamn"] = p["fnamn"]
     return result
 
 
