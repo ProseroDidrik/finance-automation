@@ -107,8 +107,10 @@ def parse_saft(path: Path) -> dict:
         "period_end_year": None, "period_end_month": None,
         "selection_start_date": None, "selection_end_date": None,
         "accounts": [],
+        "analysis_types": [],
     }
     accounts: list[tuple] = []
+    analysis_types: list[tuple] = []
     idx = 0
 
     ctx = ET.iterparse(str(path), events=("end",))
@@ -142,6 +144,17 @@ def parse_saft(path: Path) -> dict:
             accounts.append((code, name, amt, st, idx))
             elem.clear()
 
+        elif tag == "AnalysisTypeTableEntry":
+            # MasterFiles/AnalysisTypeTable: dimensionsaxlarnas + medlemmarnas namn.
+            # Flat per (type, id); load_saft.dim_analysis_rows deduplicerar.
+            analysis_types.append((
+                _t(elem, "AnalysisType", ns),
+                _t(elem, "AnalysisTypeDescription", ns),
+                _t(elem, "AnalysisID", ns),
+                _t(elem, "AnalysisIDDescription", ns),
+            ))
+            elem.clear()
+
         elif tag == "GeneralLedgerEntries":
             # Vi är klara med MasterFiles — sluta läs (sparar minne + tid).
             # Journal-rader hämtas separat via iter_saft_journal().
@@ -149,6 +162,7 @@ def parse_saft(path: Path) -> dict:
             break
 
     out["accounts"] = accounts
+    out["analysis_types"] = analysis_types
     return out
 
 
@@ -209,6 +223,10 @@ def iter_saft_journal(path: Path, ns: str | None = None):
                     credit_elem = line.find(f"{{{ns}}}CreditAmount")
                     debit = _amount(_t(debit_elem, "Amount", ns)) if debit_elem is not None else 0.0
                     credit = _amount(_t(credit_elem, "Amount", ns)) if credit_elem is not None else 0.0
+                    analysis = [
+                        (_t(a, "AnalysisType", ns), _t(a, "AnalysisID", ns))
+                        for a in line.findall(f"{{{ns}}}Analysis")
+                    ]
                     yield {
                         "journal_id": j_id, "journal_desc": j_desc,
                         "transaction_id": tx_id, "transaction_date": tx_date,
@@ -217,6 +235,7 @@ def iter_saft_journal(path: Path, ns: str | None = None):
                         "line_no": line_no, "record_id": rec_id,
                         "account_code": acc, "line_desc": line_desc,
                         "debit": debit, "credit": credit,
+                        "analysis": analysis,
                     }
             elem.clear()  # frigör hela Journal:n med dess Transactions/Lines
 
