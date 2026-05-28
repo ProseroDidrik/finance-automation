@@ -1,0 +1,347 @@
+{
+  "_period": "202604",
+  "files": {
+    "NO_008": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 180,
+      "header_sha256": "a6a464b0641b545e236402167dff6bb480967f11b946b0c8e6acb6a501082b69",
+      "accounts_sha256": "cbfd342a1d2e6dad8d1d350f9cc10a86ef0ca222c639942e9dd9a4e57200f5a1",
+      "n_journal": 38146,
+      "journal_sha256": "055a28fe512633a50c46a8cbc534bff8b2315c8fdffaa80e84c284adb108549d"
+    },
+    "NO_009": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 676,
+      "header_sha256": "1038ea91b3932bedb532f93151a4ecdb0e43124835e2db3d57f2e56496622e48",
+      "accounts_sha256": "5f044b8b97baa3e69f9f4687ed08538b2ac3144dbbec40056bddb4047d3d7c49",
+      "n_journal": 11451,
+      "journal_sha256": "649360db507d3da70c934b172519e68a7ac2bb023528bc5b1b126a3ab5fcd0cd"
+    },
+    "NO_016": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 150,
+      "header_sha256": "5198087b67901c8bed0b6b452b87aaaeb9b489dae29120f8b783b101c5c6706a",
+      "accounts_sha256": "a291bcf5077d548450d88acbcfce0ffb4378bff00ef52239f3879362e157faee",
+      "n_journal": 13919,
+      "journal_sha256": "d4ba9e106211e815243481b50567a8cae55f979d2fdc58e5d044bc8858ba1458"
+    },
+    "NO_017": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 528,
+      "header_sha256": "b90a4d249e1cef4315336c1eca126ae2866791fae2410cfcae9bac19d52d92f2",
+      "accounts_sha256": "ac355e7e0e60c988acd5911d047b388e58fc899f4995a91ba9bfef59c193f90f",
+      "n_journal": 25144,
+      "journal_sha256": "61e879ab0e55b87202210e6f150350d9904887f624a071a9de2c1ef85211f7a8"
+    },
+    "NO_019": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 157,
+      "header_sha256": "eff9bfdfc9fb3ee1b36ee7e5c43dd7374cdd9ae94b2d1f1c994bbb0d67f9c9fd",
+      "accounts_sha256": "e438171433c4ad3439822bcd2c2cf3ee06fe6cd9c031235bf1a1c0f13fbdebdf",
+      "n_journal": 11149,
+      "journal_sha256": "faef74992d97618e94e2b1e4cb30005e492cd2235b39556da025cb3c804c514e"
+    },
+    "NO_036": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 553,
+      "header_sha256": "bd0490de4cbf5d5752ccc67d83b74705f57e84ab85346642b1bb0782595fc7eb",
+      "accounts_sha256": "9896da76c053bed96b0a7c96c57ac86e3201134c8ae8e9c6af1d2cd199d73745",
+      "n_journal": 29578,
+      "journal_sha256": "bc9d44ceac22902f362cc711169ae0d11604a8a6a2c395f8ebdbc4c125b68ef8"
+    },
+    "NO_052": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 74,
+      "header_sha256": "c042f51b2722ca10e5cebde70d1c63837be4071734fbf6f9b73ad356fa578a6d",
+      "accounts_sha256": "1c133831afb37af7c6ff038e46e8e65ee5c6444753092b289ba34e23783f41da",
+      "n_journal": 957,
+      "journal_sha256": "88573bc393619af7238d694cfab4a2e832fc5f25eed27ab427526660ba524375"
+    },
+    "NO_077": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 511,
+      "header_sha256": "96852a892779cfe3243512a0fb3f226bb36ba607c2601d6c47fc081752aa2eff",
+      "accounts_sha256": "6d8489a39a96e2b951320ae7ebd0c539a0922978762f9e98f32ebfada783acc7",
+      "n_journal": 8208,
+      "journal_sha256": "86f744b2ad697131e4b179e6580e2926127602a20f52559786f4722cd483fb71"
+    },
+    "NO_078": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 146,
+      "header_sha256": "3fe2e4626759c28b39fcd78ece60571a7552a0e1d23314f2e794205277ebb077",
+      "accounts_sha256": "32147462e8a15297bb4e095a8a57829e0ac45b109f8ef715a47d029eabd0e91b",
+      "n_journal": 11596,
+      "journal_sha256": "b610dd26484f5b041457fec4dded345a01f83ea3107c6056132feac3761cce06"
+    },
+    "NO_080": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 119,
+      "header_sha256": "7866877aa3974a4b5ce8c207adef95f6611344f463867de00905e78d474f859d",
+      "accounts_sha256": "b932e99e44b33942bb5bcadaeba71424560adf7f5e23d098770c6b874f9244bd",
+      "n_journal": 12770,
+      "journal_sha256": "507ce616321b05c0e9ddc29139d6f99d8525e4f02e6b2083f1e05c5bf9cf4af6"
+    },
+    "NO_091": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 599,
+      "header_sha256": "160808f6c85a5c4448b69147d6fc95b936bedf7186dea724704d11218a3bfaad",
+      "accounts_sha256": "bd69b115e85fb162eccb170eff9483e0baa123b3ba394abce035e175f4c1c4c9",
+      "n_journal": 7849,
+      "journal_sha256": "138e9c5c30329777cf31840213821e23c1dba2757370dca65de484d5d759d8f1"
+    },
+    "NO_103": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 157,
+      "header_sha256": "7058ca10e6dade4e9a55a3ea985b62f9c87ad1eac5ac20bc3268ffecf8253c60",
+      "accounts_sha256": "536133800623e0cdc4ab16df3d2ee49089b0fab79033690b3d70bbb18cd5b02e",
+      "n_journal": 10032,
+      "journal_sha256": "9acdcc8bb969e43623e6d758f3f9b7d1fbdfde76569497c916efee27ae3ee536"
+    },
+    "NO_104": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 137,
+      "header_sha256": "8b7330d10e3c00b07df615696468218042333a67c8974aa03365a4c4d64d8f37",
+      "accounts_sha256": "09f6ec837fce72ff06c2d604c469b3d969d2df6d838974de3e5f542fac76ebc3",
+      "n_journal": 6067,
+      "journal_sha256": "33ff567237fee244e24a8cd6a7f6f9420bf92e7974a02d7b25d92756ea992d2a"
+    },
+    "NO_106": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 14,
+      "header_sha256": "2f66ec56a98fe6124d59934c5c571f971a55222e6e85a77678cbb1de37d1afbd",
+      "accounts_sha256": "45913b2213889d68daea467d6c65086cfebd0dce302604461193fdd12a567caf",
+      "n_journal": 70,
+      "journal_sha256": "07ae91dcb8bb1c0610fa7eefbefca1dadb2ed7c817b1f215af7fb007bf0e0878"
+    },
+    "NO_107": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 146,
+      "header_sha256": "584b94bbf5417c26f79411c6363f8a0485c81433be9761c2cceaef9491cc8c63",
+      "accounts_sha256": "49fd8d4bfa9e203e08e806c71c3bccec0ba9abfaebf6ec76f6864d385741166f",
+      "n_journal": 10279,
+      "journal_sha256": "2486e89831b9a28e37449aed39922eacec66d49743b3d6f843b76c51873ffc01"
+    },
+    "NO_111": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 560,
+      "header_sha256": "cc74065d218e95a00911e75ae2ab72feb7a34266af52c8d72aadff6cb147b233",
+      "accounts_sha256": "32f74024e4d9c5358b6d0d12484e22ec93ae15b406442f03ee5a9b8375b523ee",
+      "n_journal": 8699,
+      "journal_sha256": "396471ca5b601c9ea4be974ae26080fb23a7a078f34eb7d56082598971687016"
+    },
+    "NO_148": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 584,
+      "header_sha256": "5a33bdcde01068ff45a9a65fb808c222b9fd1c4dd1550dfd3520d04c542e7775",
+      "accounts_sha256": "cf4feb4cdcf3dbf34af3027f56b08f01933116e0d361d87d4d2385faaf50971a",
+      "n_journal": 14677,
+      "journal_sha256": "2e435e0ff48d8cb51a65b4510d32806d4dc0c90491c8cafbe31b184d776bcab2"
+    },
+    "NO_157": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 118,
+      "header_sha256": "fb49e9e6a38c6511f09545d271334f12f5dcb26671a5edee2dc8400114c0b3d8",
+      "accounts_sha256": "f93d480537cf4295de0c09a15bb89ba838303f755851f525d5cd06494c55cbf8",
+      "n_journal": 7255,
+      "journal_sha256": "31cfae1c6770f16c72eba34a0d6ad618901dee92d2ac9860ec9102809096a000"
+    },
+    "NO_158": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 552,
+      "header_sha256": "5b822e07d2451a09854aaaa1941391143024f1377ed39b662f9690d82baae5d9",
+      "accounts_sha256": "e57b31a6776078b4e3e01e4401c1630b9d0ac070d604a305306fae6dbb499698",
+      "n_journal": 5900,
+      "journal_sha256": "56e51f80b1f8d60a82673ed182e2e053ded0b91380ece857159aab45c12ead15"
+    },
+    "NO_165": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 575,
+      "header_sha256": "d80a4adabab26e20ec67c7e9c53870a3b94488bb295f44759083a4eb910e43e6",
+      "accounts_sha256": "97f2c543fd592987ff6e143a601ca93b323e634b25e226c2bc577d04edca2928",
+      "n_journal": 8938,
+      "journal_sha256": "12fb04d7e8bf322ed3033d4481f320cda67e1dd42286cd678570998e1afb67b2"
+    },
+    "NO_171": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 129,
+      "header_sha256": "aced0868e944474d5e4f73673fd392d3f9c3b219047e5c8fd9a1545398f50e17",
+      "accounts_sha256": "f3cea1fed253e57e96517d78bc76b168b9cd1c67f6712ca75db6c85a2ce6f692",
+      "n_journal": 5174,
+      "journal_sha256": "52c62ad90ece00e49d2bfcb1a83755fb3f1a39ecb9e330fee6171d66b8590db5"
+    },
+    "NO_175": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 903,
+      "header_sha256": "7c8ca7d2416b657282a6794de751f39b6635b74615baae074670c6383db04492",
+      "accounts_sha256": "fc898b6cba2daceb0cba8101fb03b77ff5f3a2055b8ac223d14c2848f8bdffa5",
+      "n_journal": 577,
+      "journal_sha256": "ecc7889ce5ad9a53988b1f720015618957fc03c2e88addd481b7c4ddd007840e"
+    },
+    "NO_176": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 963,
+      "header_sha256": "64bacef4401605f71f8fca69a4e4bbdeeb23c8c7d6b14373cd772a5988314a0b",
+      "accounts_sha256": "1771af9796962f34c2c18ceb399ceefd8be6fdd1c76dd2c54974934bdac5cd33",
+      "n_journal": 15434,
+      "journal_sha256": "04dace6628db963348388bd1a074bfb9b5053c5cb43678c425e72cb1457f95eb"
+    },
+    "NO_189": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 599,
+      "header_sha256": "007e8c2a86641b013011e282f5d4a35ccb5220c0c19c995bab0cfcd6caee3615",
+      "accounts_sha256": "6f95304539bab51ed6610a9132b04547a5bdcd435f27b5c1cb627df38db461fc",
+      "n_journal": 5061,
+      "journal_sha256": "93fcab543c9a83241ac25f948e4abd8e34892e041960f9a46db095d3f806cbda"
+    },
+    "NO_198": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 127,
+      "header_sha256": "b91635e68aaa54ecd4323292a0021127157851d5f00a8d750683a5465f2daab7",
+      "accounts_sha256": "779dbdce3d2b987a2df6aa6c335a878da7c04857644a471e90bb845b6958c1e5",
+      "n_journal": 7254,
+      "journal_sha256": "eaa2886300cb2d5a95557bc6a029825ac56c0af77dbc470e1b8dd04da2e9d213"
+    },
+    "NO_200": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 129,
+      "header_sha256": "0eb59d9bb7b1180ecc1f331fd671bca4c3d083921ae10791944742e67a637ba8",
+      "accounts_sha256": "572bd79ebb40a2ab5392ce8e9d167e658e7e2ec99df9c919d25fef5f06adf5ee",
+      "n_journal": 7816,
+      "journal_sha256": "1edec27bf645266155466bd3703e312f24b677efd7dd73e1651ab1ceb367e034"
+    },
+    "NO_201": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 210,
+      "header_sha256": "451138228feb4356a4e01dbf2a4a53c001240d3247479e9fd5c63ba4143af5d7",
+      "accounts_sha256": "87f4222391fa2bd0801eb71f8cc20c1f47fdd48ca0e4039893b8de8c92a33917",
+      "n_journal": 47200,
+      "journal_sha256": "76d92b592c35798c715e19ffa6d7641d15bd1a136bd8660b1ebc07b22946166d"
+    },
+    "NO_202": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 51,
+      "header_sha256": "84766c91365c3bc7a8e26d1fb528f0219d93a1fe31773015b5fec574e025b28b",
+      "accounts_sha256": "725c060ff0d49abd8381e388881ae91289b28598ef1448434eab3ab5b5f60933",
+      "n_journal": 896,
+      "journal_sha256": "351addf6d9361a4965a239517aae95cda21ab792a8d9a4777a05f606ee24e0ff"
+    },
+    "NO_204": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 113,
+      "header_sha256": "3f8350a76496eb5bc2f4669b492b89f19fbbb3ca9a0c3a9bd60ebbf850ca1632",
+      "accounts_sha256": "dbbff0b3303e87c15a25dcb2149adc1e5fc19973b30c3cd3964eceff6545d839",
+      "n_journal": 14206,
+      "journal_sha256": "2e0fd37f75a1ffdf2f8e292d5575e9c3624be4a17742fdbed75e7801e15ca9ac"
+    },
+    "NO_205": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 111,
+      "header_sha256": "ecca9abb7bc7e4281374ebfb0d327a65f61b33f2e27d6cddcfdd8e2572cfc2c7",
+      "accounts_sha256": "5d02d218827aa78c9f20cd44f7bf61d65e3b71c89611e5c36b633d7db5e8c8c6",
+      "n_journal": 7798,
+      "journal_sha256": "38fe07b72c747bcb29a2bb90016230331a9a462dcbe0d58bf07c702ca07c30b9"
+    },
+    "NO_217": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 116,
+      "header_sha256": "e19574809714a6f57700d206d131a3b6d96c17858fea34490ab265cf817991bc",
+      "accounts_sha256": "144570bd39f633d4e07ec0c7e38f23a3889d4c9e39b0eef45af2097a4d814c77",
+      "n_journal": 8666,
+      "journal_sha256": "28f46745462edd73617244c67d544029ae6f3e01fad2654899a135b96e817550"
+    },
+    "NO_233": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 230,
+      "header_sha256": "04f6baf9d27f65f63a0a694f67515807aa55b7e58ee4f9ec55419adb45f28537",
+      "accounts_sha256": "c5cd91cda9a0e95e8084201e93b90615ccf043b153395825fe6dab3ac633edc3",
+      "n_journal": 2424,
+      "journal_sha256": "150ff9a6e93ede83097e9b34fe766e0085720f2a3f976e87d8bcf0e38b81b313"
+    },
+    "NO_234": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 121,
+      "header_sha256": "e62824503a534d8f3e535ae103e8c85392e25ff11fd5ef06b512165079475fff",
+      "accounts_sha256": "1d988b7b6f8c74eec0b6280d7bb06c305c85077ffab4978e98090c88990deef2",
+      "n_journal": 3005,
+      "journal_sha256": "3340b0a55d35bb147db1b5592816111b22c794d6381929bf50b74fcfb6d23303"
+    },
+    "NO_235": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 65,
+      "header_sha256": "f5a7aa9ff89b15161ad28f9b10f7b084a4a78d91d2fe5ec2d55f578d1f3c3fa4",
+      "accounts_sha256": "6d2a2797ec1951e198fa85f0f1e3cd6199ddc350a6887c7f8d28f32187d3bf26",
+      "n_journal": 664,
+      "journal_sha256": "d3096ce59c9f91cfd422b94835f6e669507b143a3502bf832cddfb1a26f18cfc"
+    },
+    "NO_237": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 551,
+      "header_sha256": "47d8e06163e6da564fdcf0f3767f8e63f939fecd9a280534afc8abd782d9fb5b",
+      "accounts_sha256": "04f6995051646451c78face21ebced4a9e60dc5230c768ad8884d6f2cba9045d",
+      "n_journal": 4361,
+      "journal_sha256": "4b93cc0e6dad3d1dd23b1fe8320163bbe8b79f7dcb9b40558a6aee7bd306e091"
+    },
+    "NO_244": {
+      "country": "NO",
+      "currency": "NOK",
+      "n_accounts": 115,
+      "header_sha256": "9a38976e152332ee7ad3e92de64c782e03551b5b76f233411a0ceab6615d0049",
+      "accounts_sha256": "75d7939007ec76fa1a28c36de9c7ce4539c5a01845fc3035f5f019f6c81acdd4",
+      "n_journal": 6644,
+      "journal_sha256": "48a23ae5dd41832fd6e6771916f04927d288ca5285b74f1f80479c90a6b327ce"
+    },
+    "DK_054": {
+      "country": "DK",
+      "currency": "DKK",
+      "n_accounts": 55,
+      "header_sha256": "38a94de1061fe7bd111514e0cabb749eac0838f739a4c244df9782a1767d142c",
+      "accounts_sha256": "1ad0e9d0f9bc9b93124d5eece0ca88f10f46d512d1c804bf8dcc488a0f57a3a7",
+      "n_journal": 325,
+      "journal_sha256": "6bccc4554de218abc874d940783688800fd595126781755d973fe462cd935ea9"
+    },
+    "DK_081": {
+      "country": "DK",
+      "currency": "DKK",
+      "n_accounts": 435,
+      "header_sha256": "8ad88b5b7ad2b680146d92d313ef949ba7741eba6deb95c0dada8138a2baaf5a",
+      "accounts_sha256": "25a4ab5efb7ee153b83e7543a73cb9e0bafbe702662fdabce6a00e5a8f73cef4",
+      "n_journal": 134165,
+      "journal_sha256": "85efc6fa36d9e05e3a11490824d7cbb324a4b216f453d5fdd5b2fb973b5d87ce"
+    }
+  }
+}
