@@ -269,5 +269,62 @@ class PeriodDerivation(unittest.TestCase):
                          ("202601", "202604"))
 
 
+_NS_NO = "urn:StandardAuditFile-Taxation-Financial:NO"
+
+
+def _no_masterfiles(body: str) -> str:
+    """Minimal NO-fil med valfritt MasterFiles-innehåll (för dim-tester)."""
+    return (f'<AuditFile xmlns="{_NS_NO}"><Header>'
+            f'<Company><RegistrationNumber>916059701</RegistrationNumber>'
+            f'<Name>X</Name></Company></Header>'
+            f'<MasterFiles>{body}</MasterFiles></AuditFile>')
+
+
+class AnalysisTypeTable(unittest.TestCase):
+    """parse_saft ska läsa MasterFiles/AnalysisTypeTable → out['analysis_types']."""
+
+    def test_reads_type_and_member_descriptions(self):
+        parsed = saft_parser.parse_saft(_write(_no_masterfiles(
+            '<AnalysisTypeTable>'
+            '<AnalysisTypeTableEntry><AnalysisType>DEP</AnalysisType>'
+            '<AnalysisTypeDescription>Avdeling</AnalysisTypeDescription>'
+            '<AnalysisID>3</AnalysisID>'
+            '<AnalysisIDDescription>Montørstab</AnalysisIDDescription>'
+            '<Status>Active</Status></AnalysisTypeTableEntry>'
+            '</AnalysisTypeTable>')))
+        self.assertEqual(parsed["analysis_types"],
+                         [("DEP", "Avdeling", "3", "Montørstab")])
+
+    def test_missing_table_yields_empty_list(self):
+        parsed = saft_parser.parse_saft(_write(_no_masterfiles("")))
+        self.assertEqual(parsed["analysis_types"], [])
+
+
+class JournalAnalysis(unittest.TestCase):
+    """iter_saft_journal ska yielda Analysis-block per linje (0..N)."""
+
+    def _journal(self, line_inner: str) -> Path:
+        xml = (f'<AuditFile xmlns="{_NS_NO}"><GeneralLedgerEntries><Journal>'
+               f'<JournalID>J1</JournalID><Description>d</Description>'
+               f'<Transaction><TransactionID>T1</TransactionID>'
+               f'<TransactionDate>2026-04-30</TransactionDate>'
+               f'<Line><RecordID>1</RecordID><AccountID>3000</AccountID>'
+               f'{line_inner}'
+               f'<DebitAmount><Amount>100</Amount></DebitAmount></Line>'
+               f'</Transaction></Journal></GeneralLedgerEntries></AuditFile>')
+        return _write(xml)
+
+    def test_two_analysis_blocks_yielded(self):
+        rows = list(saft_parser.iter_saft_journal(self._journal(
+            '<Analysis><AnalysisType>DEP</AnalysisType><AnalysisID>3</AnalysisID></Analysis>'
+            '<Analysis><AnalysisType>PRO</AnalysisType><AnalysisID>1</AnalysisID></Analysis>'),
+            _NS_NO))
+        self.assertEqual(rows[0]["analysis"], [("DEP", "3"), ("PRO", "1")])
+
+    def test_no_analysis_blocks_yields_empty(self):
+        rows = list(saft_parser.iter_saft_journal(self._journal(""), _NS_NO))
+        self.assertEqual(rows[0]["analysis"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

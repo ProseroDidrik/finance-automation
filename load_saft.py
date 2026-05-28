@@ -229,6 +229,11 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                    WHERE company_id = %s AND period BETWEEN %s AND %s""",
                 [company_id, fy_start, fy_end],
             )
+            con.execute(
+                """DELETE FROM fact_saft_analysis
+                   WHERE company_id = %s AND period BETWEEN %s AND %s""",
+                [company_id, fy_start, fy_end],
+            )
         con.execute(
             """DELETE FROM fact_balances
                WHERE company_id = %s AND period = %s AND source_kind = %s""",
@@ -244,6 +249,30 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
               r[3], SOURCE_KIND, rel_src, r[4], now) for r in rows],
         )
 
+        # Dimensioner: upserta axel- + medlemsnamn ur MasterFiles/AnalysisTypeTable.
+        # Best-effort (ON CONFLICT) — namnen kan saknas (NO 1.20/DK 1.0 → tom lista).
+        type_rows, member_rows = dim_analysis_rows(
+            parsed.get("analysis_types", []), company_id, now)
+        if type_rows:
+            con.executemany(
+                """INSERT INTO dim_analysis_type
+                   (company_id, source_format, analysis_type, description, loaded_at)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (company_id, source_format, analysis_type)
+                   DO UPDATE SET description = EXCLUDED.description,
+                                 loaded_at = EXCLUDED.loaded_at""",
+                type_rows)
+        if member_rows:
+            con.executemany(
+                """INSERT INTO dim_analysis_member
+                   (company_id, source_format, analysis_type, analysis_id,
+                    description, loaded_at)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
+                   DO UPDATE SET description = EXCLUDED.description,
+                                 loaded_at = EXCLUDED.loaded_at""",
+                member_rows)
+
         # Journal: strömmande iterparse + batchad insert (5000 rader/batch).
         # Idempotens: rensa per (company_id, period) — INTE per source_file.
         # En SAF-T-fil är YTD; en senare månadsfil måste ersätta tidigare
@@ -256,9 +285,10 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         journal_rows_loaded = 0
         journal_skipped = 0
         journal_vdate_fallback = 0
+        analysis_rows_loaded = 0
         journal_periods: set[str] = set()
         if include_journal:
-            # Pass 1: vilka perioder täcker filens journal?
+            # Pass 1: vilka perioder täcker filens journal? (ValueDate-härlett)
             for j in iter_saft_journal(path, parsed["ns"]):
                 jp = _journal_period(j, period)
                 if period_override and jp > period_override:
@@ -266,37 +296,49 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                 journal_periods.add(jp)
             if journal_periods:
                 placeholders = ",".join(["%s"] * len(journal_periods))
+                # Journal OCH analys nyckas på SAMMA ValueDate-härledda period-set
+                # → idempotens-paritet (annars ackumulerar --override dubbletter).
                 con.execute(
                     f"""DELETE FROM fact_journal_saft
                         WHERE company_id = %s AND period IN ({placeholders})""",
                     [company_id, *sorted(journal_periods)],
                 )
-            # Pass 2: strömma in raderna via COPY. executemany var ~77% av
-            # laddtiden för stora filer (DK 81: 50s av 65s, 2647 rader/s pga
-            # nätverks-round-trips); COPY strömmar i ett svep (~5-10x).
+                con.execute(
+                    f"""DELETE FROM fact_saft_analysis
+                        WHERE company_id = %s AND period IN ({placeholders})""",
+                    [company_id, *sorted(journal_periods)],
+                )
+            # Pass 2: journal via COPY; analys buffras och COPY:as separat efteråt
+            # (psycopg tillåter en COPY i taget per anslutning). line_rows ger
+            # journal- och analystupler SAMMA jp → analysen periodiseras aldrig
+            # annorlunda än journalen (b711832-skydd).
+            analysis_buf: list[tuple] = []
             cur = con.cursor()
             try:
                 with cur.copy(_COPY_JOURNAL_SAFT) as cp:
                     for j in iter_saft_journal(path, parsed["ns"]):
                         if j.get("value_date") is None:
                             journal_vdate_fallback += 1
-                        jp = _journal_period(j, period)
-                        if period_override and jp > period_override:
+                        jt, ats, jp, skipped = line_rows(
+                            j, company_id, currency, rel_src, now, period,
+                            period_cutoff=period_override)
+                        if skipped:
                             journal_skipped += 1
                             continue
-                        debit = j["debit"] or 0.0
-                        credit = j["credit"] or 0.0
-                        cp.write_row((
-                            company_id, jp,
-                            j["journal_id"], j["journal_desc"],
-                            j["transaction_id"], j["transaction_date"], j["transaction_desc"],
-                            j["line_no"], j["record_id"], j["account_code"],
-                            debit, credit, debit - credit, j["line_desc"],
-                            currency, rel_src, now,
-                        ))
+                        cp.write_row(jt)
+                        analysis_buf.extend(ats)
                         journal_rows_loaded += 1
             finally:
                 cur.close()
+            if analysis_buf:
+                cur2 = con.cursor()
+                try:
+                    with cur2.copy(_COPY_ANALYSIS_SAFT) as cp:
+                        for row in analysis_buf:
+                            cp.write_row(row)
+                            analysis_rows_loaded += 1
+                finally:
+                    cur2.close()
             if journal_periods:
                 db.sync_dim_period(con, sorted(journal_periods))
 
@@ -310,7 +352,8 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
              "ok",
              f"sum_bs={total_bs:.2f} sum_is={total_is:.2f} "
              f"journal_rows={journal_rows_loaded} "
-             f"journal_periods={len(journal_periods)}", now],
+             f"journal_periods={len(journal_periods)} "
+             f"analysis_rows={analysis_rows_loaded}", now],
         )
         con.execute("COMMIT")
     except Exception as e:
@@ -318,7 +361,8 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         log("ERROR", company_id, f"DB-fel {path.name}: {e}")
         return "error"
 
-    journal_msg = f" JOURNAL={journal_rows_loaded}({len(journal_periods)} mån)" if include_journal else ""
+    journal_msg = (f" JOURNAL={journal_rows_loaded}({len(journal_periods)} mån)"
+                   f" ANALYS={analysis_rows_loaded}" if include_journal else "")
     cutoff_msg = (f"  CUTOFF<= {period_override}: skippade journal={journal_skipped}"
                   if include_journal and period_override and journal_skipped else "")
     if include_journal and journal_vdate_fallback:
@@ -338,6 +382,62 @@ COPY fact_journal_saft
  currency, source_file, loaded_at)
 FROM STDIN
 """
+
+_COPY_ANALYSIS_SAFT = """
+COPY fact_saft_analysis
+(company_id, period, transaction_id, line_no, record_id, account_code,
+ analysis_type, analysis_id, amount, currency, source_file, loaded_at)
+FROM STDIN
+"""
+
+
+def dim_analysis_rows(analysis_types, company_id, now, source_format="SAFT"):
+    """(analysis_type, type_desc, analysis_id, id_desc)-lista (från parse_saft) →
+    (type_rows, member_rows), deduplicerade. Ingen DB.
+
+    type_rows:   (company_id, source_format, analysis_type, description, loaded_at)
+    member_rows: (company_id, source_format, analysis_type, analysis_id, description, loaded_at)
+    """
+    types: dict = {}
+    members: dict = {}
+    for atype, tdesc, aid, idesc in analysis_types:
+        if atype is None:
+            continue
+        types[atype] = (company_id, source_format, atype, tdesc, now)
+        if aid is not None:
+            members[(atype, aid)] = (company_id, source_format, atype, aid, idesc, now)
+    return list(types.values()), list(members.values())
+
+
+def line_rows(line, company_id, currency, rel_src, now, fallback_period,
+              period_cutoff=None):
+    """Bygg (journal_tuple, analysis_tuples, jp, skipped) för EN journal-linje.
+
+    jp härleds EN gång via _journal_period (ValueDate per linje → TransactionDate-
+    fallback). BÅDE journaltupeln och alla analystupler får samma jp → analysen
+    kan inte periodiseras annorlunda än journalen (skydd mot b711832-regression).
+    period_cutoff: om satt och jp > cutoff → skipped=True (journal + analys droppas).
+    """
+    jp = _journal_period(line, fallback_period)
+    if period_cutoff is not None and jp > period_cutoff:
+        return None, [], jp, True
+    debit = line["debit"] or 0.0
+    credit = line["credit"] or 0.0
+    amount = debit - credit
+    journal_tuple = (
+        company_id, jp,
+        line["journal_id"], line["journal_desc"],
+        line["transaction_id"], line["transaction_date"], line["transaction_desc"],
+        line["line_no"], line["record_id"], line["account_code"],
+        debit, credit, amount, line["line_desc"],
+        currency, rel_src, now,
+    )
+    analysis_tuples = [
+        (company_id, jp, line["transaction_id"], line["line_no"], line["record_id"],
+         line["account_code"], atype, aid, amount, currency, rel_src, now)
+        for (atype, aid) in line.get("analysis", [])
+    ]
+    return journal_tuple, analysis_tuples, jp, False
 
 
 def discover_files(source_dir: Path) -> list[Path]:
