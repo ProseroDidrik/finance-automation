@@ -66,5 +66,99 @@ class Cp437Encoding(unittest.TestCase):
         self.assertEqual(sie_parser.parse_sie(text)["fnamn"], "Råäö Säkerhet AB")
 
 
+class TransDimensions(unittest.TestCase):
+    """#DIM/#OBJEKT persisteras inte — men objektlistan {…} i #TRANS får ALDRIG
+    läcka in i beloppet. Låser beteendet som oraklet bevisat (0 obalanser över
+    dim-tunga Hantverksdata-filer)."""
+
+    def _transes(self, ver_text):
+        return sie_parser.parse_sie(ver_text, with_journal=True)["vouchers"][0]["transes"]
+
+    def test_multidim_brace_does_not_leak_into_amount(self):
+        # Hantverksdata: flera dim-par i braces; tal i objektlistan (9000300)
+        # får inte förväxlas med beloppet (1247.27).
+        t = self._transes(
+            '#VER "IN26" 1 20260131 "Avskrivning"\n{\n'
+            '\t#TRANS 7830 {"1" "100" "2" "300" "6" "9000300" } 1247.27 20260131 "Avskr" 1\n'
+            "\t#TRANS 1209 {} -1247.27 20260131 \"Ack\" 2\n}\n")
+        self.assertEqual(t[0]["account"], "7830")
+        self.assertEqual(t[0]["amount"], 1247.27)
+        self.assertEqual(t[0]["quantity"], 1.0)
+
+    def test_empty_brace_amount(self):
+        t = self._transes('#VER A 1 20260101 "x"\n{\n#TRANS 1209 {} -1000.00\n'
+                          "#TRANS 7830 {} 1000.00\n}\n")
+        self.assertEqual(t[0]["amount"], -1000.00)
+
+    def test_tab_separated_visma_net(self):
+        # Visma.net: tab-indenterad, tab-separerad, tom brace.
+        t = self._transes('#VER\tAP\t002764\t20260102\t"AP/002764/"\n{\n'
+                           '\t#TRANS\t1940\t{}\t-89069.57\t20260102\t"CHK"\n'
+                           '\t#TRANS\t2440\t{}\t89069.57\t20260102\t"CHK"\n}\n')
+        self.assertEqual(t[0]["account"], "1940")
+        self.assertEqual(t[0]["amount"], -89069.57)
+
+    def test_voucher_with_dims_still_balances(self):
+        parsed = sie_parser.parse_sie(
+            '#VER "IN26" 1 20260131 "x"\n{\n'
+            '\t#TRANS 7830 {"6" "9000300"} 1247.27\n'
+            "\t#TRANS 1209 {} -1247.27\n}\n", with_journal=True)
+        self.assertEqual(sie_parser.check_voucher_balance(parsed), [])
+
+
+class FormatAndCurrency(unittest.TestCase):
+    """#FORMAT (PC8/CP437) och #VALUTA fångas så grindar/loader kan använda dem.
+
+    #VALUTA default = SEK i SIE (svenskt format); enstaka norska SIE-bolag
+    deklarerar NOK och ska då inte hårdkodas som SEK."""
+
+    def test_format_captured(self):
+        self.assertEqual(sie_parser.parse_sie("#FORMAT PC8\n")["format"], "PC8")
+
+    def test_format_absent_is_none(self):
+        self.assertIsNone(sie_parser.parse_sie("#ORGNR 556071-2340\n")["format"])
+
+    def test_currency_captured(self):
+        self.assertEqual(sie_parser.parse_sie("#VALUTA NOK\n")["currency"], "NOK")
+
+    def test_currency_absent_is_none(self):
+        self.assertIsNone(sie_parser.parse_sie("#ORGNR 556071-2340\n")["currency"])
+
+
+class ValidationGate(unittest.TestCase):
+    """validate_sie: bypassbara datakvalitetsgrindar (#FORMAT + verifikatbalans).
+    Returnerar lista med blockerande fel; tom lista = OK att ladda."""
+
+    BALANCED = ('#FORMAT PC8\n#ORGNR 556071-2340\n'
+                '#VER A 1 20260101 "x"\n{\n#TRANS 1910 {} 100.00\n'
+                "#TRANS 3000 {} -100.00\n}\n")
+
+    def test_valid_file_passes(self):
+        parsed = sie_parser.parse_sie(self.BALANCED, with_journal=True)
+        self.assertEqual(sie_parser.validate_sie(parsed), [])
+
+    def test_missing_format_blocks(self):
+        parsed = sie_parser.parse_sie('#ORGNR 556071-2340\n', with_journal=True)
+        errs = sie_parser.validate_sie(parsed)
+        self.assertTrue(any("FORMAT" in e for e in errs))
+
+    def test_wrong_format_blocks(self):
+        parsed = sie_parser.parse_sie('#FORMAT UTF8\n#ORGNR 1\n', with_journal=True)
+        errs = sie_parser.validate_sie(parsed)
+        self.assertTrue(any("FORMAT" in e for e in errs))
+
+    def test_unbalanced_voucher_blocks(self):
+        text = ('#FORMAT PC8\n#ORGNR 1\n#VER A 7 20260101 "x"\n{\n'
+                "#TRANS 1910 {} 100.00\n#TRANS 3000 {} -40.00\n}\n")
+        parsed = sie_parser.parse_sie(text, with_journal=True)
+        errs = sie_parser.validate_sie(parsed)
+        self.assertTrue(any("verifikat" in e.lower() for e in errs))
+
+    def test_no_journal_skips_voucher_check(self):
+        # Utan journal kan vi inte kolla verifikatbalans — bara #FORMAT gäller.
+        parsed = sie_parser.parse_sie(self.BALANCED, with_journal=False)
+        self.assertEqual(sie_parser.validate_sie(parsed, with_journal=False), [])
+
+
 if __name__ == "__main__":
     unittest.main()

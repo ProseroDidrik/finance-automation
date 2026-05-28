@@ -44,6 +44,11 @@ RE_PSALDO_ANY = re.compile(
 )
 RE_RAR0   = re.compile(r"^#RAR\s+0\s+(\d{8})\s+(\d{8})", re.IGNORECASE)
 RE_GEN    = re.compile(r"^#GEN\s+(\d{8})", re.IGNORECASE)
+# #FORMAT deklarerar teckenuppsättning; PC8 (= CP437) är enda tillåtna värdet
+# enligt SIE 4B. Fångas för att kunna bekräftas av valideringsgrinden.
+RE_FORMAT = re.compile(r"^#FORMAT\s+(\S+)", re.IGNORECASE)
+# #VALUTA är valfri (default SEK). Enstaka norska SIE-bolag deklarerar NOK.
+RE_VALUTA = re.compile(r'^#VALUTA\s+"?([A-Za-z]{3})"?', re.IGNORECASE)
 RE_VER    = re.compile(
     r'^#VER\s+(\S+)\s+(\S+)\s+(\d{8})'
     r'(?:\s+"([^"]*)")?',
@@ -91,7 +96,8 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
         {line_no,account,amount,trans_text,quantity}]}].
     """
     out: dict = {
-        "orgnr": None, "fnamn": None, "program": None, "konto": {},
+        "orgnr": None, "fnamn": None, "program": None,
+        "format": None, "currency": None, "konto": {},
         "ub": [], "res": [], "res_prior": [], "psaldo": [],
         "rar_start": None, "rar_end": None, "gen_date": None,
         "vouchers": [],
@@ -175,6 +181,10 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
             out["rar_end"] = m.group(2)
         elif m := RE_GEN.match(line):
             out["gen_date"] = m.group(1)
+        elif m := RE_FORMAT.match(line):
+            out["format"] = m.group(1)
+        elif m := RE_VALUTA.match(line):
+            out["currency"] = m.group(1).upper()
         elif with_journal and (m := RE_VER.match(line)):
             current_voucher = {
                 "series": m.group(1).strip('"'),
@@ -260,6 +270,33 @@ def check_voucher_balance(parsed: dict, tol: float = 0.005) -> list[tuple]:
         if abs(imbalance) > tol:
             out.append((v["series"], v["number"], imbalance))
     return out
+
+
+def validate_sie(parsed: dict, *, with_journal: bool = True) -> list[str]:
+    """Bypassbara datakvalitetsgrindar — returnerar blockerande fel (tom = OK).
+
+    Kontrollerar (SIE 4B):
+      - #FORMAT finns och är PC8 (= CP437; enda tillåtna värdet).
+      - Varje #VER balanserar (Σ#TRANS = 0) — kräver with_journal=True.
+
+    Strukturella förutsättningar (orgnr måste matcha dim_company, period måste
+    kunna härledas) hanteras separat i load_sie.load_file och är INTE
+    bypassbara. Σ#PSALDO≠#RES är en mjuk signal som loggas som WARN, inte här.
+    """
+    errors: list[str] = []
+    fmt = (parsed.get("format") or "").upper()
+    if not fmt:
+        errors.append("#FORMAT saknas (förväntat PC8/CP437)")
+    elif fmt != "PC8":
+        errors.append(f"#FORMAT={parsed['format']} (förväntat PC8/CP437)")
+    if with_journal:
+        breaks = check_voucher_balance(parsed)
+        if breaks:
+            s, vnum, imb = breaks[0]
+            errors.append(
+                f"{len(breaks)} obalanserade verifikat "
+                f"(t.ex. {s}{vnum} diff {imb:+.2f})")
+    return errors
 
 
 def psaldo_dim_coverage(text: str) -> dict:

@@ -40,6 +40,7 @@ from sie_parser import (
     parse_sie, read_text_with_fallback, normalize_orgnr,
     derive_period, derive_fy_range,
     check_psaldo_vs_res, check_voucher_balance, psaldo_dim_coverage,
+    validate_sie,
 )
 
 SOURCE_KIND = "SIE"
@@ -324,7 +325,7 @@ def psaldo_fact_rows(psaldo_rows: list[tuple], company_id: int, currency: str,
 
 def load_file(con, path: Path, base_path: Path, period_override: str | None,
               orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False,
-              override: list[int] | None = None) -> str:
+              override: list[int] | None = None, force: bool = False) -> str:
     """Load one SIE file. Returns ok|warn|skip|error."""
     # Path-period sanity-check: om filen ligger under extracted/YYYYMM/ och
     # --period är annat värde, vägra ladda. Skyddar mot att tagga gammal
@@ -355,7 +356,9 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         log("ERROR", path.name, f"OrgNr {orgnr_raw} saknas i dim_company")
         return "error"
     company_id, _name, country = hit
-    currency = "SEK"
+    # SIE är ett svenskt format → default SEK; respektera #VALUTA för de
+    # enstaka norska SIE-bolag som deklarerar NOK.
+    currency = parsed.get("currency") or "SEK"
 
     period_derived = derive_period(parsed)  # max #PSALDO eller None
     if period_derived:
@@ -414,13 +417,18 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         log("WARN", company_id,
             f"{path.name}: {len(psaldo_breaks)} konton där summa(#PSALDO) != "
             f"#RES 0 (störst: konto {worst[0]} diff {worst[3]:+.2f})")
-    if include_journal:
-        voucher_breaks = check_voucher_balance(parsed)
-        if voucher_breaks:
-            s, vnum, imb = voucher_breaks[0]
-            log("WARN", company_id,
-                f"{path.name}: {len(voucher_breaks)} obalanserade verifikat "
-                f"(t.ex. {s}{vnum} diff {imb:+.2f})")
+    # Valideringsgrind (bypassbar med --force): #FORMAT måste vara PC8 och varje
+    # #VER balansera (Σ#TRANS = 0). orgnr/period är strukturella krav som
+    # hanteras ovan och är INTE bypassbara. Σ#PSALDO≠#RES förblir mjuk WARN (ovan).
+    gate_errors = validate_sie(parsed, with_journal=include_journal)
+    if gate_errors:
+        gate_msg = f"{path.name}: validering — " + "; ".join(gate_errors)
+        if force:
+            log("WARN", company_id, f"{gate_msg}  [--force: laddar ändå]")
+        else:
+            log("ERROR", company_id,
+                f"{gate_msg}  (kör med --force för att ladda ändå)")
+            return "error"
 
     # IS/BS-klassning per kontokod: UB → BS, RES → IS. Fallback för PSALDO-koder
     # som ev. saknas i UB/RES: första-siffra-regel (1,2 → BS; annars IS).
@@ -706,6 +714,9 @@ def main() -> None:
     parser.add_argument("--override", nargs="*", type=int, default=None, metavar="ID",
                         help="Skriv över befintlig SIE/SIE_PSALDO inom FY. "
                              "--override = global; --override 134 196 = bara dessa bolag.")
+    parser.add_argument("--force", action="store_true",
+                        help="Ladda även om valideringsgrinden (#FORMAT/#VER-balans) "
+                             "fallerar — degraderar grinden till WARN.")
     args = parser.parse_args()
 
     period_for_log = args.period or prev_month_period()
@@ -754,7 +765,7 @@ def main() -> None:
             status = load_file(con, f, base_path, args.period, orgnr_lookup,
                                dry_run=args.dry_run,
                                include_journal=args.include_journal,
-                               override=args.override)
+                               override=args.override, force=args.force)
             counts[status] = counts.get(status, 0) + 1
     finally:
         con.close()
