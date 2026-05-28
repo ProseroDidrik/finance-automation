@@ -50,6 +50,7 @@ from saft_parser import (  # noqa: F401
     normalize_orgnr,
     parse_saft,
     statement_type_from_code,
+    validate_xsd,
 )
 
 SOURCE_KIND = "SAFT"
@@ -81,7 +82,7 @@ def build_orgnr_lookup(con: db.Conn) -> dict[str, tuple[int, str]]:
 
 def load_file(con, path: Path, base_path: Path, period_override: str | None,
               orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False,
-              override: list[int] | None = None) -> str:
+              override: list[int] | None = None, force: bool = False) -> str:
     try:
         parsed = parse_saft(path)
     except ET.ParseError as e:
@@ -144,6 +145,21 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             log("ERROR", company_id,
                 f"{path.name}: filens PeriodEnd={header_period} < "
                 f"--period={period_override}. Fel fil i fel mapp? Skippar.")
+            return "error"
+
+    # XSD-valideringsgrind (bypassbar med --force). Endast NO 1.30 har vendorad
+    # XSD; NO 1.20 + DK saknar XSD och 'skipped' (best-effort, ingen WARN-spam).
+    # 'invalid' blockerar utan --force. orgnr/period är strukturella krav ovan
+    # och INTE bypassbara här.
+    xsd_status, xsd_errors = validate_xsd(path)
+    if xsd_status == "invalid":
+        gate_msg = (f"{path.name}: XSD-validering ({len(xsd_errors)} fel, "
+                    f"ex: {xsd_errors[0][:120]})")
+        if force:
+            log("WARN", company_id, f"{gate_msg}  [--force: laddar ändå]")
+        else:
+            log("ERROR", company_id,
+                f"{gate_msg}  (kör med --force för att ladda ändå)")
             return "error"
 
     # Konfliktkoll: finns redan SAFT för perioder >= filens period inom FY?
@@ -365,6 +381,9 @@ def main() -> None:
     parser.add_argument("--override", nargs="*", type=int, default=None, metavar="ID",
                         help="Skriv över befintlig SAFT inom FY. "
                              "--override = global; --override 134 196 = bara dessa bolag.")
+    parser.add_argument("--force", action="store_true",
+                        help="Ladda även om XSD-valideringsgrinden fallerar "
+                             "(degraderar 'invalid' till WARN). Gäller NO 1.30.")
     args = parser.parse_args()
 
     period_for_log = args.period or prev_month_period()
@@ -420,7 +439,7 @@ def main() -> None:
             status = load_file(con, f, base_path, args.period, orgnr_lookup,
                                dry_run=args.dry_run,
                                include_journal=args.include_journal,
-                               override=args.override)
+                               override=args.override, force=args.force)
             counts[status] = counts.get(status, 0) + 1
     finally:
         con.close()

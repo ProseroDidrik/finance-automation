@@ -289,3 +289,73 @@ def derive_period(parsed: dict, override: str | None) -> str | None:
         except ValueError:
             pass
     return _yyyymm_from_iso(parsed.get("selection_end_date"))
+
+
+# ── XSD-valideringsgrind ──────────────────────────────────────────────────────
+# Validering via lxml.etree.XMLSchema (samma XSD 1.0-standard som xmllint, men
+# utan externt binärberoende — xmllint saknas på Windows-ETL-maskinen och lxml
+# är redan beroende). Endast NO 1.30 har vendorad XSD; andra versioner/namespace
+# (NO 1.20, DK) saknar XSD i repo:t och WARN-skippas (best-effort).
+_XSD_DIR = Path(__file__).resolve().parent / "saft_schema_no"
+XSD_BY_VERSION: dict[tuple[str, str], str] = {
+    ("NO", "1.30"): "Norwegian_SAF-T_Financial_Schema_v_1.30.xsd",
+}
+_schema_cache: dict[str, object] = {}
+
+
+def _quick_header_meta(path: Path) -> tuple[str, str | None, str | None]:
+    """Streamande läsning av (ns, country, AuditFileVersion) ur Header.
+
+    Cheap — stoppar vid Header-slut så stora filer (Actas 221 MB) inte
+    DOM-laddas bara för att avgöra om en XSD finns."""
+    ns = ""
+    version = None
+    first = True
+    for event, elem in ET.iterparse(str(path), events=("start", "end")):
+        if first and event == "start":
+            ns = elem.tag.split("}", 1)[0][1:] if "}" in elem.tag else ""
+            first = False
+        tag = elem.tag.split("}", 1)[-1] if "}" in elem.tag else elem.tag
+        if event == "end" and tag == "AuditFileVersion":
+            version = elem.text
+        if event == "end" and tag == "Header":
+            break
+    return ns, NS_TO_COUNTRY.get(ns), version
+
+
+def _xsd_path_for(country: str | None, version: str | None) -> Path | None:
+    name = XSD_BY_VERSION.get((country or "", version or ""))
+    if not name:
+        return None
+    p = _XSD_DIR / name
+    return p if p.exists() else None
+
+
+def validate_xsd(path: Path) -> tuple[str, list[str]]:
+    """Validera SAF-T mot vendorad XSD. Returnerar (status, errors):
+
+      'valid'   — validerades mot XSD utan fel
+      'invalid' — validerades men bröt mot schemat (errors = upp till 20 rader)
+      'skipped' — ingen XSD för (country, version), eller lxml saknas
+
+    Bypassbar grind (jfr validate_sie + --force i load_sie). DK och NO 1.20
+    saknar vendorad XSD → 'skipped'."""
+    ns, country, version = _quick_header_meta(path)
+    xsd = _xsd_path_for(country, version)
+    if xsd is None:
+        return "skipped", [f"ingen vendorad XSD för country={country} version={version}"]
+    try:
+        from lxml import etree
+    except ImportError:
+        return "skipped", ["lxml saknas — XSD-validering hoppas över"]
+    try:
+        schema = _schema_cache.get(str(xsd))
+        if schema is None:
+            schema = etree.XMLSchema(etree.parse(str(xsd)))
+            _schema_cache[str(xsd)] = schema
+        doc = etree.parse(str(path))
+    except etree.XMLSyntaxError as e:
+        return "invalid", [f"XML-syntaxfel: {e}"]
+    if schema.validate(doc):
+        return "valid", []
+    return "invalid", [str(e) for e in list(schema.error_log)[:20]]
