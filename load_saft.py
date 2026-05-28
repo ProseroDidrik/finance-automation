@@ -230,6 +230,7 @@ def iter_saft_journal(path: Path, ns: str | None = None):
                     rec_id = _t(line, "RecordID", ns)
                     acc = _t(line, "AccountID", ns)
                     line_desc = _t(line, "Description", ns)
+                    value_date = _parse_iso_date(_t(line, "ValueDate", ns))
                     debit_elem = line.find(f"{{{ns}}}DebitAmount")
                     credit_elem = line.find(f"{{{ns}}}CreditAmount")
                     debit = _amount(_t(debit_elem, "Amount", ns)) if debit_elem is not None else 0.0
@@ -238,6 +239,7 @@ def iter_saft_journal(path: Path, ns: str | None = None):
                         "journal_id": j_id, "journal_desc": j_desc,
                         "transaction_id": tx_id, "transaction_date": tx_date,
                         "transaction_desc": tx_desc,
+                        "value_date": value_date,
                         "line_no": line_no, "record_id": rec_id,
                         "account_code": acc, "line_desc": line_desc,
                         "debit": debit, "credit": credit,
@@ -259,8 +261,13 @@ def _yyyymm_from_iso(date_str: str | None) -> str | None:
 
 
 def _journal_period(j: dict, fallback: str) -> str:
-    """YYYYMM för en journal-rad — från transaction_date, annars fallback."""
-    d = j["transaction_date"]
+    """YYYYMM för en journal-LINJE — från ValueDate (linjenivå), annars
+    TransactionDate (transaktionsnivå), annars fallback.
+
+    SAF-T periodiserar per linje via ValueDate. TransactionDate är verifikatets
+    bokföringsdag och kan klumpa hela årets linjer i en månad (Tripletex bokar
+    t.ex. årets avskrivningar i jan) — den får inte styra perioden."""
+    d = j.get("value_date") or j["transaction_date"]
     return f"{d.year:04d}{d.month:02d}" if d else fallback
 
 
@@ -484,6 +491,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # jp > period_override (FY-filer kan innehålla framtida tomma månader).
         journal_rows_loaded = 0
         journal_skipped = 0
+        journal_vdate_fallback = 0
         journal_periods: set[str] = set()
         if include_journal:
             # Pass 1: vilka perioder täcker filens journal?
@@ -502,6 +510,8 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             # Pass 2: strömma in raderna batchvis.
             batch: list[tuple] = []
             for j in iter_saft_journal(path, parsed["ns"]):
+                if j.get("value_date") is None:
+                    journal_vdate_fallback += 1
                 jp = _journal_period(j, period)
                 if period_override and jp > period_override:
                     journal_skipped += 1
@@ -548,6 +558,10 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     journal_msg = f" JOURNAL={journal_rows_loaded}({len(journal_periods)} mån)" if include_journal else ""
     cutoff_msg = (f"  CUTOFF<= {period_override}: skippade journal={journal_skipped}"
                   if include_journal and period_override and journal_skipped else "")
+    if include_journal and journal_vdate_fallback:
+        log("WARN", company_id,
+            f"{path.name}  {journal_vdate_fallback} journal-linjer saknar ValueDate "
+            f"— periodiserade på TransactionDate")
     log("OK", company_id, f"{path.name}  rader={len(rows)}{journal_msg} sum={total:.2f}{cutoff_msg}")
     return "ok"
 
