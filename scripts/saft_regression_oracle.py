@@ -78,9 +78,14 @@ def fingerprint(path: Path) -> dict:
     for code, name, amt, st, idx in rows:
         acc.update((_h(code, name, repr(amt), st, idx) + "\n").encode("utf-8"))
 
-    # Journal — exakt de fält load_file läser, i yield-ordning
+    # Journal — exakt de fält load_file läser, i yield-ordning.
+    # Analys (dimensioner) fingerprintas separat: per linje hashas (txn,line,
+    # type,id) i yield-ordning så att analys-utfallet regressionsskyddas utan
+    # att blandas in i journal_sha256 (det förblir de 12 ursprungsfälten).
     jour = hashlib.sha256()
+    ana = hashlib.sha256()
     n_journal = 0
+    n_analysis = 0
     for j in load_saft.iter_saft_journal(path, parsed["ns"]):
         n_journal += 1
         jour.update((_h(
@@ -90,6 +95,9 @@ def fingerprint(path: Path) -> dict:
             j["line_no"], j["record_id"], j["account_code"], j["line_desc"],
             repr(j["debit"]), repr(j["credit"]),
         ) + "\n").encode("utf-8"))
+        for atype, aid in j["analysis"]:
+            ana.update((_h(j["transaction_id"], j["line_no"], atype, aid) + "\n").encode("utf-8"))
+            n_analysis += 1
 
     return {
         "country": parsed.get("country"),
@@ -99,6 +107,8 @@ def fingerprint(path: Path) -> dict:
         "accounts_sha256": acc.hexdigest(),
         "n_journal": n_journal,
         "journal_sha256": jour.hexdigest(),
+        "n_analysis": n_analysis,
+        "analysis_sha256": ana.hexdigest(),
     }
 
 
@@ -158,7 +168,8 @@ def verify(period: str | None = None, *, slow: bool = False) -> list[str]:
         got = fingerprint(files[key])
         exp = golden["files"][key]
         for field in ("country", "currency", "n_accounts", "header_sha256",
-                      "accounts_sha256", "n_journal", "journal_sha256"):
+                      "accounts_sha256", "n_journal", "journal_sha256",
+                      "n_analysis", "analysis_sha256"):
             if got[field] != exp[field]:
                 mismatches.append(f"{key}.{field}: golden={exp[field]} != nu={got[field]}")
     return mismatches
