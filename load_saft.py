@@ -339,6 +339,62 @@ COPY fact_journal_saft
 FROM STDIN
 """
 
+_COPY_ANALYSIS_SAFT = """
+COPY fact_saft_analysis
+(company_id, period, transaction_id, line_no, record_id, account_code,
+ analysis_type, analysis_id, amount, currency, source_file, loaded_at)
+FROM STDIN
+"""
+
+
+def dim_analysis_rows(analysis_types, company_id, now, source_format="SAFT"):
+    """(analysis_type, type_desc, analysis_id, id_desc)-lista (från parse_saft) →
+    (type_rows, member_rows), deduplicerade. Ingen DB.
+
+    type_rows:   (company_id, source_format, analysis_type, description, loaded_at)
+    member_rows: (company_id, source_format, analysis_type, analysis_id, description, loaded_at)
+    """
+    types: dict = {}
+    members: dict = {}
+    for atype, tdesc, aid, idesc in analysis_types:
+        if atype is None:
+            continue
+        types[atype] = (company_id, source_format, atype, tdesc, now)
+        if aid is not None:
+            members[(atype, aid)] = (company_id, source_format, atype, aid, idesc, now)
+    return list(types.values()), list(members.values())
+
+
+def line_rows(line, company_id, currency, rel_src, now, fallback_period,
+              period_cutoff=None):
+    """Bygg (journal_tuple, analysis_tuples, jp, skipped) för EN journal-linje.
+
+    jp härleds EN gång via _journal_period (ValueDate per linje → TransactionDate-
+    fallback). BÅDE journaltupeln och alla analystupler får samma jp → analysen
+    kan inte periodiseras annorlunda än journalen (skydd mot b711832-regression).
+    period_cutoff: om satt och jp > cutoff → skipped=True (journal + analys droppas).
+    """
+    jp = _journal_period(line, fallback_period)
+    if period_cutoff is not None and jp > period_cutoff:
+        return None, [], jp, True
+    debit = line["debit"] or 0.0
+    credit = line["credit"] or 0.0
+    amount = debit - credit
+    journal_tuple = (
+        company_id, jp,
+        line["journal_id"], line["journal_desc"],
+        line["transaction_id"], line["transaction_date"], line["transaction_desc"],
+        line["line_no"], line["record_id"], line["account_code"],
+        debit, credit, amount, line["line_desc"],
+        currency, rel_src, now,
+    )
+    analysis_tuples = [
+        (company_id, jp, line["transaction_id"], line["line_no"], line["record_id"],
+         line["account_code"], atype, aid, amount, currency, rel_src, now)
+        for (atype, aid) in line.get("analysis", [])
+    ]
+    return journal_tuple, analysis_tuples, jp, False
+
 
 def discover_files(source_dir: Path) -> list[Path]:
     """Hitta SAF-T XML-filer direkt i source_dir (inte i Referens/)."""
