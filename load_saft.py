@@ -44,7 +44,6 @@ DEFAULT_CURRENCY = {"NO": "NOK", "DK": "DKK"}
 
 SOURCE_KIND = "SAFT"
 PERIOD_TYPE = "ytd"
-JOURNAL_BATCH = 5000
 
 # Underkataloger (under extracted/{period}/) som scannas för SAF-T-XML
 COUNTRY_DIRS = {"NO": "Norway", "DK": "Denmark"}
@@ -507,33 +506,32 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                         WHERE company_id = %s AND period IN ({placeholders})""",
                     [company_id, *sorted(journal_periods)],
                 )
-            # Pass 2: strömma in raderna batchvis.
-            batch: list[tuple] = []
-            for j in iter_saft_journal(path, parsed["ns"]):
-                if j.get("value_date") is None:
-                    journal_vdate_fallback += 1
-                jp = _journal_period(j, period)
-                if period_override and jp > period_override:
-                    journal_skipped += 1
-                    continue
-                debit = j["debit"] or 0.0
-                credit = j["credit"] or 0.0
-                amt = debit - credit
-                batch.append((
-                    company_id, jp,
-                    j["journal_id"], j["journal_desc"],
-                    j["transaction_id"], j["transaction_date"], j["transaction_desc"],
-                    j["line_no"], j["record_id"], j["account_code"],
-                    debit, credit, amt, j["line_desc"],
-                    currency, rel_src, now,
-                ))
-                if len(batch) >= JOURNAL_BATCH:
-                    con.executemany(_INSERT_JOURNAL_SAFT, batch)
-                    journal_rows_loaded += len(batch)
-                    batch.clear()
-            if batch:
-                con.executemany(_INSERT_JOURNAL_SAFT, batch)
-                journal_rows_loaded += len(batch)
+            # Pass 2: strömma in raderna via COPY. executemany var ~77% av
+            # laddtiden för stora filer (DK 81: 50s av 65s, 2647 rader/s pga
+            # nätverks-round-trips); COPY strömmar i ett svep (~5-10x).
+            cur = con.cursor()
+            try:
+                with cur.copy(_COPY_JOURNAL_SAFT) as cp:
+                    for j in iter_saft_journal(path, parsed["ns"]):
+                        if j.get("value_date") is None:
+                            journal_vdate_fallback += 1
+                        jp = _journal_period(j, period)
+                        if period_override and jp > period_override:
+                            journal_skipped += 1
+                            continue
+                        debit = j["debit"] or 0.0
+                        credit = j["credit"] or 0.0
+                        cp.write_row((
+                            company_id, jp,
+                            j["journal_id"], j["journal_desc"],
+                            j["transaction_id"], j["transaction_date"], j["transaction_desc"],
+                            j["line_no"], j["record_id"], j["account_code"],
+                            debit, credit, debit - credit, j["line_desc"],
+                            currency, rel_src, now,
+                        ))
+                        journal_rows_loaded += 1
+            finally:
+                cur.close()
             if journal_periods:
                 db.sync_dim_period(con, sorted(journal_periods))
 
@@ -566,14 +564,14 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     return "ok"
 
 
-_INSERT_JOURNAL_SAFT = """
-INSERT INTO fact_journal_saft
+_COPY_JOURNAL_SAFT = """
+COPY fact_journal_saft
 (company_id, period, journal_id, journal_description,
  transaction_id, transaction_date, transaction_description,
  line_no, record_id, account_code,
  debit_amount, credit_amount, amount, line_description,
  currency, source_file, loaded_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+FROM STDIN
 """
 
 
