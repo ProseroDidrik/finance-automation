@@ -36,6 +36,9 @@ man läser dem utan att räkna fel.
 | `fact_balances` | **huvudfakta**: saldon per (bolag, period, konto, källa, scenario) |
 | `fact_journal_sie` | transaktionsrader (Sverige) — opt-in via load_sie.py. ⚠️ MCP: använd `reporting.journal_sie` |
 | `fact_journal_saft` | transaktionsrader (Norge) — opt-in via load_saft.py. ⚠️ MCP: använd `reporting.journal_saft` |
+| `fact_saft_analysis` | SAF-T-dimensioner per (linje × axel), månadsrörelse. ⚠️ se Mental model 5 (SUM aldrig över `analysis_type`) |
+| `dim_analysis_type` | dimensionsaxel `(company_id, source_format, analysis_type)` → `description` |
+| `dim_analysis_member` | dimensionsmedlem `(…, analysis_id)` → `description` |
 | `fact_personnel` | snapshot per anställd. ⚠️ MCP: använd `reporting.personnel` |
 | `dim_supplier_register` | `(country, levprefix)` → `supplier_name`, `kategori`, `segment` |
 | `fact_supplier_spend` | spend per (bolag, leverantör, år, period_kind) — endast helår/H1 |
@@ -174,6 +177,43 @@ samma query med `scenario='B'` och source-override `'MAN'`.
 
 **Default i alla utfallsfrågor:** `WHERE scenario = 'A'`. Glömmer du det dubbleras
 utfall + budget.
+
+---
+
+## Mental model 5 — `fact_saft_analysis` är en per-(linje,axel)-explosion
+
+`fact_saft_analysis` lagrar SAF-T-dimensioner (kostnadsställe/avdelning/projekt):
+**en rad per journallinje × Analysis-block**, med linjens belopp upprepat per axel.
+Tre regler som ger tyst fel om de glöms:
+
+- **SUM:a ALDRIG över `analysis_type`.** En dansk linje kan ha upp till 9 axlar
+  (`VoTp` + `OrgUnit1..12`) och hela beloppet upprepas per axel → summering över
+  typer multiplicerar beloppet. Filtrera alltid på EN axel: `WHERE analysis_type = 'DEP'`.
+  (Verifierat: samma `analysis_type` förekommer aldrig två gånger på samma linje
+  → en-typ-filter dubbelräknar inte inom axeln.)
+- **Odimensionerad rest:** täckningen är < 100% (~98% i NO; vissa linjer otaggade).
+  `SUM(amount) WHERE analysis_type = X` ≤ journaltotal — resten är otaggad. Det
+  finns **inga placeholder-rader** för otaggat.
+- **`amount` är MÅNADSRÖRELSE (linjenivå), aldrig YTD.** Perioden sätts från
+  ValueDate per linje (samma som `fact_journal_saft`). SUM:a aldrig
+  `fact_saft_analysis.amount` mot `fact_balances` YTD (SE/NO) — det ger nonsens.
+  Använd period-range för YTD/FY/LTM (`WHERE period BETWEEN '202601' AND '202604'`).
+
+Namnen finns i `dim_analysis_type` (axel → `description`, t.ex. `DEP`→"Avdeling")
+och `dim_analysis_member` (axel+id → `description`, t.ex. `DEP`/`3`→"Montørstab").
+Inga PII → `mcp_readonly` läser dem direkt (ingen reporting-vy behövs).
+
+Mönster — avdelningsfördelad kostnad YTD för bolag 9:
+```sql
+SELECT m.description AS avdelning, SUM(a.amount) AS belopp
+FROM fact_saft_analysis a
+LEFT JOIN dim_analysis_member m
+  ON m.company_id = a.company_id AND m.source_format = 'SAFT'
+ AND m.analysis_type = a.analysis_type AND m.analysis_id = a.analysis_id
+WHERE a.company_id = 9 AND a.analysis_type = 'DEP'
+  AND a.period BETWEEN '202601' AND '202604'
+GROUP BY m.description ORDER BY belopp;
+```
 
 ---
 
