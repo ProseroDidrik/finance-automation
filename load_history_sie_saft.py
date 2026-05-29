@@ -148,10 +148,6 @@ def load_year(con: db.Conn, year: int, year_dir: Path,
 
     for orgnr, (path, fmt) in sorted(files.items(), key=lambda x: x[1][0].name):
         if fmt == "sie":
-            if analysis_only:
-                log("SKIP", path.name, "analysis-only: SIE har inga SAF-T-dimensioner")
-                counts["skip"] += 1
-                continue
             # Kolla om orgnr finns i SIE-lookup (svenska bolag)
             if orgnr not in orgnr_lookup_sie:
                 log("SKIP", path.name,
@@ -165,11 +161,17 @@ def load_year(con: db.Conn, year: int, year_dir: Path,
             has_psaldo = bool(parsed.get("psaldo"))
             period_override = None if has_psaldo else period_fallback
 
-            status = load_sie.load_file(
-                con, path, base_path, period_override, orgnr_lookup_sie,
-                dry_run=dry_run, include_journal=include_journal,
-                override=override,
-            )
+            if analysis_only:
+                # Backfilla bara fact_sie_analysis — journal/balans orörda.
+                status = load_sie.backfill_file_analysis(
+                    con, path, base_path, period_override, orgnr_lookup_sie,
+                    dry_run=dry_run)
+            else:
+                status = load_sie.load_file(
+                    con, path, base_path, period_override, orgnr_lookup_sie,
+                    dry_run=dry_run, include_journal=include_journal,
+                    override=override,
+                )
         else:
             # SAF-T
             if orgnr not in orgnr_lookup_saft:
@@ -206,8 +208,9 @@ def main() -> None:
     parser.add_argument("--include-journal", action="store_true",
                         help="Ladda även verifikat till fact_journal_sie/saft (tungt)")
     parser.add_argument("--analysis-only", action="store_true",
-                        help="Backfilla BARA fact_saft_analysis för SAF-T-filer "
-                             "(rör inte journal/balans). SIE-filer hoppas över.")
+                        help="Backfilla BARA dimensionsanalys (fact_saft_analysis "
+                             "för SAF-T, fact_sie_analysis för SIE) utan att röra "
+                             "journal/balans.")
     parser.add_argument("--format", choices=("sie", "saft", "both"), default="both",
                         help="Vilka filformat som ska laddas (default: both). "
                              "--format sie laddar bara SIE och hoppar över SAF-T.")
