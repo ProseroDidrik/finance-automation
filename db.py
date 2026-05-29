@@ -680,6 +680,36 @@ def sync_dim_period(con: Conn, periods: list[str]) -> int:
     return len(rows)
 
 
+def upsert_dim_analysis(con: Conn, type_rows: list[tuple],
+                        member_rows: list[tuple]) -> None:
+    """Upserta dimensionsaxlar + medlemmar till dim_analysis_type/_member.
+
+    Källagnostisk, delad mellan SIE- och SAF-T-loaders (tidigare dupliderad SQL
+    på fyra ställen). Körs INOM anroparens transaktion — ingen egen BEGIN/COMMIT.
+    type_rows/member_rows kommer från {sie_dim,dim}_analysis_rows och måste ha
+    kolumnordningen nedan. Best-effort namnslagning: ON CONFLICT uppdaterar
+    description + loaded_at. Tomma listor = no-op (rör inte con)."""
+    if type_rows:
+        con.executemany(
+            """INSERT INTO dim_analysis_type
+               (company_id, source_format, analysis_type, description, loaded_at)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (company_id, source_format, analysis_type)
+               DO UPDATE SET description = EXCLUDED.description,
+                             loaded_at = EXCLUDED.loaded_at""",
+            type_rows)
+    if member_rows:
+        con.executemany(
+            """INSERT INTO dim_analysis_member
+               (company_id, source_format, analysis_type, analysis_id,
+                description, loaded_at)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
+               DO UPDATE SET description = EXCLUDED.description,
+                             loaded_at = EXCLUDED.loaded_at""",
+            member_rows)
+
+
 def relpath_from_base(path: Path, base: Path) -> str:
     """Return path relativ till base, eller absolut sträng om utanför base."""
     try:

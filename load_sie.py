@@ -66,7 +66,9 @@ FROM STDIN
 
 def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
                              rel_src: str, now: datetime,
-                             period_cutoff: str | None = None
+                             period_cutoff: str | None = None,
+                             fy_start: str | None = None,
+                             fy_end: str | None = None
                              ) -> tuple[list[tuple], list[tuple], set[str], int]:
     """Plana ut vouchers → rader för fact_journal_sie OCH fact_sie_analysis.
 
@@ -74,9 +76,13 @@ def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
     voucher-period (period = v["date"][:6]) → analysens periodisering kan
     aldrig divergera från journalens (skydd mot b711832-liknande bugg).
 
-    period_cutoff: om satt, skippa vouchers vars period (YYYYMM) > cutoff —
-    journal OCH analys droppas tillsammans.
-    Returnerar (journal_rows, analysis_rows, periods, skipped_periods_count).
+    period_cutoff: om satt, skippa vouchers vars period (YYYYMM) > cutoff.
+    fy_start/fy_end: om satta, FY-range-floor — skippa vouchers vars period ligger
+    UTANFÖR [fy_start, fy_end]. Skyddar mot att en fils strö-verifikat utanför
+    räkenskapsåret klobbrar grannårets journal/analys via per-period-DELETE. Sätts
+    bara av anroparen när #RAR är auktoritativt (se fy_is_authoritative).
+    Journal OCH analys droppas alltid tillsammans. Returnerar
+    (journal_rows, analysis_rows, periods, skipped_count).
     """
     konto = parsed["konto"]
     rows: list[tuple] = []
@@ -87,6 +93,9 @@ def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
         d = v["date"]  # 'YYYYMMDD'
         period = d[:6]
         if period_cutoff and period > period_cutoff:
+            skipped += 1
+            continue
+        if (fy_start and period < fy_start) or (fy_end and period > fy_end):
             skipped += 1
             continue
         periods.add(period)
@@ -476,29 +485,10 @@ def backfill_file_analysis(con, path: Path, base_path: Path,
             f"dim_type={len(type_rows)} dim_member={len(member_rows)} (journal orörd)")
         return "ok"
 
-    # Dim-upsert (egen liten transaktion). SQL dupliceras medvetet från load_file
-    # för att hålla load_file orört (noll regressionsrisk på månadsladdaren).
+    # Dim-upsert (egen liten transaktion). Delad helper db.upsert_dim_analysis.
     con.execute("BEGIN")
     try:
-        if type_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_type
-                   (company_id, source_format, analysis_type, description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                type_rows)
-        if member_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_member
-                   (company_id, source_format, analysis_type, analysis_id,
-                    description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                member_rows)
+        db.upsert_dim_analysis(con, type_rows, member_rows)
         con.execute("COMMIT")
     except Exception as e:
         con.execute("ROLLBACK")
@@ -712,6 +702,23 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     rel_src = db.relpath_from_base(path, base_path)
     now = datetime.now()
 
+    # FY-range-floor (clobber-skydd): en fils strö-verifikat utanför räkenskapsåret
+    # skulle annars klobbra grannårets journal/analys via per-period-DELETE. Endast
+    # när #RAR är auktoritativt — annars (brutet/saknat RAR) ingen floor + WARN, så
+    # att vi aldrig tappar in-FY-rader (bug_007-skydd, jfr SAF-T period_floor).
+    fy_floor_start = fy_end_floor = None
+    if include_journal and parsed["vouchers"]:
+        if fy_is_authoritative(parsed):
+            fy_floor_start, fy_end_floor = fy_start, fy_end
+        else:
+            out = sorted({v["date"][:6] for v in parsed["vouchers"]
+                          if not (fy_start <= v["date"][:6] <= fy_end)})
+            if out:
+                log("WARN", company_id,
+                    f"{path.name}: {len(out)} verifikat-period(er) utanför härlett "
+                    f"FY {fy_start}-{fy_end} men #RAR saknas → ingen FY-floor "
+                    f"(ev. brutet RAR): {out}")
+
     journal_rows: list[tuple] = []
     analysis_rows: list[tuple] = []
     journal_periods: set[str] = set()
@@ -721,6 +728,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             vouchers_to_journal_rows(
                 parsed, company_id, currency, rel_src, now,
                 period_cutoff=period_override,
+                fy_start=fy_floor_start, fy_end=fy_end_floor,
             )
 
     if dry_run:
@@ -808,25 +816,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # i filhuvudet även när journal hoppas över.
         sie_type_rows, sie_member_rows = sie_dim_analysis_rows(
             parsed.get("dims", []), parsed.get("objekt", []), company_id, now)
-        if sie_type_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_type
-                   (company_id, source_format, analysis_type, description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                sie_type_rows)
-        if sie_member_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_member
-                   (company_id, source_format, analysis_type, analysis_id,
-                    description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                sie_member_rows)
+        db.upsert_dim_analysis(con, sie_type_rows, sie_member_rows)
 
         # Journal: senaste laddningen vinner per (bolag, period). En SIE-fil
         # täcker hela YTD så vouchers för 202601 från en mars-fil ersätter

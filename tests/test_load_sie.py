@@ -247,6 +247,35 @@ class VoucherAnalysisRows(unittest.TestCase):
         self.assertEqual(analysis_rows, [])
 
 
+class VoucherFyFloor(unittest.TestCase):
+    NOW = datetime(2026, 5, 29)
+
+    def _parsed(self):
+        mk = lambda: [{"line_no": 1, "account": "7830", "amount": 5.0,
+                       "trans_text": "", "quantity": None, "analysis": [("1", "100")]}]
+        return {"konto": {"7830": "x"}, "vouchers": [
+            {"series": "A", "number": "1", "date": "20251231",  # FÖRE FY 2026
+             "text": "strö", "transes": mk()},
+            {"series": "B", "number": "2", "date": "20260215",  # inom FY
+             "text": "in-FY", "transes": mk()},
+        ]}
+
+    def test_fy_floor_drops_out_of_fy_voucher(self):
+        rows, ar, periods, skipped = load_sie.vouchers_to_journal_rows(
+            self._parsed(), 32, "SEK", "x.se", self.NOW,
+            fy_start="202601", fy_end="202612")
+        self.assertEqual(periods, {"202602"})   # 202512-strö droppad
+        self.assertEqual(skipped, 1)
+        self.assertTrue(all(r[1] == "202602" for r in rows))       # journal
+        self.assertTrue(all(a[1] == "202602" for a in ar))         # analys (parity)
+
+    def test_no_fy_args_keeps_all(self):
+        rows, ar, periods, skipped = load_sie.vouchers_to_journal_rows(
+            self._parsed(), 32, "SEK", "x.se", self.NOW)
+        self.assertEqual(periods, {"202512", "202602"})
+        self.assertEqual(skipped, 0)
+
+
 class GroupSieAnalysisByPeriod(unittest.TestCase):
     NOW = datetime(2026, 5, 29)
 
@@ -267,6 +296,13 @@ class GroupSieAnalysisByPeriod(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(load_sie.group_sie_analysis_by_period([]), {})
+
+
+class UpsertDimAnalysisNoop(unittest.TestCase):
+    def test_empty_lists_do_not_touch_connection(self):
+        import db
+        # Tomma listor → no-op; con (None här) får aldrig användas.
+        db.upsert_dim_analysis(None, [], [])  # ska inte kasta
 
 
 class FyFloor(unittest.TestCase):

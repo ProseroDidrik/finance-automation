@@ -254,25 +254,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # Best-effort (ON CONFLICT) — namnen kan saknas (NO 1.20/DK 1.0 → tom lista).
         type_rows, member_rows = dim_analysis_rows(
             parsed.get("analysis_types", []), company_id, now)
-        if type_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_type
-                   (company_id, source_format, analysis_type, description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                type_rows)
-        if member_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_member
-                   (company_id, source_format, analysis_type, analysis_id,
-                    description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                member_rows)
+        db.upsert_dim_analysis(con, type_rows, member_rows)
 
         # Journal: strömmande iterparse + batchad insert (5000 rader/batch).
         # Idempotens: rensa per (company_id, period) — INTE per source_file.
@@ -572,29 +554,10 @@ def backfill_file_analysis(con, path, base_path, period_override, orgnr_lookup,
             f"dim_type={len(type_rows)} dim_member={len(member_rows)} (journal orörd)")
         return "ok"
 
-    # Dim-upsert (egen liten transaktion). SQL dupliceras medvetet från load_file
-    # för att hålla load_file orört (noll regressionsrisk på månadsladdaren).
+    # Dim-upsert (egen liten transaktion). Delad helper db.upsert_dim_analysis.
     con.execute("BEGIN")
     try:
-        if type_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_type
-                   (company_id, source_format, analysis_type, description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                type_rows)
-        if member_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_member
-                   (company_id, source_format, analysis_type, analysis_id,
-                    description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                member_rows)
+        db.upsert_dim_analysis(con, type_rows, member_rows)
         con.execute("COMMIT")
     except Exception as e:
         con.execute("ROLLBACK")

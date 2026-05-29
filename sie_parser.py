@@ -22,7 +22,10 @@ RE_FNAMN  = re.compile(r'^#FNAMN\s+"([^"]*)"', re.IGNORECASE)
 RE_PROGRAM = re.compile(r'^#PROGRAM\s+"([^"]*)"', re.IGNORECASE)
 RE_KONTO  = re.compile(r'^#KONTO\s+(\S+)\s+"([^"]*)"', re.IGNORECASE)
 RE_DIM    = re.compile(r'^#DIM\s+(\S+)\s+"([^"]*)"', re.IGNORECASE)
-RE_OBJEKT = re.compile(r'^#OBJEKT\s+(\S+)\s+"?([^"\s]+)"?\s+"([^"]*)"', re.IGNORECASE)
+# objektnr kan vara citerat ("100" / "100 A" med mellanslag) eller ociterat (100).
+RE_OBJEKT = re.compile(
+    r'^#OBJEKT\s+(?P<dim>\S+)\s+(?:"(?P<obj_q>[^"]*)"|(?P<obj_u>\S+))\s+"(?P<namn>[^"]*)"',
+    re.IGNORECASE)
 # Token i en objektlista: citerat ("100") eller ociterat (100).
 RE_OBJ_TOKEN = re.compile(r'"([^"]*)"|(\S+)')
 RE_UB     = re.compile(r"^#UB\s+0\s+(\S+)\s+(-?\d+(?:[.,]\d+)?)", re.IGNORECASE)
@@ -173,7 +176,8 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
         elif m := RE_DIM.match(line):
             out["dims"].append((m.group(1), m.group(2)))
         elif m := RE_OBJEKT.match(line):
-            out["objekt"].append((m.group(1), m.group(2), m.group(3)))
+            obj = m.group("obj_q") if m.group("obj_q") is not None else m.group("obj_u")
+            out["objekt"].append((m.group("dim"), obj, m.group("namn")))
         elif m := RE_UB.match(line):
             try:
                 out["ub"].append((m.group(1), float(m.group(2).replace(",", "."))))
