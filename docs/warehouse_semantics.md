@@ -15,6 +15,20 @@ man läser dem utan att räkna fel.
 4. Vid valuta-jämförelse: konvertera via `dim_exchange_rate` med `rate_type='avg'`.
 5. Vid tveksamhet: visa SQL för användaren innan stora aggregeringar körs.
 
+## Datatäckning & aktualitet (läs innan du litar på ett tomt svar)
+
+- **Aktuell live-månad** = senaste `period` med utfall i `fact_balances`
+  (källor `SIE*`/`SAFT`/`IMP`, `scenario='A'`). Frågor om senare månader ger
+  inget utfall — bara budget (`MAN`, `scenario='B'`) kan sträcka sig längre fram.
+- **Alla bolag laddas inte varje månad** — täckningen är hög men inte 100 % för
+  innevarande månad (några bolag per land släpar). Ett **tomt svar (0 rader)
+  betyder antingen "inte laddat än" ELLER "ingen bokföring" — inte automatiskt
+  noll.** Verifiera med coverage-queryn ("Vilka bolag har data för en period?"
+  längre ner) innan du drar slutsatsen att ett bolag/en period saknar utfall.
+- **Innevarande månad kan vara preliminär** för SE-bolag utan `#PSALDO` — siffran
+  är YTD per SIE-genereringsdatum, inte exakt månadsskifte (se `#PSALDO`-frånvaron
+  under Facit).
+
 ## Postgres-syntax (cloud sedan 2026-05-11)
 
 - `STRING_AGG`, inte `LIST_AGG`
