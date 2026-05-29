@@ -264,14 +264,18 @@ def _journal_period(j: dict, fallback: str) -> str:
     return f"{d.year:04d}{d.month:02d}" if d else fallback
 
 
-def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
-    """Räkenskapsårets (start_period, end_period) som 'YYYYMM'.
+def _fy_range(parsed: dict, period: str) -> tuple[str, str, bool]:
+    """Intern: (start_period, end_period, authoritative).
+
+    authoritative=False när kalenderårs-FALLBACKEN används (filen saknar både
+    PeriodStart*/PeriodEnd* och SelectionStart/EndDate). Då är start/end en
+    GISSNING ur period:ts kalenderår — fel för förskjutna räkenskapsår.
 
     Försök i tur och ordning:
       1. SelectionCriteria.PeriodStartYear+PeriodStart / PeriodEndYear+PeriodEnd
-         (NO + DK E-Komplet)
-      2. SelectionCriteria.SelectionStartDate / SelectionEndDate (DK Visma)
-      3. Kalenderår från period:t självt (fallback)
+         (NO + DK E-Komplet) — authoritative
+      2. SelectionCriteria.SelectionStartDate / SelectionEndDate (DK Visma) — authoritative
+      3. Kalenderår från period:t självt (fallback) — INTE authoritative
     """
     sy = parsed.get("period_start_year")
     sm = parsed.get("period_start_month")
@@ -279,19 +283,36 @@ def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
     em = parsed.get("period_end_month")
     try:
         if sy and sm and ey and em:
-            start = f"{int(sy):04d}{int(sm):02d}"
-            end = f"{int(ey):04d}{int(em):02d}"
-            return start, end
+            return f"{int(sy):04d}{int(sm):02d}", f"{int(ey):04d}{int(em):02d}", True
     except ValueError:
         pass
 
     start = _yyyymm_from_iso(parsed.get("selection_start_date"))
     end = _yyyymm_from_iso(parsed.get("selection_end_date"))
     if start and end:
-        return start, end
+        return start, end, True
 
     year = period[:4]
-    return f"{year}01", f"{year}12"
+    return f"{year}01", f"{year}12", False
+
+
+def derive_fy_range(parsed: dict, period: str) -> tuple[str, str]:
+    """Räkenskapsårets (start_period, end_period) som 'YYYYMM'. Se _fy_range.
+
+    OBS: fallback är kalenderår ur period:t och kan vara FEL för förskjutet
+    räkenskapsår — anropa fy_start_is_authoritative innan du litar på gränserna
+    som filter (annars droppas legitima in-FY-rader, bug_007)."""
+    start, end, _auth = _fy_range(parsed, period)
+    return start, end
+
+
+def fy_start_is_authoritative(parsed: dict, period: str) -> bool:
+    """True om derive_fy_range fick FY-gränserna ur filens metadata
+    (PeriodStart*/PeriodEnd* eller SelectionStart/EndDate), False om den föll
+    tillbaka på kalenderårs-GISSNINGEN. FY-floor/ceil-droppen i load_file får
+    bara appliceras när detta är True — annars droppas legitima in-FY-rader för
+    förskjutna räkenskapsår som saknar metadata (bug_007)."""
+    return _fy_range(parsed, period)[2]
 
 
 def derive_period(parsed: dict, override: str | None) -> str | None:

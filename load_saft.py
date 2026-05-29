@@ -45,6 +45,7 @@ from saft_parser import (  # noqa: F401
     _detect_namespace,
     _journal_period,
     derive_fy_range,
+    fy_start_is_authoritative,
     derive_period,
     iter_saft_journal,
     normalize_orgnr,
@@ -283,25 +284,37 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # Cutoff: om --period är satt skippas journal-rader med
         # jp > period_override (FY-filer kan innehålla framtida tomma månader).
         journal_rows_loaded = 0
-        journal_skipped = 0
+        journal_below_fy = 0    # droppade: jp < jp_floor (före FY-start)
+        journal_after_cut = 0   # droppade: jp > jp_ceil (efter cutoff/FY-slut)
         journal_vdate_fallback = 0
-        journal_out_of_fy = 0
         analysis_rows_loaded = 0
         journal_periods: set[str] = set()
         # FY-skopning (clobber-fix): en fils journal får bara röra perioder inom
         # dess egna räkenskapsår [fy_start, fy_end]. Strö-ValueDate-rader (helårs-
         # filer re-exporterar äldre FY) droppas så de inte raderar ägande FY:s
         # period. Övre gräns = min(fy_end, --period) (behåller clean-cut).
+        # bug_007: floor/ceil får BARA appliceras när FY-gränserna kommer ur filens
+        # metadata. Saknas de (kalenderårs-gissning) skulle ett förskjutet FY tappa
+        # legitima in-FY-rader → då av med FY-gränserna (clean-cut --period kvar).
         # Pass 1 och 2 MÅSTE filtrera identiskt → journal_periods (DELETE-setet)
         # matchar det som faktiskt infogas.
-        jp_floor = fy_start
-        jp_ceil = min(fy_end, period_override) if period_override else fy_end
+        fy_auth = fy_start_is_authoritative(parsed, period)
+        if fy_auth:
+            jp_floor = fy_start
+            jp_ceil = min(fy_end, period_override) if period_override else fy_end
+        else:
+            jp_floor = None
+            jp_ceil = period_override   # kan vara None → ingen övre gräns
+            if include_journal:
+                log("WARN", company_id,
+                    f"{path.name}: FY-metadata saknas (kalenderårs-gissning) — "
+                    f"FY-clobber-skydd AV för denna fil")
         if include_journal:
             # Pass 1: vilka perioder täcker filens journal? (ValueDate-härlett)
             for j in iter_saft_journal(path, parsed["ns"]):
                 jp = _journal_period(j, period)
-                if jp < jp_floor or jp > jp_ceil:
-                    journal_out_of_fy += 1
+                if ((jp_floor is not None and jp < jp_floor)
+                        or (jp_ceil is not None and jp > jp_ceil)):
                     continue
                 journal_periods.add(jp)
             if journal_periods:
@@ -333,7 +346,11 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                             j, company_id, currency, rel_src, now, period,
                             period_cutoff=jp_ceil, period_floor=jp_floor)
                         if skipped:
-                            journal_skipped += 1
+                            # Räkna EN gång per dropp, kategoriserat (bug_001).
+                            if jp_floor is not None and jp < jp_floor:
+                                journal_below_fy += 1
+                            else:
+                                journal_after_cut += 1
                             continue
                         cp.write_row(jt)
                         analysis_buf.extend(ats)
@@ -373,17 +390,20 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
 
     journal_msg = (f" JOURNAL={journal_rows_loaded}({len(journal_periods)} mån)"
                    f" ANALYS={analysis_rows_loaded}" if include_journal else "")
-    cutoff_msg = (f"  CUTOFF<= {period_override}: skippade journal={journal_skipped}"
-                  if include_journal and period_override and journal_skipped else "")
-    fy_msg = (f"  OUT_OF_FY: droppade journal={journal_out_of_fy} "
-              f"(utanför {fy_start}-{fy_end})"
-              if include_journal and journal_out_of_fy else "")
-    cutoff_msg += fy_msg
+    # Varje droppad linje räknas EN gång, märkt med vilken gräns som tog den
+    # (bug_001: inga dubbelräknade/felmärkta siffror under prod-reload).
+    drop_parts = []
+    if include_journal and journal_after_cut:
+        ceil_lbl = jp_ceil if jp_ceil is not None else "FY-slut"
+        drop_parts.append(f"efter {ceil_lbl}={journal_after_cut}")
+    if include_journal and journal_below_fy:
+        drop_parts.append(f"före {jp_floor}={journal_below_fy}")
+    drop_msg = ("  DROPPADE journal[" + ", ".join(drop_parts) + "]") if drop_parts else ""
     if include_journal and journal_vdate_fallback:
         log("WARN", company_id,
             f"{path.name}  {journal_vdate_fallback} journal-linjer saknar ValueDate "
             f"— periodiserade på TransactionDate")
-    log("OK", company_id, f"{path.name}  rader={len(rows)}{journal_msg} sum={total:.2f}{cutoff_msg}")
+    log("OK", company_id, f"{path.name}  rader={len(rows)}{journal_msg} sum={total:.2f}{drop_msg}")
     return "ok"
 
 
@@ -526,14 +546,22 @@ def backfill_file_analysis(con, path, base_path, period_override, orgnr_lookup,
 
     # FY-skopning (clobber-fix, samma som load_file): droppa strö-ValueDate-rader
     # utanför filens räkenskapsår så de inte clobbrar ägande FY:s analysperiod.
+    # bug_007: bara när FY-gränserna är authoritative (annars av → ingen data-loss).
     fy_start, fy_end = derive_fy_range(parsed, period)
-    jp_ceil = min(fy_end, period_override) if period_override else fy_end
+    if fy_start_is_authoritative(parsed, period):
+        jp_floor = fy_start
+        jp_ceil = min(fy_end, period_override) if period_override else fy_end
+    else:
+        jp_floor = None
+        jp_ceil = period_override
+        log("WARN", company_id,
+            f"{path.name}: FY-metadata saknas — clobber-skydd AV för denna fil")
 
     # En journal-iter → analys grupperad per period (ValueDate-bunden).
     by_period = group_analysis_by_period(
         iter_saft_journal(path, parsed["ns"]),
         company_id, currency, rel_src, now,
-        fallback_period=period, period_cutoff=jp_ceil, period_floor=fy_start)
+        fallback_period=period, period_cutoff=jp_ceil, period_floor=jp_floor)
     type_rows, member_rows = dim_analysis_rows(
         parsed.get("analysis_types", []), company_id, now)
     total = sum(len(v) for v in by_period.values())
