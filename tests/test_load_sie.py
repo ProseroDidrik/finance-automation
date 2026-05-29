@@ -186,5 +186,23 @@ class PsaldoDimCoverage(unittest.TestCase):
         self.assertEqual(cov["total_row_count"], 1)
 
 
+class SieDimAnalysisRows(unittest.TestCase):
+    NOW = datetime(2026, 5, 29)
+
+    def test_types_and_members_from_two_lists(self):
+        dims = [("1", "Avdelning"), ("6", "Projekt")]
+        objekt = [("1", "100", "Adm"), ("1", "200", "Salg"), ("6", "9000300", "PX")]
+        type_rows, member_rows = load_sie.sie_dim_analysis_rows(
+            dims, objekt, company_id=32, now=self.NOW)
+        self.assertEqual({r[2] for r in type_rows}, {"1", "6"})
+        self.assertEqual(len(type_rows), 2)
+        self.assertIn((32, "SIE", "1", "Avdelning", self.NOW), type_rows)
+        self.assertEqual(len(member_rows), 3)
+        self.assertIn((32, "SIE", "1", "100", "Adm", self.NOW), member_rows)
+
+    def test_empty_lists(self):
+        self.assertEqual(load_sie.sie_dim_analysis_rows([], [], 1, self.NOW), ([], []))
+
+
 if __name__ == "__main__":
     unittest.main()

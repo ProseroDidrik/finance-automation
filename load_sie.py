@@ -323,6 +323,28 @@ def psaldo_fact_rows(psaldo_rows: list[tuple], company_id: int, currency: str,
     ]
 
 
+def sie_dim_analysis_rows(dims, objekt, company_id, now, source_format="SIE"):
+    """SIE:s #DIM-axlar + #OBJEKT-medlemmar → (type_rows, member_rows), dedup.
+
+    dims:   lista av (dim_nr, namn).
+    objekt: lista av (dim_nr, objekt_nr, namn).
+    type_rows:   (company_id, source_format, analysis_type, description, loaded_at)
+    member_rows: (company_id, source_format, analysis_type, analysis_id, description, loaded_at)
+    """
+    types: dict = {}
+    members: dict = {}
+    for dim_nr, namn in dims:
+        if dim_nr is None:
+            continue
+        types[dim_nr] = (company_id, source_format, dim_nr, namn, now)
+    for dim_nr, objekt_nr, namn in objekt:
+        if dim_nr is None or objekt_nr is None:
+            continue
+        members[(dim_nr, objekt_nr)] = (
+            company_id, source_format, dim_nr, objekt_nr, namn, now)
+    return list(types.values()), list(members.values())
+
+
 def load_file(con, path: Path, base_path: Path, period_override: str | None,
               orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False,
               override: list[int] | None = None, force: bool = False) -> str:
