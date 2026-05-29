@@ -67,9 +67,11 @@ class Cp437Encoding(unittest.TestCase):
 
 
 class TransDimensions(unittest.TestCase):
-    """#DIM/#OBJEKT persisteras inte — men objektlistan {…} i #TRANS får ALDRIG
-    läcka in i beloppet. Låser beteendet som oraklet bevisat (0 obalanser över
-    dim-tunga Hantverksdata-filer)."""
+    """Låser att objektlistan {…} i #TRANS aldrig läcker in i beloppet.
+
+    #DIM/#OBJEKT persisteras nu (se DimDeclarations). Det dessa tester vaktar
+    är ett snävare invariant: att braces-innehållet aldrig förväxlas med
+    beloppet, verifierat mot dim-tunga Hantverksdata-filer (0 obalanser)."""
 
     def _transes(self, ver_text):
         return sie_parser.parse_sie(ver_text, with_journal=True)["vouchers"][0]["transes"]
