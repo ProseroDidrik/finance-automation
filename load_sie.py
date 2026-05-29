@@ -382,6 +382,30 @@ def group_sie_analysis_by_period(analysis_rows: list[tuple]) -> dict[str, list[t
     return by_period
 
 
+def fy_is_authoritative(parsed: dict) -> bool:
+    """True om #RAR 0 ger explicit räkenskapsår (start+slut, 8-siffriga datum).
+
+    Utan #RAR gissar derive_fy_range kalenderår ur period:t — då får FY-floor
+    INTE droppa rader (skulle kunna tappa in-FY-rader vid brutet räkenskapsår).
+    Speglar SAF-T:s fy_start_is_authoritative (bug_007-skydd, PR #31).
+    """
+    rs, re_ = parsed.get("rar_start"), parsed.get("rar_end")
+    return bool(rs and re_ and len(str(rs)) == 8 and len(str(re_)) == 8)
+
+
+def filter_periods_to_fy(by_period: dict, fy_start: str, fy_end: str
+                         ) -> tuple[dict, list[str]]:
+    """Behåll bara perioder inom [fy_start, fy_end] — FY-floor mot korsårs-strö.
+
+    En SIE-fils strö-verifikat daterade utanför dess räkenskapsår skulle annars
+    radera+ersätta grannårets analys via per-period-DELETE (samma clobber-klass
+    som SAF-T PR #31 åtgärdade). Returnerar (kept_dict, dropped_periods_sorted).
+    """
+    kept = {p: rows for p, rows in by_period.items() if fy_start <= p <= fy_end}
+    dropped = sorted(set(by_period) - set(kept))
+    return kept, dropped
+
+
 def backfill_file_analysis(con, path: Path, base_path: Path,
                            period_override: str | None, orgnr_lookup: dict,
                            *, dry_run: bool = False) -> str:
@@ -426,6 +450,22 @@ def backfill_file_analysis(con, path: Path, base_path: Path,
     _journal_rows, analysis_rows, _periods, _skipped = vouchers_to_journal_rows(
         parsed, company_id, currency, rel_src, now, period_cutoff=period_override)
     by_period = group_sie_analysis_by_period(analysis_rows)
+    # FY-range-floor (clobber-skydd): en fils strö-verifikat utanför dess RAR
+    # skulle annars radera+ersätta grannårets analys via per-period-DELETE.
+    # Endast när #RAR är auktoritativt — annars bara WARN (brutet RAR-skydd).
+    fy_start, fy_end = derive_fy_range(parsed, period)
+    if fy_is_authoritative(parsed):
+        by_period, fy_dropped = filter_periods_to_fy(by_period, fy_start, fy_end)
+        if fy_dropped:
+            log("INFO", company_id,
+                f"{path.name}: FY-floor släppte {len(fy_dropped)} period(er) "
+                f"utanför FY {fy_start}-{fy_end}: {fy_dropped}")
+    else:
+        out = sorted(p for p in by_period if not (fy_start <= p <= fy_end))
+        if out:
+            log("WARN", company_id,
+                f"{path.name}: {len(out)} period(er) utanför härlett FY "
+                f"{fy_start}-{fy_end} men #RAR saknas → behåller (ev. brutet RAR): {out}")
     type_rows, member_rows = sie_dim_analysis_rows(
         parsed.get("dims", []), parsed.get("objekt", []), company_id, now)
     total = sum(len(v) for v in by_period.values())

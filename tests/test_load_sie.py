@@ -269,5 +269,30 @@ class GroupSieAnalysisByPeriod(unittest.TestCase):
         self.assertEqual(load_sie.group_sie_analysis_by_period([]), {})
 
 
+class FyFloor(unittest.TestCase):
+    def test_authoritative_requires_8digit_rar(self):
+        self.assertTrue(load_sie.fy_is_authoritative(
+            {"rar_start": "20240101", "rar_end": "20241231"}))
+        self.assertFalse(load_sie.fy_is_authoritative(
+            {"rar_start": None, "rar_end": None}))
+        self.assertFalse(load_sie.fy_is_authoritative({}))
+        # ofullständigt datum räknas inte som auktoritativt
+        self.assertFalse(load_sie.fy_is_authoritative(
+            {"rar_start": "202401", "rar_end": "202412"}))
+
+    def test_filter_drops_out_of_fy(self):
+        by = {"202312": [("x",)], "202401": [("a",)],
+              "202412": [("b",)], "202501": [("y",)]}
+        kept, dropped = load_sie.filter_periods_to_fy(by, "202401", "202412")
+        self.assertEqual(set(kept), {"202401", "202412"})
+        self.assertEqual(dropped, ["202312", "202501"])  # korsårs-strö båda håll
+
+    def test_filter_keeps_all_in_fy(self):
+        by = {"202401": [1], "202406": [2], "202412": [3]}
+        kept, dropped = load_sie.filter_periods_to_fy(by, "202401", "202412")
+        self.assertEqual(set(kept), {"202401", "202406", "202412"})
+        self.assertEqual(dropped, [])
+
+
 if __name__ == "__main__":
     unittest.main()
