@@ -52,6 +52,17 @@ PERIOD_TYPE = "ytd"
 PERIOD_TYPE_PSALDO = "monthly"
 JOURNAL_BATCH = 5000
 
+# COPY-mål för analys-backfillen. COPY är ~5x snabbare än executemany och
+# avgörande för B1ms vid bulk (jfr SAF-T DK 81: executemany→COPY 5.3x). Endast
+# backfill_file_analysis använder den; månadsladdaren (load_file) skriver små
+# volymer per körning och behåller executemany.
+_COPY_ANALYSIS_SIE = """
+COPY fact_sie_analysis
+(company_id, period, series, voucher_number, line_no, account_code,
+ analysis_type, analysis_id, amount, currency, source_file, loaded_at)
+FROM STDIN
+"""
+
 
 def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
                              rel_src: str, now: datetime,
@@ -463,14 +474,13 @@ def backfill_file_analysis(con, path: Path, base_path: Path,
             con.execute(
                 "DELETE FROM fact_sie_analysis WHERE company_id = %s AND period = %s",
                 [company_id, p])
-            for i in range(0, len(rows), JOURNAL_BATCH):
-                con.executemany(
-                    """INSERT INTO fact_sie_analysis
-                       (company_id, period, series, voucher_number, line_no,
-                        account_code, analysis_type, analysis_id, amount,
-                        currency, source_file, loaded_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    rows[i:i + JOURNAL_BATCH])
+            cur = con.cursor()
+            try:
+                with cur.copy(_COPY_ANALYSIS_SIE) as cp:
+                    for row in rows:
+                        cp.write_row(row)
+            finally:
+                cur.close()
             db.sync_dim_period(con, [p])
             con.execute("COMMIT")
             loaded += len(rows)
