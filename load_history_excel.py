@@ -27,6 +27,11 @@ Körning:
   py load_history_excel.py --file "2026 MAN IMP_Adj.xlsx"  # specifik fil
   py load_history_excel.py --scenario A     # filtrera scenario
   py load_history_excel.py --skip-backup    # hoppa över backup-txt
+
+  # Ladda en .txt till fact_balances (utfallslager) i stället för backup, och
+  # ersätt ALLA MAN/IMP_ADJ för de (scenario, år) filen täcker (auktoritativ fil):
+  py load_history_excel.py --file "2026 MAN och IMP_ADJ.txt" \
+      --scenario A --as-fact --replace-full
 """
 from __future__ import annotations
 
@@ -150,7 +155,8 @@ def load_file(con, path: Path, base_path: Path,
               *, dry_run: bool,
               filter_scenario: str | None,
               valid_companies: set[int],
-              is_backup: bool = False) -> dict[str, int]:
+              is_backup: bool = False,
+              replace_full: bool = False) -> dict[str, int]:
     """Ladda en fil. Returnerar {status: count}."""
     suffix = path.suffix.lower()
     if suffix in (".xlsx", ".xls"):
@@ -238,29 +244,57 @@ def load_file(con, path: Path, base_path: Path,
     log("INFO", path.name,
         f"{total_rows} rader  {len(lane_rows)} lanes  skippade={skipped}")
 
+    target_table = "backup_from_mercur" if is_backup else "fact_balances"
+    insert_sql = BACKUP_INSERT_SQL if is_backup else INSERT_SQL
+
+    # Full ersättning: radera ALLA rader för de (source_kind, scenario, år) som
+    # filen täcker — även bolag/perioder som inte finns i filen, så filen blir
+    # auktoritativ för dessa lager/år. Annars: per-lane DELETE (default).
+    del_kinds = sorted({k for (_, _, k, _) in lane_rows})
+    del_scen = sorted({s for (_, _, _, s) in lane_rows})
+    del_years = sorted({p[:4] for (_, p, _, _) in lane_rows})
+    full_where = ("WHERE source_kind = ANY(%s) AND scenario = ANY(%s) "
+                  "AND left(period, 4) = ANY(%s)")
+    full_params = [del_kinds, del_scen, del_years]
+
     if dry_run:
+        if replace_full:
+            existing = con.execute(
+                f"SELECT COUNT(*) FROM {target_table} {full_where}", full_params
+            ).fetchone()[0]
+            log("INFO", path.name,
+                f"[DRY] full ersättning: raderar {existing} befintliga rader "
+                f"({'+'.join(del_kinds)} scenario {'+'.join(del_scen)} "
+                f"år {'+'.join(del_years)}) i {target_table}")
         for (cid, period, sk, scen), rows in sorted(lane_rows.items())[:5]:
             log("INFO", cid, f"[DRY] period={period} source={sk} scenario={scen} rader={len(rows)}")
-        log("OK", path.name, f"[DRY] {total_rows} rader  {len(lane_rows)} lanes")
+        log("OK", path.name, f"[DRY] {total_rows} rader  {len(lane_rows)} lanes  ->{target_table}")
         return {"ok": 1}
 
     # Synka perioder
     all_periods = list({key[1] for key in lane_rows})
     db.sync_dim_period(con, all_periods)
 
-    target_table = "backup_from_mercur" if is_backup else "fact_balances"
-    insert_sql = BACKUP_INSERT_SQL if is_backup else INSERT_SQL
-
     con.execute("BEGIN")
     try:
-        for (company_id, period, source_kind, scenario), rows in lane_rows.items():
-            con.execute(
-                f"""DELETE FROM {target_table}
-                   WHERE company_id = %s AND period = %s
-                     AND source_kind = %s AND scenario = %s""",
-                [company_id, period, source_kind, scenario],
-            )
-            con.executemany(insert_sql, rows)
+        if replace_full:
+            deleted = con.execute(
+                f"SELECT COUNT(*) FROM {target_table} {full_where}", full_params
+            ).fetchone()[0]
+            con.execute(f"DELETE FROM {target_table} {full_where}", full_params)
+            log("INFO", path.name,
+                f"full ersättning: raderade {deleted} befintliga rader i {target_table}")
+            for rows in lane_rows.values():
+                con.executemany(insert_sql, rows)
+        else:
+            for (company_id, period, source_kind, scenario), rows in lane_rows.items():
+                con.execute(
+                    f"""DELETE FROM {target_table}
+                       WHERE company_id = %s AND period = %s
+                         AND source_kind = %s AND scenario = %s""",
+                    [company_id, period, source_kind, scenario],
+                )
+                con.executemany(insert_sql, rows)
         # amount är på index 5 för fact_balances-tupler, index 4 för backup-tupler
         amt_idx = 4 if is_backup else 5
         con.execute(
@@ -271,7 +305,8 @@ def load_file(con, path: Path, base_path: Path,
             [None, "HIST", "MAN/IMP", rel_src, total_rows,
              sum(r[amt_idx] for rows in lane_rows.values() for r in rows),
              False, "ok",
-             f"->{target_table} lanes={len(lane_rows)} skipped={skipped}", now],
+             f"->{target_table} lanes={len(lane_rows)} skipped={skipped} "
+             f"replace_full={replace_full}", now],
         )
         con.execute("COMMIT")
     except Exception as e:
@@ -294,11 +329,22 @@ def main() -> None:
                         help="Filtrera: ladda bara detta scenario")
     parser.add_argument("--skip-backup", action="store_true",
                         help="Hoppa över backup-txt-filerna")
+    parser.add_argument("--as-fact", action="store_true",
+                        help="Tvinga en .txt till fact_balances (utfallslager) i stället "
+                             "för backup_from_mercur. Kräver --file.")
+    parser.add_argument("--replace-full", action="store_true",
+                        help="Full ersättning: radera ALLA rader för de (källa, scenario, år) "
+                             "filen täcker före INSERT, i stället för per (bolag, period, källa).")
     args = parser.parse_args()
 
     begin_run("load_history_excel.py", "HIST")
     log("START", "load_history_excel.py",
-        f"dry_run={args.dry_run}  scenario={args.scenario or 'alla'}")
+        f"dry_run={args.dry_run}  scenario={args.scenario or 'alla'}  "
+        f"as_fact={args.as_fact}  replace_full={args.replace_full}")
+
+    if args.as_fact and not args.file:
+        log("ERROR", "load_history_excel.py", "--as-fact kräver --file")
+        return
 
     cfg = load_config()
     base_path = Path(cfg["base_path"])
@@ -323,6 +369,8 @@ def main() -> None:
     if args.file:
         fpath = hist_root / args.file
         is_backup = Path(args.file).suffix.lower() == ".txt"
+        if args.as_fact:
+            is_backup = False  # tvinga fact_balances (utfallslager) trots .txt
         files_to_load: list[tuple[Path, bool]] = [(fpath, is_backup)]
     else:
         files_to_load = [(hist_root / f, False) for f in EXCEL_FILES]
@@ -331,7 +379,20 @@ def main() -> None:
 
     con = db.connect()
     try:
-        db.init_schema(con)
+        # init_schema kräver DDL → körs egentligen av `py db.py` med admin-rollen.
+        # Under T2 (separat etl_writer-roll utan DDL) failar det med
+        # InsufficientPrivilege — inte ett verkligt fel, schemat finns redan.
+        try:
+            db.init_schema(con)
+        except Exception as e:
+            if "InsufficientPrivilege" in type(e).__name__ \
+                    or "permission denied" in str(e).lower():
+                log("INFO", "schema",
+                    "Hoppar over init_schema (ETL-rollen utan DDL — "
+                    "antar att schema redan finns)")
+                con.raw.rollback()  # rensa failed transaction
+            else:
+                raise
 
         # Hämta giltiga company_ids
         valid_companies: set[int] = {
@@ -356,6 +417,7 @@ def main() -> None:
                 filter_scenario=args.scenario,
                 valid_companies=valid_companies,
                 is_backup=is_backup,
+                replace_full=args.replace_full,
             )
             for k, v in counts.items():
                 totals[k] = totals.get(k, 0) + v
