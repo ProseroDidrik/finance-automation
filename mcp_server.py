@@ -77,15 +77,17 @@ ARBETSORDNING — varje ny konversation:
    tabeller, live radantal OCH query-semantiken. Hoppar du över det räknar du fel.
 2. Skriv sedan `query_sql` (read-only SELECT).
 
-Fyra fällor som ger tyst FELAKTIGA siffror om du inte läst describe_schema:
+Fem fällor som ger tyst FELAKTIGA siffror om du inte läst describe_schema:
 - `fact_balances.amount` är YTD (ackumulerat sedan 1 jan) för SE/NO men
   månadsrörelse för FI/DK/DE. SUM:a aldrig `amount` rakt över länder.
 - Samma (bolag, period) kan ha flera `source_kind`. Välj högsta prioritet per
   land (best_source) — summera aldrig över källor.
 - Filtrera alltid `scenario = 'A'` för utfall, annars dubblas budget in.
 - Teckenkonvention är SIE (intäkt negativ); `P_*`-konton är teckenflippade.
+- Dimensionstabellerna (`fact_sie_analysis`/`fact_saft_analysis`) upprepar
+  linjebeloppet per axel — SUM:a aldrig över `analysis_type`, filtrera på EN axel.
 
-describe_schema förklarar alla fyra med färdiga SQL-mönster. Dialekt: Postgres
+describe_schema förklarar alla fem med färdiga SQL-mönster. Dialekt: Postgres
 (`to_char`, inte `strftime`). Vid osäkerhet: visa SQL:en för användaren innan
 stora aggregeringar körs, och svara med en kort sammanfattning — inte råa
 radhögar."""

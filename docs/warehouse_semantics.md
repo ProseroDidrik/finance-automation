@@ -653,18 +653,7 @@ GROUP BY 1, 2 ORDER BY 1, 2;
 
 ## Live snapshot — radantal per tabell
 
-Kör `describe_schema` i början av varje session för aktuella siffror. Som
-referens (2026-05-13):
-
-| Tabell | Rader |
-|---|---:|
-| `dim_company` | 147 |
-| `dim_account_map` | ~80 700 |
-| `fact_balances` | ~430 000 |
-| `backup_from_mercur` | ~430 000 (efter 2026-facit-laddning) |
-| `fact_journal_sie` | ~820 000 |
-| `fact_journal_saft` | ~910 000 |
-| `fact_personnel` | ~3 070 |
-| `fact_supplier_spend` | ~47 700 |
-
-Bolag per land: SE 61 · NO 42 · FI 21 · CENTR 8 · DK 8 · DE 5 · CA 2.
+Serveras live högst upp i `describe_schema`-svaret (`pg_class.reltuples`,
+~momentant). Hårdkoda inte siffror här — de driver isär mot verkligheten.
+Kör `describe_schema` i början av varje session för aktuella radantal och
+bolag-per-land.

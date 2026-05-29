@@ -28,6 +28,11 @@ injekterad från Key Vault `kv-finauto-6427/database-url`).
                    ┌──────────┴───────────┐
                    │  fact_journal_sie    │  ◄── verifikat (opt-in)
                    │  fact_journal_saft   │
+                   └──────────┬───────────┘
+                              │
+                   ┌──────────┴───────────┐
+                   │  fact_sie_analysis   │  ◄── dimensioner per linje×axel
+                   │  fact_saft_analysis  │      (dim_analysis_type/_member)
                    └──────────────────────┘
 
                    ┌──────────────────────┐
@@ -39,7 +44,7 @@ injekterad från Key Vault `kv-finauto-6427/database-url`).
 
 | source_kind | period_type | Land | Källfil | Laddas av |
 |---|---|---|---|---|
-| `INL` | `monthly` | DK / FI / DE | `*_INL.xlsx` (process_*-output) | `load_inl.py` |
+| `IMP` | `monthly` | DK / FI / DE | `*_INL.xlsx` (process_*-output) | `load_inl.py` |
 | `SIE` | `ytd` | SE | `*.SE` (SIE-export) | `load_sie.py` |
 | `SIE_PSALDO` | `ytd` | SE | (samma fil, `#PSALDO`-rader) | `load_sie.py` |
 | `SIE_VER` | `ytd` | SE | (samma fil, syntetiserad ur `#VER`/`#TRANS`) | `load_sie.py` |
@@ -51,7 +56,8 @@ injekterad från Key Vault `kv-finauto-6427/database-url`).
 | `ACCOUNT_MAP` | (n/a) | (alla) | `_params/Dimensionsmedlemmar  Konto.xlsx` | `load_account_map.py` |
 
 YTD = year-to-date (ackumulerat sedan räkenskapsårets start). SE/NO är YTD per
-file-design; INL är månadsbalans (varje fil = en månads bevegelser).
+file-design; FI/DK/DE-importen (`IMP` via `load_inl.py`, tidigare `INL`) är
+månadsbalans (varje fil = en månads bevegelser).
 
 ## Tabeller
 
@@ -376,35 +382,15 @@ WITH RECURSIVE walk AS (
 SELECT * FROM walk ORDER BY depth;
 ```
 
-## Volym (snapshot 2026-05-05, efter historisk inläsning)
+## Volym
 
-| Tabell | Rader |
-|---|---:|
-| `dim_company` | 147 |
-| `dim_period` | 80+ |
-| `dim_account_map` | 80 729 |
-| `dim_exchange_rate` | 456 |
-| `fact_balances` | ~410 000 |
-| `fact_journal_sie` | 600 868 |
-| `fact_journal_saft` | 288 708 |
-| `load_history` | 1 200+ |
+Aktuella radantal per tabell och källfördelning serveras **live** av
+`describe_schema` (`pg_class.reltuples`, ~momentant) — se "Live snapshot"-blocket
+i dess svar. Hårdkoda inte siffror här; de driver isär mot verkligheten.
 
-Bolag per land: SE 61 · NO 42 · FI 21 · CENTR 8 · DK 8 · DE 5 · CA 2.
-
-Perioder med data: 202112 (IB, 75 bolag) · 202201–202512 (historik) · 202601–202604 (löpande).
-
-`fact_balances` source_kind-fördelning:
-| source_kind | scenario | Rader | Perioder |
-|---|---|---:|---|
-| `IB` | A | 2 726 | 202112 |
-| `IMP` | A | 187 122 | 202201–202512 |
-| `IMP_ADJ` | A | 209 | 202212–202603 |
-| `INL` | A | 6 988 | 202601–202603 |
-| `MAN` | A | 5 893 | 202201–202612 |
-| `MAN` | B | 45 844 | 202201–202612 |
-| `SAFT` | A | 67 486 | 202212–202603 |
-| `SIE` | A | 44 161 | 202212–202604 |
-| `SIE_PSALDO` | A | 49 389 | 202201–202604 |
+Strukturellt (oförändrat mellan månader): data finns för `202112` (IB) ·
+`202201–202512` (historik) · `202601`–löpande månad. Dimensionstabellerna
+`fact_sie_analysis` / `fact_saft_analysis` täcker dimensionshistoriken från 2022.
 
 ## Inspektera live
 
