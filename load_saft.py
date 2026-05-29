@@ -440,6 +440,25 @@ def line_rows(line, company_id, currency, rel_src, now, fallback_period,
     return journal_tuple, analysis_tuples, jp, False
 
 
+def group_analysis_by_period(lines, company_id, currency, rel_src, now,
+                             fallback_period, period_cutoff=None):
+    """Gruppera analystupler per period ur journal-linjer (ingen DB).
+
+    Återanvänder line_rows → varje analysrad ärver linjens ValueDate-period (jp).
+    Returnerar dict[period -> list[analysis_tuple]]. Linjer med jp > period_cutoff
+    skippas (samma cutoff som load_file). Kärnan i historik-backfillen, testbar
+    utan databas."""
+    by_period: dict[str, list[tuple]] = {}
+    for line in lines:
+        _jt, ats, jp, skipped = line_rows(
+            line, company_id, currency, rel_src, now, fallback_period,
+            period_cutoff=period_cutoff)
+        if skipped or not ats:
+            continue
+        by_period.setdefault(jp, []).extend(ats)
+    return by_period
+
+
 def discover_files(source_dir: Path) -> list[Path]:
     """Hitta SAF-T XML-filer direkt i source_dir (inte i Referens/)."""
     if not source_dir.exists():
