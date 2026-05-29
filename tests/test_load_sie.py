@@ -247,5 +247,27 @@ class VoucherAnalysisRows(unittest.TestCase):
         self.assertEqual(analysis_rows, [])
 
 
+class GroupSieAnalysisByPeriod(unittest.TestCase):
+    NOW = datetime(2026, 5, 29)
+
+    def _rows(self):
+        return [
+            (32, "202601", "A", "1", 1, "7830", "1", "100", 10.0, "SEK", "x.se", self.NOW),
+            (32, "202601", "A", "1", 1, "7830", "6", "9000300", 10.0, "SEK", "x.se", self.NOW),
+            (32, "202602", "A", "2", 1, "7830", "1", "100", 5.0, "SEK", "x.se", self.NOW),
+        ]
+
+    def test_buckets_by_period_field(self):
+        by = load_sie.group_sie_analysis_by_period(self._rows())
+        self.assertEqual(set(by), {"202601", "202602"})
+        self.assertEqual(len(by["202601"]), 2)
+        self.assertEqual(len(by["202602"]), 1)
+        # raderna bevaras oförändrade i sin period-bucket
+        self.assertEqual(by["202602"][0][8], 5.0)
+
+    def test_empty(self):
+        self.assertEqual(load_sie.group_sie_analysis_by_period([]), {})
+
+
 if __name__ == "__main__":
     unittest.main()
