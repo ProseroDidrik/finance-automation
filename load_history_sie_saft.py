@@ -123,7 +123,8 @@ def load_year(con: db.Conn, year: int, year_dir: Path,
               base_path: Path, orgnr_lookup_sie: dict, orgnr_lookup_saft: dict,
               *, dry_run: bool, include_journal: bool,
               allowed_formats: set[str],
-              override: list[int] | None = None) -> dict[str, int]:
+              override: list[int] | None = None,
+              analysis_only: bool = False) -> dict[str, int]:
     """Ladda ett årsdir. Returnerar {status: count}."""
     period_fallback = f"{year}12"
     files = discover_year(year_dir, allowed_formats)
@@ -147,6 +148,10 @@ def load_year(con: db.Conn, year: int, year_dir: Path,
 
     for orgnr, (path, fmt) in sorted(files.items(), key=lambda x: x[1][0].name):
         if fmt == "sie":
+            if analysis_only:
+                log("SKIP", path.name, "analysis-only: SIE har inga SAF-T-dimensioner")
+                counts["skip"] += 1
+                continue
             # Kolla om orgnr finns i SIE-lookup (svenska bolag)
             if orgnr not in orgnr_lookup_sie:
                 log("SKIP", path.name,
@@ -173,13 +178,18 @@ def load_year(con: db.Conn, year: int, year_dir: Path,
                 counts["skip"] += 1
                 continue
 
-            status = load_saft.load_file(
-                con, path, base_path, period_fallback,
-                orgnr_lookup_saft,
-                dry_run=dry_run,
-                include_journal=include_journal,
-                override=override,
-            )
+            if analysis_only:
+                status = load_saft.backfill_file_analysis(
+                    con, path, base_path, period_fallback,
+                    orgnr_lookup_saft, dry_run=dry_run)
+            else:
+                status = load_saft.load_file(
+                    con, path, base_path, period_fallback,
+                    orgnr_lookup_saft,
+                    dry_run=dry_run,
+                    include_journal=include_journal,
+                    override=override,
+                )
 
         counts[status] = counts.get(status, 0) + 1
 
@@ -195,6 +205,9 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--include-journal", action="store_true",
                         help="Ladda även verifikat till fact_journal_sie/saft (tungt)")
+    parser.add_argument("--analysis-only", action="store_true",
+                        help="Backfilla BARA fact_saft_analysis för SAF-T-filer "
+                             "(rör inte journal/balans). SIE-filer hoppas över.")
     parser.add_argument("--format", choices=("sie", "saft", "both"), default="both",
                         help="Vilka filformat som ska laddas (default: both). "
                              "--format sie laddar bara SIE och hoppar över SAF-T.")
@@ -245,6 +258,7 @@ def main() -> None:
                 dry_run=args.dry_run, include_journal=args.include_journal,
                 allowed_formats=allowed_formats,
                 override=args.override,
+                analysis_only=args.analysis_only,
             )
             log("INFO", str(year),
                 f"OK={counts['ok']}  WARN={counts['warn']}  "
