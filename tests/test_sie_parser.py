@@ -182,6 +182,11 @@ class DimDeclarations(unittest.TestCase):
         p = sie_parser.parse_sie('#OBJEKT 1 100 "Adm"\n')
         self.assertIn(("1", "100", "Adm"), p["objekt"])
 
+    def test_objekt_quoted_objektnr_with_spaces(self):
+        # Citerat objektnr med inbäddat mellanslag får inte trunkeras/tappas.
+        p = sie_parser.parse_sie('#OBJEKT 1 "100 A" "Avdelning 100 A"\n')
+        self.assertIn(("1", "100 A", "Avdelning 100 A"), p["objekt"])
+
 
 class TransAnalysis(unittest.TestCase):
     def _transes(self, ver_text):
