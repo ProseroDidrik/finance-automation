@@ -45,6 +45,9 @@ FILES: dict[str, list[tuple[str, bool]]] = {
         ("Mitarbeiterzahlen I Quartal 2026.xlsx",                          False),
         ("4. Quartal 2025 FTE_template_DE_V2 Franz Mittermeier GmbH.xlsx",  False),
         ("1. Quartal 2026 FTE_template_DE_V2 Franz Mittermeier GmbH.xlsx",  False),
+        # Goldfunk (245): riktig data på fliken "GF 2022" — Sheet1 är bara
+        # Weckbacher-exempel ur mallen. Valfritt 3:e element = flik-namn.
+        ("245_FTE_template_DE_V2_260527.xlsx",                             False, "GF 2022"),
     ],
 }
 
@@ -92,6 +95,7 @@ DK_BOLAG_TO_ID: dict[str, int] = {
 DE_NAME_TO_ID: dict[str, int] = {
     "Weckbacher":  220,
     "Mittermeier": 231,
+    "Goldfunk":    245,
 }
 
 # ---------------------------------------------------------------------------
@@ -397,13 +401,15 @@ def parse_denmark(buf, valid_ids: set[int]) -> tuple[list[dict], list[tuple]]:
     return rows, ignored
 
 
-def parse_germany(buf, valid_ids: set[int]) -> tuple[list[dict], list[tuple]]:
-    """Tyskland — gemensam mall (Weckbacher + Mittermeier).
+def parse_germany(buf, valid_ids: set[int], sheet=0) -> tuple[list[dict], list[tuple]]:
+    """Tyskland — gemensam mall (Weckbacher + Mittermeier + Goldfunk).
 
     Rubrikrad ligger på rad-index 2 (engelska); rad 0-1 är tomma/tyska etiketter.
     Tre skräpkolumner sist (tom, GERMAN, tom) används inte.
+    `sheet`: vilken flik datan ligger på (default 0). Goldfunk lägger riktiga
+    siffror på en namngiven flik ("GF 2022") och har Weckbacher-exemplet på Sheet1.
     """
-    df = pd.read_excel(buf, sheet_name=0, engine="openpyxl", header=2)
+    df = pd.read_excel(buf, sheet_name=sheet, engine="openpyxl", header=2)
     # Datumkolumner kommer blandat som Timestamp och tysk text "DD.MM.YYYY" —
     # tolka med dayfirst så 01.10.1997 inte blir 10 januari.
     for col in ("Date of birth", "Date of employment", "End date of employment"):
@@ -612,7 +618,9 @@ def run(country_filter: str | None, dry_run: bool) -> int:
             all_rows: list[dict] = []
             all_ignored: list[tuple] = []
             parse_failed = False
-            for filename, encrypted in FILES[country]:
+            for entry in FILES[country]:
+                filename, encrypted = entry[0], entry[1]
+                sheet = entry[2] if len(entry) > 2 else 0  # valfri flik (default 0)
                 f = base_path / FTE_DIR / filename
                 if not f.exists():
                     log("ERROR", country, f"filen saknas: {f}")
@@ -620,7 +628,10 @@ def run(country_filter: str | None, dry_run: bool) -> int:
                     break
                 try:
                     buf = _open_excel(f, encrypted, password)
-                    rows, ignored = PARSERS[country](buf, valid_ids)
+                    if country == "Germany":
+                        rows, ignored = parse_germany(buf, valid_ids, sheet=sheet)
+                    else:
+                        rows, ignored = PARSERS[country](buf, valid_ids)
                 except Exception as e:
                     log("ERROR", country, f"parsning misslyckades ({filename}): {e}")
                     parse_failed = True
