@@ -584,6 +584,11 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                    WHERE company_id = %s AND period > %s AND period BETWEEN %s AND %s""",
                 [company_id, period, fy_start, fy_end],
             )
+            con.execute(
+                """DELETE FROM fact_sie_analysis
+                   WHERE company_id = %s AND period > %s AND period BETWEEN %s AND %s""",
+                [company_id, period, fy_start, fy_end],
+            )
         # SIE (UB/RES): senaste laddningen vinner per (bolag, period).
         con.execute(
             """DELETE FROM fact_balances
@@ -621,6 +626,31 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                 psaldo_fact_rows(psaldo_rows, company_id, currency, rel_src, now),
             )
 
+        # Dimensioner: upserta axel-/medlemsnamn ur #DIM/#OBJEKT (best-effort,
+        # ON CONFLICT). Körs oberoende av include_journal — deklarationerna finns
+        # i filhuvudet även när journal hoppas över.
+        sie_type_rows, sie_member_rows = sie_dim_analysis_rows(
+            parsed.get("dims", []), parsed.get("objekt", []), company_id, now)
+        if sie_type_rows:
+            con.executemany(
+                """INSERT INTO dim_analysis_type
+                   (company_id, source_format, analysis_type, description, loaded_at)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (company_id, source_format, analysis_type)
+                   DO UPDATE SET description = EXCLUDED.description,
+                                 loaded_at = EXCLUDED.loaded_at""",
+                sie_type_rows)
+        if sie_member_rows:
+            con.executemany(
+                """INSERT INTO dim_analysis_member
+                   (company_id, source_format, analysis_type, analysis_id,
+                    description, loaded_at)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
+                   DO UPDATE SET description = EXCLUDED.description,
+                                 loaded_at = EXCLUDED.loaded_at""",
+                sie_member_rows)
+
         # Journal: senaste laddningen vinner per (bolag, period). En SIE-fil
         # täcker hela YTD så vouchers för 202601 från en mars-fil ersätter
         # ev. tidigare 202601-laddning från en annan SIE.
@@ -641,6 +671,20 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                         source_file, loaded_at)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     journal_rows[i:i + JOURNAL_BATCH],
+                )
+            con.execute(
+                f"""DELETE FROM fact_sie_analysis
+                    WHERE company_id = %s AND period IN ({placeholders})""",
+                [company_id, *jp_sorted],
+            )
+            for i in range(0, len(analysis_rows), JOURNAL_BATCH):
+                con.executemany(
+                    """INSERT INTO fact_sie_analysis
+                       (company_id, period, series, voucher_number, line_no,
+                        account_code, analysis_type, analysis_id, amount,
+                        currency, source_file, loaded_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    analysis_rows[i:i + JOURNAL_BATCH],
                 )
 
         # SIE_VER: syntetisera YTD-saldon från verifikaten för SE/CA-bolag som
@@ -695,6 +739,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
              f"sie_rows={len(sie_rows)} psaldo_rows={len(psaldo_rows)} "
              f"psaldo_periods={len(psaldo_periods)} "
              f"journal_rows={len(journal_rows)} journal_periods={len(journal_periods)} "
+             f"analysis_rows={len(analysis_rows)} "
              f"sie_ver_rows={sie_ver_count} sie_ver_fallback={sie_ver_fallback} "
              f"sum_ub={total_ub:.2f} sum_res={total_res:.2f}",
              now],
@@ -706,7 +751,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         return "error"
 
     psaldo_msg = f" PSALDO={len(psaldo_rows)}({len(psaldo_periods)} mån)" if psaldo_rows else ""
-    journal_msg = f" JOURNAL={len(journal_rows)}({len(journal_periods)} mån)" if journal_rows else ""
+    journal_msg = f" JOURNAL={len(journal_rows)}({len(journal_periods)} mån) ANALYS={len(analysis_rows)}" if journal_rows else ""
     sie_ver_msg = (f" SIE_VER={sie_ver_count}"
                    + (f"(fallback={sie_ver_fallback})" if sie_ver_fallback else "")
                    if sie_ver_count else "")
