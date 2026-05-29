@@ -476,29 +476,10 @@ def backfill_file_analysis(con, path: Path, base_path: Path,
             f"dim_type={len(type_rows)} dim_member={len(member_rows)} (journal orörd)")
         return "ok"
 
-    # Dim-upsert (egen liten transaktion). SQL dupliceras medvetet från load_file
-    # för att hålla load_file orört (noll regressionsrisk på månadsladdaren).
+    # Dim-upsert (egen liten transaktion). Delad helper db.upsert_dim_analysis.
     con.execute("BEGIN")
     try:
-        if type_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_type
-                   (company_id, source_format, analysis_type, description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                type_rows)
-        if member_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_member
-                   (company_id, source_format, analysis_type, analysis_id,
-                    description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                member_rows)
+        db.upsert_dim_analysis(con, type_rows, member_rows)
         con.execute("COMMIT")
     except Exception as e:
         con.execute("ROLLBACK")
@@ -808,25 +789,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         # i filhuvudet även när journal hoppas över.
         sie_type_rows, sie_member_rows = sie_dim_analysis_rows(
             parsed.get("dims", []), parsed.get("objekt", []), company_id, now)
-        if sie_type_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_type
-                   (company_id, source_format, analysis_type, description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                sie_type_rows)
-        if sie_member_rows:
-            con.executemany(
-                """INSERT INTO dim_analysis_member
-                   (company_id, source_format, analysis_type, analysis_id,
-                    description, loaded_at)
-                   VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
-                   DO UPDATE SET description = EXCLUDED.description,
-                                 loaded_at = EXCLUDED.loaded_at""",
-                sie_member_rows)
+        db.upsert_dim_analysis(con, sie_type_rows, sie_member_rows)
 
         # Journal: senaste laddningen vinner per (bolag, period). En SIE-fil
         # täcker hela YTD så vouchers för 202601 från en mars-fil ersätter

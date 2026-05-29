@@ -269,6 +269,13 @@ class GroupSieAnalysisByPeriod(unittest.TestCase):
         self.assertEqual(load_sie.group_sie_analysis_by_period([]), {})
 
 
+class UpsertDimAnalysisNoop(unittest.TestCase):
+    def test_empty_lists_do_not_touch_connection(self):
+        import db
+        # Tomma listor → no-op; con (None här) får aldrig användas.
+        db.upsert_dim_analysis(None, [], [])  # ska inte kasta
+
+
 class FyFloor(unittest.TestCase):
     def test_authoritative_requires_8digit_rar(self):
         self.assertTrue(load_sie.fy_is_authoritative(
