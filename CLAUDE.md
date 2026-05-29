@@ -82,6 +82,11 @@ py delete_db.py --period 202604 --source_kind IMP --dry-run
 py delete_db.py --period 202604 --source_kind IMP --company 134 196
 py delete_db.py --period 202604 --source_kind IMP --country Sweden
 py delete_db.py --period 202604 --source_kind MAN --company 134
+
+# Konsistensgrindar (read-only mot prod, kräver $env:DATABASE_URL_RO från KV
+# database-url-readonly). Kör efter SAF-T-laddningar/reloads.
+py scripts/check_analysis_journal_consistency.py   # analys ⊆ journal per (bolag,period)
+py scripts/check_journal_coverage_anomaly.py       # clobber-detektor (journalkollaps mot FY-median)
 ```
 
 Use `py` (not `python`) on this Windows machine.

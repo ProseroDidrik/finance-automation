@@ -269,6 +269,32 @@ class PeriodDerivation(unittest.TestCase):
                          ("202601", "202604"))
 
 
+class FyRangeAuthoritative(unittest.TestCase):
+    """bug_007: floor får bara appliceras när FY-gränserna kommer ur metadata,
+    annars droppas legitima in-FY-rader för förskjutna räkenskapsår."""
+
+    def test_period_fields_are_authoritative(self):
+        p = {"period_start_year": "2025", "period_start_month": "7",
+             "period_end_year": "2026", "period_end_month": "6"}
+        self.assertEqual(saft_parser.derive_fy_range(p, "202604"), ("202507", "202606"))
+        self.assertTrue(saft_parser.fy_start_is_authoritative(p, "202604"))
+
+    def test_selection_dates_are_authoritative(self):
+        p = {"selection_start_date": "2025-07-01", "selection_end_date": "2026-04-30"}
+        self.assertEqual(saft_parser.derive_fy_range(p, "202604"), ("202507", "202604"))
+        self.assertTrue(saft_parser.fy_start_is_authoritative(p, "202604"))
+
+    def test_calendar_fallback_is_not_authoritative(self):
+        # Visma Business: bara SelectionEndDate → derive_period funkar, men
+        # fy_start blir kalenderårs-GISSNING (fel för förskjutet FY).
+        p = {"selection_end_date": "2026-04-30"}
+        self.assertEqual(saft_parser.derive_fy_range(p, "202604"), ("202601", "202612"))
+        self.assertFalse(saft_parser.fy_start_is_authoritative(p, "202604"))
+
+    def test_empty_metadata_is_not_authoritative(self):
+        self.assertFalse(saft_parser.fy_start_is_authoritative({}, "202604"))
+
+
 _NS_NO = "urn:StandardAuditFile-Taxation-Financial:NO"
 
 

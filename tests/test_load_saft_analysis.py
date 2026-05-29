@@ -59,6 +59,43 @@ class LineRowsPeriodBinding(unittest.TestCase):
         self.assertEqual(ats, [])
 
 
+class LineRowsFyFloor(unittest.TestCase):
+    """Clobber-fix: rad vars ValueDate-period ligger FÖRE filens FY-start droppas
+    (strö-re-export ur en helårsfil som annars raderar ägande FY:s period)."""
+
+    def test_floor_skips_out_of_fy_past_line(self):
+        # FY2026-fil, strö-rad daterad 2022-03 (jfr bolag 9 / transaction 510).
+        line = _line(date(2022, 3, 18), date(2022, 3, 18), [("DEP", "3")])
+        jt, ats, jp, skipped = load_saft.line_rows(
+            line, 9, "NOK", "x.xml", NOW, "202612", period_floor="202601")
+        self.assertEqual(jp, "202203")
+        self.assertTrue(skipped)
+        self.assertIsNone(jt)
+        self.assertEqual(ats, [])
+
+    def test_in_range_line_not_skipped(self):
+        line = _line(date(2026, 3, 15), date(2026, 3, 15), [("DEP", "3")])
+        jt, ats, jp, skipped = load_saft.line_rows(
+            line, 9, "NOK", "x.xml", NOW, "202612",
+            period_floor="202601", period_cutoff="202612")
+        self.assertFalse(skipped)
+        self.assertEqual(jp, "202603")
+        self.assertIsNotNone(jt)
+
+
+class GroupAnalysisFyFloor(unittest.TestCase):
+    def test_drops_out_of_fy_past_lines(self):
+        lines = [
+            _line(date(2026, 3, 15), date(2026, 3, 15), [("DEP", "3")]),   # in-FY
+            _line(date(2022, 3, 18), date(2022, 3, 18), [("DEP", "3")]),   # strö-past
+        ]
+        by_period = load_saft.group_analysis_by_period(
+            lines, 9, "NOK", "x.xml", NOW, fallback_period="202612",
+            period_floor="202601", period_cutoff="202612")
+        self.assertIn("202603", by_period)
+        self.assertNotIn("202203", by_period)   # clobber-källan droppad
+
+
 class DimAnalysisRows(unittest.TestCase):
     def test_dedup_types_and_members(self):
         analysis_types = [

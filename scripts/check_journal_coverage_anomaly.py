@@ -1,0 +1,80 @@
+"""Återkommande grind 2: journal-täcknings-anomali (clobber-detektor).
+
+Fångar den blinda fläcken som check_analysis_journal_consistency.py missar: när
+BÅDE journal och analys raderats av samma strö-fil stämmer analys ⊆ journal och
+passerar tyst. Här letar vi i stället efter (bolag, period) där journalradantalet
+KOLLAPSAR mot bolagets typiska FY-volym = signaturen för per-period-DELETE-clobber.
+
+Heuristik (kandidater för mänsklig granskning, inte auto-åtgärd):
+  per (bolag, FY-år): baslinje = MAX journalrader över månaderna;
+  flagga månad där count < FACTOR * baslinje OCH baslinje >= MIN_BASELINE OCH
+  FY-året har >= MIN_MONTHS månader.
+
+OBS baslinjen är MAX, inte median (bug_003): medianen räknas över SAMMA månader
+vi letar anomalier i, så när >hälften av en högvolym-FY är clobbrad kollapsar
+medianen under tröskeln och hela FY:t hoppas över → de VÄRST clobbrade FY:n gav
+noll träffar. MAX (övre kvantil-idé) är robust mot hur många månader som faller.
+
+Read-only. Mot prod via DATABASE_URL_RO (mcp_readonly).
+"""
+import os
+from collections import defaultdict
+import psycopg
+
+FACTOR = 0.10        # < 10% av FY-baslinjen = kollaps
+MIN_BASELINE = 100   # bara FY-år med substantiell volym (max-månad)
+MIN_MONTHS = 6       # baslinje meningsfull först vid halvår+
+
+SQL = """
+SELECT company_id, period, count(*) AS n
+FROM fact_journal_saft
+GROUP BY 1, 2
+"""
+
+
+def flag_anomalies(rows, factor=FACTOR, min_baseline=MIN_BASELINE,
+                   min_months=MIN_MONTHS):
+    """Ren detektor (ingen DB, testbar). rows = [(company_id, period, n), ...].
+    Returnerar sorterad [(company_id, period, n, baslinje), ...] för månader vars
+    journalradantal kollapsar < factor * FY-baslinje. Baslinje = MAX (inte median)
+    så detektorn INTE blir blind när >hälften av en FY är clobbrad (bug_003)."""
+    by_cy: dict[tuple, list] = defaultdict(list)
+    for cid, period, n in rows:
+        by_cy[(cid, period[:4])].append((period, n))
+
+    flagged = []
+    for (cid, _yr), months in by_cy.items():
+        counts = [n for _, n in months]
+        if len(counts) < min_months:
+            continue
+        base = max(counts)          # robust mot hur många månader som clobbrats
+        if base < min_baseline:
+            continue
+        for period, n in sorted(months):
+            if n < factor * base:
+                flagged.append((cid, period, n, base))
+    return sorted(flagged)
+
+
+def main():
+    dsn = os.environ["DATABASE_URL_RO"]
+    with psycopg.connect(dsn, connect_timeout=30) as con:
+        with con.cursor() as cur:
+            cur.execute("SET statement_timeout='280s'")
+            cur.execute(SQL)
+            rows = cur.fetchall()
+
+    flagged = flag_anomalies(rows)
+    print(f"company | period | journal | FY-baslinje(max)  (count < {int(FACTOR*100)}% av max)")
+    by_co = defaultdict(int)
+    for cid, period, n, base in flagged:
+        print(f"{cid} | {period} | {n} | {base}")
+        by_co[cid] += 1
+    print(f"\nFlaggade (bolag,period): {len(flagged)}")
+    print("Per bolag:", dict(sorted(by_co.items())))
+    print("\nOBS: flaggar BEFINTLIG clobbrad historik (väntar B1ms-säker reload).")
+    print("FY-fixen (denna gren) hindrar NYA clobbers — guarden ska gå mot 0 efter reload.")
+
+
+if __name__ == "__main__":
+    main()
