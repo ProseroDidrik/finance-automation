@@ -37,6 +37,7 @@ man läser dem utan att räkna fel.
 | `fact_journal_sie` | transaktionsrader (Sverige) — opt-in via load_sie.py. ⚠️ MCP: använd `reporting.journal_sie` |
 | `fact_journal_saft` | transaktionsrader (Norge) — opt-in via load_saft.py. ⚠️ MCP: använd `reporting.journal_saft` |
 | `fact_saft_analysis` | SAF-T-dimensioner per (linje × axel), månadsrörelse. ⚠️ se Mental model 5 (SUM aldrig över `analysis_type`) |
+| `fact_sie_analysis` | SIE-dimensioner per (linje × axel), månadsrörelse. ⚠️ se Mental model 6 (SUM aldrig över `analysis_type`) |
 | `dim_analysis_type` | dimensionsaxel `(company_id, source_format, analysis_type)` → `description` |
 | `dim_analysis_member` | dimensionsmedlem `(…, analysis_id)` → `description` |
 | `fact_personnel` | snapshot per anställd. ⚠️ MCP: använd `reporting.personnel` |
@@ -211,6 +212,50 @@ LEFT JOIN dim_analysis_member m
   ON m.company_id = a.company_id AND m.source_format = 'SAFT'
  AND m.analysis_type = a.analysis_type AND m.analysis_id = a.analysis_id
 WHERE a.company_id = 9 AND a.analysis_type = 'DEP'
+  AND a.period BETWEEN '202601' AND '202604'
+GROUP BY m.description ORDER BY belopp;
+```
+
+---
+
+## Mental model 6 — `fact_sie_analysis` är SIE-spegeln av Mental model 5
+
+`fact_sie_analysis` lagrar SIE-dimensioner (`#DIM`/`#OBJEKT`) per journallinje:
+**en rad per `#TRANS`-rad × dimension-par**, med linjens belopp upprepat per axel.
+Samma grundregel som `fact_saft_analysis` — de delar `dim_analysis_type`/`dim_analysis_member`
+via `source_format='SIE'`. Fem regler:
+
+1. **SUM:a ALDRIG över `analysis_type`.** En SIE-linje kan bära flera `#OBJEKT`-block
+   (en per `#DIM`-axel) och hela beloppet upprepas per axel → summering över axlar
+   multiplicerar beloppet. Filtrera alltid på EN axel: `WHERE analysis_type = 1`.
+   (`analysis_type` = `#DIM`-numret; `analysis_id` = `#OBJEKT`-numret.)
+
+2. **`amount` är MÅNADSRÖRELSE (linjenivå), aldrig YTD.** Jämför alltid mot
+   `fact_journal_sie` (månadsrörelse) — aldrig mot `fact_balances` (YTD för SE/NO).
+   Rollup till YTD/FY/LTM = period-range-filter:
+   `WHERE period BETWEEN '202601' AND '202604'`.
+
+3. **Odimensionerad rest.** Konton och linjer utan `#OBJEKT`-lista (och bolag med
+   tunna `#VER`-volymer) är otaggade — det finns **inga placeholder-rader**.
+   `SUM(amount) WHERE analysis_type = X` ≤ journaltotal per konto.
+
+4. **period = verifikatets månad** (härlett ur `voucher_date`, identiskt med
+   `fact_journal_sie`). Semantiken är alltid månadsrörelse oavsett att
+   `fact_balances SIE` är YTD.
+
+5. **Delar dimensionstabeller med SAF-T** via `source_format = 'SIE'`.
+   `dim_analysis_type(company_id, source_format='SIE', analysis_type)` → `description`
+   (t.ex. axel 1 → "Kostnadsställe").
+   `dim_analysis_member(…, analysis_id)` → `description` (t.ex. axel 1 / id 10 → "Drift").
+
+Mönster — kostnadsställesfördelad kostnad YTD för bolag 1:
+```sql
+SELECT m.description AS kostnadsställe, SUM(a.amount) AS belopp
+FROM fact_sie_analysis a
+LEFT JOIN dim_analysis_member m
+  ON m.company_id = a.company_id AND m.source_format = 'SIE'
+ AND m.analysis_type = a.analysis_type AND m.analysis_id = a.analysis_id
+WHERE a.company_id = 1 AND a.analysis_type = 1
   AND a.period BETWEEN '202601' AND '202604'
 GROUP BY m.description ORDER BY belopp;
 ```
