@@ -440,6 +440,144 @@ def line_rows(line, company_id, currency, rel_src, now, fallback_period,
     return journal_tuple, analysis_tuples, jp, False
 
 
+def group_analysis_by_period(lines, company_id, currency, rel_src, now,
+                             fallback_period, period_cutoff=None):
+    """Gruppera analystupler per period ur journal-linjer (ingen DB).
+
+    Återanvänder line_rows → varje analysrad ärver linjens ValueDate-period (jp).
+    Returnerar dict[period -> list[analysis_tuple]]. Linjer med jp > period_cutoff
+    skippas (samma cutoff som load_file). Kärnan i historik-backfillen, testbar
+    utan databas."""
+    by_period: dict[str, list[tuple]] = {}
+    for line in lines:
+        _jt, ats, jp, skipped = line_rows(
+            line, company_id, currency, rel_src, now, fallback_period,
+            period_cutoff=period_cutoff)
+        if skipped or not ats:
+            continue
+        by_period.setdefault(jp, []).extend(ats)
+    return by_period
+
+
+def backfill_file_analysis(con, path, base_path, period_override, orgnr_lookup,
+                           *, dry_run=False):
+    """Backfilla BARA fact_saft_analysis för en (historisk) SAF-T-fil.
+
+    Rör ALDRIG fact_journal_saft/fact_balances — journalen är redan laddad och
+    korrekt periodiserad. Commit per period (B1ms-säkert, idempotent,
+    återstartbar). period/cutoff härleds som i load_file → analysperioder == den
+    befintliga journalens perioder.
+    """
+    try:
+        parsed = parse_saft(path)
+    except Exception as e:
+        log("ERROR", path.name, f"Läsfel: {e}")
+        return "error"
+
+    country = parsed.get("country")
+    if country not in NS_BY_COUNTRY:
+        log("ERROR", path.name, f"Okänd SAF-T-namespace ({parsed.get('ns')!r})")
+        return "error"
+
+    # Företag (samma logik som load_file)
+    orgnr_raw = parsed.get("orgnr")
+    company_id = None
+    if not orgnr_raw:
+        for substr, cid in FILENAME_OVERRIDES.items():
+            if substr in path.name:
+                company_id = cid
+                break
+        if company_id is None:
+            log("ERROR", path.name, "Saknar Header/Company/RegistrationNumber")
+            return "error"
+    else:
+        hit = orgnr_lookup.get(normalize_orgnr(orgnr_raw))
+        if not hit:
+            log("ERROR", path.name, f"OrgNr {orgnr_raw} saknas i dim_company")
+            return "error"
+        company_id, _name = hit
+
+    period = derive_period(parsed, period_override)
+    if not period:
+        log("ERROR", company_id, f"Kunde inte härleda period från {path.name}")
+        return "error"
+    currency = parsed.get("currency") or DEFAULT_CURRENCY[country]
+    rel_src = db.relpath_from_base(path, base_path)
+    now = datetime.now()
+
+    # En journal-iter → analys grupperad per period (ValueDate-bunden).
+    by_period = group_analysis_by_period(
+        iter_saft_journal(path, parsed["ns"]),
+        company_id, currency, rel_src, now,
+        fallback_period=period, period_cutoff=period_override)
+    type_rows, member_rows = dim_analysis_rows(
+        parsed.get("analysis_types", []), company_id, now)
+    total = sum(len(v) for v in by_period.values())
+
+    if dry_run:
+        log("OK", company_id,
+            f"[DRY] {path.name}  analys={total} i {len(by_period)} perioder "
+            f"dim_type={len(type_rows)} dim_member={len(member_rows)} (journal orörd)")
+        return "ok"
+
+    # Dim-upsert (egen liten transaktion). SQL dupliceras medvetet från load_file
+    # för att hålla load_file orört (noll regressionsrisk på månadsladdaren).
+    con.execute("BEGIN")
+    try:
+        if type_rows:
+            con.executemany(
+                """INSERT INTO dim_analysis_type
+                   (company_id, source_format, analysis_type, description, loaded_at)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (company_id, source_format, analysis_type)
+                   DO UPDATE SET description = EXCLUDED.description,
+                                 loaded_at = EXCLUDED.loaded_at""",
+                type_rows)
+        if member_rows:
+            con.executemany(
+                """INSERT INTO dim_analysis_member
+                   (company_id, source_format, analysis_type, analysis_id,
+                    description, loaded_at)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
+                   DO UPDATE SET description = EXCLUDED.description,
+                                 loaded_at = EXCLUDED.loaded_at""",
+                member_rows)
+        con.execute("COMMIT")
+    except Exception as e:
+        con.execute("ROLLBACK")
+        log("ERROR", company_id, f"dim-upsert-fel {path.name}: {e}")
+        return "error"
+
+    # Analys: en transaktion PER period (B1ms-säkert + idempotent + återstartbar).
+    loaded = 0
+    for p in sorted(by_period):
+        rows = by_period[p]
+        con.execute("BEGIN")
+        try:
+            con.execute(
+                "DELETE FROM fact_saft_analysis WHERE company_id = %s AND period = %s",
+                [company_id, p])
+            cur = con.cursor()
+            try:
+                with cur.copy(_COPY_ANALYSIS_SAFT) as cp:
+                    for row in rows:
+                        cp.write_row(row)
+            finally:
+                cur.close()
+            db.sync_dim_period(con, [p])
+            con.execute("COMMIT")
+            loaded += len(rows)
+        except Exception as e:
+            con.execute("ROLLBACK")
+            log("ERROR", company_id, f"analys-fel {path.name} period {p}: {e}")
+            return "error"
+
+    log("OK", company_id,
+        f"{path.name}  analys={loaded} i {len(by_period)} perioder (journal orörd)")
+    return "ok"
+
+
 def discover_files(source_dir: Path) -> list[Path]:
     """Hitta SAF-T XML-filer direkt i source_dir (inte i Referens/)."""
     if not source_dir.exists():

@@ -70,6 +70,11 @@ py load_saft.py --period 202604 --override
 py load_saft.py --period 202604 --no-include-journal  # hoppa över journal
 py load_saft.py --period 202604 --force               # ladda trots XSD-valideringsfel (NO 1.30)
 
+# Backfilla BARA SAF-T-dimensioner (fact_saft_analysis) på historik utan att röra
+# journal/balans — commit per period (B1ms-säkert), idempotent. SIE hoppas över.
+py load_history_sie_saft.py --format saft --analysis-only --years 2022 2023 2024 2025
+py load_history_sie_saft.py --format saft --analysis-only --years 2024 --dry-run
+
 # Radera utfall — --source_kind alltid krav (lager-isolering).
 # IMP på SE/NO → hela FY (SIE+SIE_PSALDO+journal eller SAFT+journal).
 # IMP på FI/DK/DE → bara den månaden. IMP_ADJ/MAN → alltid bara den månaden.
