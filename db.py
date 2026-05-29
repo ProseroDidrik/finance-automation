@@ -247,6 +247,7 @@ CREATE SEQUENCE IF NOT EXISTS seq_backup_from_mercur START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_personnel START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_supplier_spend START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_fact_saft_analysis START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_fact_sie_analysis START 1;
 
 CREATE TABLE IF NOT EXISTS dim_company (
     company_id           INTEGER PRIMARY KEY,
@@ -404,6 +405,31 @@ CREATE INDEX IF NOT EXISTS idx_fsa_company_period ON fact_saft_analysis(company_
 CREATE INDEX IF NOT EXISTS idx_fsa_type_member    ON fact_saft_analysis(company_id, analysis_type, analysis_id);
 CREATE INDEX IF NOT EXISTS idx_fsa_account        ON fact_saft_analysis(account_code);
 CREATE INDEX IF NOT EXISTS idx_fsa_period         ON fact_saft_analysis(period);
+
+-- SIE-dimensioner: en rad per (#TRANS-linje × dim-par). period = verifikatets
+-- månad (= fact_journal_sie). amount = #TRANS-beloppet, MÅNADSRÖRELSE.
+-- Multi-dim upprepar beloppet → SUM aldrig över analysis_type. Delar
+-- dim_analysis_type/_member med SAF-T via source_format='SIE'.
+CREATE TABLE IF NOT EXISTS fact_sie_analysis (
+    id              BIGINT PRIMARY KEY DEFAULT nextval('seq_fact_sie_analysis'),
+    company_id      INTEGER NOT NULL,
+    period          TEXT NOT NULL,
+    series          TEXT,
+    voucher_number  TEXT,
+    line_no         INTEGER NOT NULL,
+    account_code    TEXT NOT NULL,
+    analysis_type   TEXT NOT NULL,
+    analysis_id     TEXT NOT NULL,
+    amount          DOUBLE PRECISION NOT NULL,
+    currency        TEXT NOT NULL,
+    source_file     TEXT NOT NULL,
+    loaded_at       TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fsie_company_period ON fact_sie_analysis(company_id, period);
+CREATE INDEX IF NOT EXISTS idx_fsie_type_member    ON fact_sie_analysis(company_id, analysis_type, analysis_id);
+CREATE INDEX IF NOT EXISTS idx_fsie_account        ON fact_sie_analysis(account_code);
+CREATE INDEX IF NOT EXISTS idx_fsie_period         ON fact_sie_analysis(period);
 
 CREATE TABLE IF NOT EXISTS dim_account_map (
     account_id      TEXT PRIMARY KEY,
