@@ -160,5 +160,50 @@ class ValidationGate(unittest.TestCase):
         self.assertEqual(sie_parser.validate_sie(parsed, with_journal=False), [])
 
 
+class DimDeclarations(unittest.TestCase):
+    def test_dim_and_objekt_parsed(self):
+        p = sie_parser.parse_sie(
+            '#DIM 1 "Avdelning"\n#DIM 6 "Projekt"\n'
+            '#OBJEKT 1 "100" "Administration"\n'
+            '#OBJEKT 6 "9000300" "Projekt X"\n')
+        self.assertIn(("1", "Avdelning"), p["dims"])
+        self.assertIn(("6", "Projekt"), p["dims"])
+        self.assertIn(("1", "100", "Administration"), p["objekt"])
+        self.assertIn(("6", "9000300", "Projekt X"), p["objekt"])
+
+    def test_dim_objekt_absent_is_empty(self):
+        p = sie_parser.parse_sie('#ORGNR 556071-2340\n')
+        self.assertEqual(p["dims"], [])
+        self.assertEqual(p["objekt"], [])
+
+    def test_objekt_unquoted_objektnr(self):
+        p = sie_parser.parse_sie('#OBJEKT 1 100 "Adm"\n')
+        self.assertIn(("1", "100", "Adm"), p["objekt"])
+
+
+class TransAnalysis(unittest.TestCase):
+    def _transes(self, ver_text):
+        return sie_parser.parse_sie(ver_text, with_journal=True)["vouchers"][0]["transes"]
+
+    def test_multidim_pairs_extracted(self):
+        t = self._transes(
+            '#VER "IN26" 1 20260131 "x"\n{\n'
+            '\t#TRANS 7830 {"1" "100" "6" "9000300"} 1247.27 20260131 "Avskr" 1\n'
+            '\t#TRANS 1209 {} -1247.27\n}\n')
+        self.assertEqual(t[0]["analysis"], [("1", "100"), ("6", "9000300")])
+        self.assertEqual(t[0]["amount"], 1247.27)
+        self.assertEqual(t[0]["quantity"], 1.0)
+        self.assertEqual(t[1]["analysis"], [])
+
+    def test_unquoted_dim_tokens(self):
+        t = self._transes('#VER A 1 20260101 "x"\n{\n#TRANS 5420 {1 2} 333.7\n}\n')
+        self.assertEqual(t[0]["analysis"], [("1", "2")])
+
+    def test_odd_token_count_drops_dangling(self):
+        t = self._transes('#VER A 1 20260101 "x"\n{\n#TRANS 5420 {1 "100" 2} 333.7\n}\n')
+        self.assertEqual(t[0]["analysis"], [("1", "100")])
+        self.assertEqual(t[0]["amount"], 333.7)
+
+
 if __name__ == "__main__":
     unittest.main()
