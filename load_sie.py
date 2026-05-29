@@ -56,14 +56,20 @@ JOURNAL_BATCH = 5000
 def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
                              rel_src: str, now: datetime,
                              period_cutoff: str | None = None
-                             ) -> tuple[list[tuple], set[str], int]:
-    """Plana ut vouchers → rader för fact_journal_sie.
+                             ) -> tuple[list[tuple], list[tuple], set[str], int]:
+    """Plana ut vouchers → rader för fact_journal_sie OCH fact_sie_analysis.
 
-    period_cutoff: om satt, skippa vouchers vars period (YYYYMM) > cutoff.
-    Returnerar (rows, periods, skipped_periods_count).
+    Analys-rader byggs i SAMMA loop som journalraderna och ärver linjens
+    voucher-period (period = v["date"][:6]) → analysens periodisering kan
+    aldrig divergera från journalens (skydd mot b711832-liknande bugg).
+
+    period_cutoff: om satt, skippa vouchers vars period (YYYYMM) > cutoff —
+    journal OCH analys droppas tillsammans.
+    Returnerar (journal_rows, analysis_rows, periods, skipped_periods_count).
     """
     konto = parsed["konto"]
     rows: list[tuple] = []
+    analysis_rows: list[tuple] = []
     periods: set[str] = set()
     skipped = 0
     for v in parsed["vouchers"]:
@@ -86,7 +92,13 @@ def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
                 t["amount"], t["trans_text"], t["quantity"],
                 currency, rel_src, now,
             ))
-    return rows, periods, skipped
+            for dim_nr, objekt_nr in t.get("analysis", []):
+                analysis_rows.append((
+                    company_id, period, v["series"], v["number"], t["line_no"],
+                    t["account"], dim_nr, objekt_nr, t["amount"],
+                    currency, rel_src, now,
+                ))
+    return rows, analysis_rows, periods, skipped
 
 
 def fy_periods(fy_start: str, period: str) -> list[str]:
@@ -524,13 +536,15 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     now = datetime.now()
 
     journal_rows: list[tuple] = []
+    analysis_rows: list[tuple] = []
     journal_periods: set[str] = set()
     journal_skipped = 0
     if include_journal and parsed["vouchers"]:
-        journal_rows, journal_periods, journal_skipped = vouchers_to_journal_rows(
-            parsed, company_id, currency, rel_src, now,
-            period_cutoff=period_override,
-        )
+        journal_rows, analysis_rows, journal_periods, journal_skipped = \
+            vouchers_to_journal_rows(
+                parsed, company_id, currency, rel_src, now,
+                period_cutoff=period_override,
+            )
 
     if dry_run:
         journal_msg = (f" JOURNAL={len(journal_rows)} ({len(journal_periods)} mån)"
