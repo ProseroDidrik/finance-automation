@@ -247,10 +247,10 @@ Delar `dim_analysis_type`/`dim_analysis_member` med SAF-T via `source_format='SI
 | `company_id` | INT FK→`dim_company` | |
 | `period` | TEXT | `YYYYMM` från verifikatets `voucher_date` |
 | `series` | TEXT | SIE verifikatserie (t.ex. `'A'`) |
-| `voucher_number` | INT | SIE `#VER`-nummer |
+| `voucher_number` | TEXT | SIE `#VER`-nummer |
 | `line_no` | INT | Ordning inom verifikatet |
 | `account_code` | TEXT | |
-| `analysis_type` | INT | SIE `#DIM`-nummer (t.ex. `1` = kostnadsställe) |
+| `analysis_type` | TEXT | SIE `#DIM`-nummer som text (t.ex. `'1'` = kostnadsställe) |
 | `analysis_id` | TEXT | SIE `#OBJEKT`-nummer (t.ex. `'10'`) |
 | `amount` | DOUBLE | Linje-belopp från `#TRANS` (månadsrörelse, aldrig YTD) |
 | `currency` | TEXT | |
