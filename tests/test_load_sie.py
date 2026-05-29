@@ -186,5 +186,66 @@ class PsaldoDimCoverage(unittest.TestCase):
         self.assertEqual(cov["total_row_count"], 1)
 
 
+class SieDimAnalysisRows(unittest.TestCase):
+    NOW = datetime(2026, 5, 29)
+
+    def test_types_and_members_from_two_lists(self):
+        dims = [("1", "Avdelning"), ("6", "Projekt")]
+        objekt = [("1", "100", "Adm"), ("1", "200", "Salg"), ("6", "9000300", "PX")]
+        type_rows, member_rows = load_sie.sie_dim_analysis_rows(
+            dims, objekt, company_id=32, now=self.NOW)
+        self.assertEqual({r[2] for r in type_rows}, {"1", "6"})
+        self.assertEqual(len(type_rows), 2)
+        self.assertIn((32, "SIE", "1", "Avdelning", self.NOW), type_rows)
+        self.assertEqual(len(member_rows), 3)
+        self.assertIn((32, "SIE", "1", "100", "Adm", self.NOW), member_rows)
+
+    def test_empty_lists(self):
+        self.assertEqual(load_sie.sie_dim_analysis_rows([], [], 1, self.NOW), ([], []))
+
+
+class VoucherAnalysisRows(unittest.TestCase):
+    NOW = datetime(2026, 5, 29)
+
+    def _parsed(self):
+        return {
+            "konto": {"7830": "Avskrivningar"},
+            "vouchers": [{
+                "series": "IN26", "number": "1", "date": "20260131", "text": "x",
+                "transes": [
+                    {"line_no": 1, "account": "7830", "amount": 1247.27,
+                     "trans_text": "a", "quantity": None,
+                     "analysis": [("1", "100"), ("6", "9000300")]},
+                    {"line_no": 2, "account": "1209", "amount": -1247.27,
+                     "trans_text": "b", "quantity": None, "analysis": []},
+                ],
+            }],
+        }
+
+    def test_analysis_rows_share_voucher_period(self):
+        rows, analysis_rows, periods, skipped = load_sie.vouchers_to_journal_rows(
+            self._parsed(), company_id=32, currency="SEK",
+            rel_src="x.se", now=self.NOW)
+        self.assertEqual(periods, {"202601"})
+        self.assertEqual(len(analysis_rows), 2)
+        # tuple: (company_id, period, series, voucher_number, line_no,
+        #         account_code, analysis_type, analysis_id, amount, currency,
+        #         source_file, loaded_at)
+        self.assertEqual(analysis_rows[0],
+            (32, "202601", "IN26", "1", 1, "7830", "1", "100",
+             1247.27, "SEK", "x.se", self.NOW))
+        self.assertEqual(analysis_rows[1][6:9], ("6", "9000300", 1247.27))
+        self.assertTrue({r[1] for r in analysis_rows} <= periods)
+
+    def test_cutoff_skips_journal_and_analysis(self):
+        parsed = self._parsed()
+        parsed["vouchers"][0]["date"] = "20260531"
+        rows, analysis_rows, periods, skipped = load_sie.vouchers_to_journal_rows(
+            parsed, 32, "SEK", "x.se", self.NOW, period_cutoff="202604")
+        self.assertEqual(skipped, 1)
+        self.assertEqual(rows, [])
+        self.assertEqual(analysis_rows, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,10 @@ RE_ORGNR  = re.compile(r'^#ORGNR\s+(?:"([^"\r\n]*)"|(\S+))', re.IGNORECASE)
 RE_FNAMN  = re.compile(r'^#FNAMN\s+"([^"]*)"', re.IGNORECASE)
 RE_PROGRAM = re.compile(r'^#PROGRAM\s+"([^"]*)"', re.IGNORECASE)
 RE_KONTO  = re.compile(r'^#KONTO\s+(\S+)\s+"([^"]*)"', re.IGNORECASE)
+RE_DIM    = re.compile(r'^#DIM\s+(\S+)\s+"([^"]*)"', re.IGNORECASE)
+RE_OBJEKT = re.compile(r'^#OBJEKT\s+(\S+)\s+"?([^"\s]+)"?\s+"([^"]*)"', re.IGNORECASE)
+# Token i en objektlista: citerat ("100") eller ociterat (100).
+RE_OBJ_TOKEN = re.compile(r'"([^"]*)"|(\S+)')
 RE_UB     = re.compile(r"^#UB\s+0\s+(\S+)\s+(-?\d+(?:[.,]\d+)?)", re.IGNORECASE)
 RE_RES    = re.compile(r"^#RES\s+0\s+(\S+)\s+(-?\d+(?:[.,]\d+)?)", re.IGNORECASE)
 # Dynamics NAV exporterar #RES 0 som "ackumulerat över alla år" istället för
@@ -55,10 +59,11 @@ RE_VER    = re.compile(
     re.IGNORECASE,
 )
 RE_TRANS  = re.compile(
-    r'^#TRANS\s+(\S+)\s+\{[^}]*\}\s+(-?\d+(?:[.,]\d+)?)'  # konto, dim, belopp
-    r'(?:\s+(\d{8}))?'                                    # transdat (ociterat YYYYMMDD)
-    r'(?:\s+"([^"]*)")?'                                    # text
-    r'(?:\s+(-?\d+(?:[.,]\d+)?))?',                         # quantity
+    r'^#TRANS\s+(?P<account>\S+)\s+\{(?P<dims>[^}]*)\}\s+'
+    r'(?P<amount>-?\d+(?:[.,]\d+)?)'
+    r'(?:\s+(?P<transdat>\d{8}))?'
+    r'(?:\s+"(?P<text>[^"]*)")?'
+    r'(?:\s+(?P<quantity>-?\d+(?:[.,]\d+)?))?',
     re.IGNORECASE,
 )
 
@@ -66,6 +71,17 @@ RE_TRANS  = re.compile(
 def normalize_orgnr(orgnr: str) -> str:
     """Strip allt utom siffror — '556071-2340' → '5560712340'."""
     return re.sub(r"[^0-9]", "", str(orgnr).strip())
+
+
+def parse_object_list(braces: str) -> list[tuple[str, str]]:
+    """#TRANS-objektlistans innehåll → lista av (dim, objekt)-par.
+
+    Tokens kan vara citerade ("1") eller ociterade (1) och kommer i par
+    (dimensionsnr, objektnr). Ett dinglande udda token (defekt lista) droppas
+    tyst — beloppet ligger utanför braces och påverkas aldrig.
+    """
+    toks = [a if a else b for a, b in RE_OBJ_TOKEN.findall(braces)]
+    return [(toks[i], toks[i + 1]) for i in range(0, len(toks) - 1, 2)]
 
 
 def read_text_with_fallback(path: Path) -> str:
@@ -100,7 +116,7 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
         "format": None, "currency": None, "konto": {},
         "ub": [], "res": [], "res_prior": [], "psaldo": [],
         "rar_start": None, "rar_end": None, "gen_date": None,
-        "vouchers": [],
+        "vouchers": [], "dims": [], "objekt": [],
     }
     current_voucher = None
     in_block = False
@@ -125,22 +141,23 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
         if in_block:
             if with_journal and current_voucher is not None and (m := RE_TRANS.match(line)):
                 try:
-                    amt = float(m.group(2).replace(",", "."))
+                    amt = float(m.group("amount").replace(",", "."))
                 except ValueError:
                     continue
                 line_no_in_voucher += 1
                 quantity = None
-                if m.group(5):
+                if m.group("quantity"):
                     try:
-                        quantity = float(m.group(5).replace(",", "."))
+                        quantity = float(m.group("quantity").replace(",", "."))
                     except ValueError:
                         quantity = None
                 current_voucher["transes"].append({
                     "line_no": line_no_in_voucher,
-                    "account": m.group(1),
+                    "account": m.group("account"),
                     "amount": amt,
-                    "trans_text": m.group(4),
+                    "trans_text": m.group("text"),
                     "quantity": quantity,
+                    "analysis": parse_object_list(m.group("dims")),
                 })
             continue
 
@@ -153,6 +170,10 @@ def parse_sie(text: str, *, with_journal: bool = False) -> dict:
             out["program"] = m.group(1)
         elif m := RE_KONTO.match(line):
             out["konto"][m.group(1)] = m.group(2)
+        elif m := RE_DIM.match(line):
+            out["dims"].append((m.group(1), m.group(2)))
+        elif m := RE_OBJEKT.match(line):
+            out["objekt"].append((m.group(1), m.group(2), m.group(3)))
         elif m := RE_UB.match(line):
             try:
                 out["ub"].append((m.group(1), float(m.group(2).replace(",", "."))))

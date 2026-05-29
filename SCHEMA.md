@@ -216,6 +216,68 @@ Aktiveras av `load_saft.py --include-journal`.
 | `line_description` | | |
 | `currency`, `source_file`, `loaded_at` | | |
 
+### `fact_saft_analysis` — SAF-T-dimensioner per (linje × axel)
+Aktiveras av `load_saft.py`. En rad per SAF-T GeneralLedgerEntry-rad × Analysis-block.
+Delar `dim_analysis_type`/`dim_analysis_member` med SIE via `source_format='SAFT'`.
+⚠️ SUM aldrig över `analysis_type` — beloppet upprepas per axel (se Mental model 5).
+
+| Kolumn | Typ | Notering |
+|---|---|---|
+| `id` | BIGINT PK | |
+| `company_id` | INT FK→`dim_company` | |
+| `period` | TEXT | `YYYYMM` från ValueDate per linje |
+| `transaction_id` | TEXT | SAF-T TransactionID |
+| `line_no` | INT | Ordning inom transaktionen |
+| `account_code` | TEXT | |
+| `analysis_type` | TEXT | SAF-T AnalysisType-kod (t.ex. `'DEP'`, `'VoTp'`) |
+| `analysis_id` | TEXT | SAF-T AnalysisID-kod (t.ex. `'3'`) |
+| `amount` | DOUBLE | Linje-belopp (månadsrörelse, aldrig YTD) |
+| `currency` | TEXT | |
+| `source_file` | TEXT | |
+| `loaded_at` | TIMESTAMP | |
+
+### `fact_sie_analysis` — SIE-dimensioner per (linje × axel)
+Aktiveras av `load_sie.py`. En rad per `#TRANS`-rad × `#OBJEKT`-block.
+Delar `dim_analysis_type`/`dim_analysis_member` med SAF-T via `source_format='SIE'`.
+⚠️ SUM aldrig över `analysis_type` — beloppet upprepas per axel (se Mental model 6).
+
+| Kolumn | Typ | Notering |
+|---|---|---|
+| `id` | BIGINT PK | |
+| `company_id` | INT FK→`dim_company` | |
+| `period` | TEXT | `YYYYMM` från verifikatets `voucher_date` |
+| `series` | TEXT | SIE verifikatserie (t.ex. `'A'`) |
+| `voucher_number` | TEXT | SIE `#VER`-nummer |
+| `line_no` | INT | Ordning inom verifikatet |
+| `account_code` | TEXT | |
+| `analysis_type` | TEXT | SIE `#DIM`-nummer som text (t.ex. `'1'` = kostnadsställe) |
+| `analysis_id` | TEXT | SIE `#OBJEKT`-nummer (t.ex. `'10'`) |
+| `amount` | DOUBLE | Linje-belopp från `#TRANS` (månadsrörelse, aldrig YTD) |
+| `currency` | TEXT | |
+| `source_file` | TEXT | |
+| `loaded_at` | TIMESTAMP | |
+
+### `dim_analysis_type` — dimensionsaxlar
+PK: `(company_id, source_format, analysis_type)` — ingen `id`-kolumn.
+| Kolumn | Typ | Notering |
+|---|---|---|
+| `company_id` | INT | del av PK |
+| `source_format` | TEXT | `'SIE'` eller `'SAFT'` — del av PK |
+| `analysis_type` | TEXT | Axelkod (SIE: `#DIM`-nr som text; SAF-T: AnalysisType-kod) — del av PK |
+| `description` | TEXT | Namn på axeln (t.ex. `'Kostnadsställe'`, `'Avdeling'`) |
+| `loaded_at` | TIMESTAMP | |
+
+### `dim_analysis_member` — dimensionsmedlemmar
+PK: `(company_id, source_format, analysis_type, analysis_id)` — ingen `id`-kolumn.
+| Kolumn | Typ | Notering |
+|---|---|---|
+| `company_id` | INT | del av PK |
+| `source_format` | TEXT | `'SIE'` eller `'SAFT'` — del av PK |
+| `analysis_type` | TEXT | Axelkod (FK logisk mot `dim_analysis_type`) — del av PK |
+| `analysis_id` | TEXT | Medlemskod (SIE: `#OBJEKT`-nr; SAF-T: AnalysisID) — del av PK |
+| `description` | TEXT | Namn på medlemmen (t.ex. `'Drift'`, `'Montørstab'`) |
+| `loaded_at` | TIMESTAMP | |
+
 ### `reporting.*` — PII-minimerade vyer (T3 2026-05-25)
 
 MCP-rollen `mcp_readonly` har INTE direktaccess på `public.fact_personnel`,

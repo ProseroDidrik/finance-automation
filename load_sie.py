@@ -56,14 +56,20 @@ JOURNAL_BATCH = 5000
 def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
                              rel_src: str, now: datetime,
                              period_cutoff: str | None = None
-                             ) -> tuple[list[tuple], set[str], int]:
-    """Plana ut vouchers → rader för fact_journal_sie.
+                             ) -> tuple[list[tuple], list[tuple], set[str], int]:
+    """Plana ut vouchers → rader för fact_journal_sie OCH fact_sie_analysis.
 
-    period_cutoff: om satt, skippa vouchers vars period (YYYYMM) > cutoff.
-    Returnerar (rows, periods, skipped_periods_count).
+    Analys-rader byggs i SAMMA loop som journalraderna och ärver linjens
+    voucher-period (period = v["date"][:6]) → analysens periodisering kan
+    aldrig divergera från journalens (skydd mot b711832-liknande bugg).
+
+    period_cutoff: om satt, skippa vouchers vars period (YYYYMM) > cutoff —
+    journal OCH analys droppas tillsammans.
+    Returnerar (journal_rows, analysis_rows, periods, skipped_periods_count).
     """
     konto = parsed["konto"]
     rows: list[tuple] = []
+    analysis_rows: list[tuple] = []
     periods: set[str] = set()
     skipped = 0
     for v in parsed["vouchers"]:
@@ -86,7 +92,13 @@ def vouchers_to_journal_rows(parsed: dict, company_id: int, currency: str,
                 t["amount"], t["trans_text"], t["quantity"],
                 currency, rel_src, now,
             ))
-    return rows, periods, skipped
+            for dim_nr, objekt_nr in t.get("analysis", []):
+                analysis_rows.append((
+                    company_id, period, v["series"], v["number"], t["line_no"],
+                    t["account"], dim_nr, objekt_nr, t["amount"],
+                    currency, rel_src, now,
+                ))
+    return rows, analysis_rows, periods, skipped
 
 
 def fy_periods(fy_start: str, period: str) -> list[str]:
@@ -323,6 +335,28 @@ def psaldo_fact_rows(psaldo_rows: list[tuple], company_id: int, currency: str,
     ]
 
 
+def sie_dim_analysis_rows(dims, objekt, company_id, now, source_format="SIE"):
+    """SIE:s #DIM-axlar + #OBJEKT-medlemmar → (type_rows, member_rows), dedup.
+
+    dims:   lista av (dim_nr, namn).
+    objekt: lista av (dim_nr, objekt_nr, namn).
+    type_rows:   (company_id, source_format, analysis_type, description, loaded_at)
+    member_rows: (company_id, source_format, analysis_type, analysis_id, description, loaded_at)
+    """
+    types: dict = {}
+    members: dict = {}
+    for dim_nr, namn in dims:
+        if dim_nr is None:
+            continue
+        types[dim_nr] = (company_id, source_format, dim_nr, namn, now)
+    for dim_nr, objekt_nr, namn in objekt:
+        if dim_nr is None or objekt_nr is None:
+            continue
+        members[(dim_nr, objekt_nr)] = (
+            company_id, source_format, dim_nr, objekt_nr, namn, now)
+    return list(types.values()), list(members.values())
+
+
 def load_file(con, path: Path, base_path: Path, period_override: str | None,
               orgnr_lookup: dict, *, dry_run: bool, include_journal: bool = False,
               override: list[int] | None = None, force: bool = False) -> str:
@@ -502,13 +536,15 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
     now = datetime.now()
 
     journal_rows: list[tuple] = []
+    analysis_rows: list[tuple] = []
     journal_periods: set[str] = set()
     journal_skipped = 0
     if include_journal and parsed["vouchers"]:
-        journal_rows, journal_periods, journal_skipped = vouchers_to_journal_rows(
-            parsed, company_id, currency, rel_src, now,
-            period_cutoff=period_override,
-        )
+        journal_rows, analysis_rows, journal_periods, journal_skipped = \
+            vouchers_to_journal_rows(
+                parsed, company_id, currency, rel_src, now,
+                period_cutoff=period_override,
+            )
 
     if dry_run:
         journal_msg = (f" JOURNAL={len(journal_rows)} ({len(journal_periods)} mån)"
@@ -545,6 +581,11 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
             )
             con.execute(
                 """DELETE FROM fact_journal_sie
+                   WHERE company_id = %s AND period > %s AND period BETWEEN %s AND %s""",
+                [company_id, period, fy_start, fy_end],
+            )
+            con.execute(
+                """DELETE FROM fact_sie_analysis
                    WHERE company_id = %s AND period > %s AND period BETWEEN %s AND %s""",
                 [company_id, period, fy_start, fy_end],
             )
@@ -585,6 +626,31 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                 psaldo_fact_rows(psaldo_rows, company_id, currency, rel_src, now),
             )
 
+        # Dimensioner: upserta axel-/medlemsnamn ur #DIM/#OBJEKT (best-effort,
+        # ON CONFLICT). Körs oberoende av include_journal — deklarationerna finns
+        # i filhuvudet även när journal hoppas över.
+        sie_type_rows, sie_member_rows = sie_dim_analysis_rows(
+            parsed.get("dims", []), parsed.get("objekt", []), company_id, now)
+        if sie_type_rows:
+            con.executemany(
+                """INSERT INTO dim_analysis_type
+                   (company_id, source_format, analysis_type, description, loaded_at)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (company_id, source_format, analysis_type)
+                   DO UPDATE SET description = EXCLUDED.description,
+                                 loaded_at = EXCLUDED.loaded_at""",
+                sie_type_rows)
+        if sie_member_rows:
+            con.executemany(
+                """INSERT INTO dim_analysis_member
+                   (company_id, source_format, analysis_type, analysis_id,
+                    description, loaded_at)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (company_id, source_format, analysis_type, analysis_id)
+                   DO UPDATE SET description = EXCLUDED.description,
+                                 loaded_at = EXCLUDED.loaded_at""",
+                sie_member_rows)
+
         # Journal: senaste laddningen vinner per (bolag, period). En SIE-fil
         # täcker hela YTD så vouchers för 202601 från en mars-fil ersätter
         # ev. tidigare 202601-laddning från en annan SIE.
@@ -605,6 +671,20 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                         source_file, loaded_at)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     journal_rows[i:i + JOURNAL_BATCH],
+                )
+            con.execute(
+                f"""DELETE FROM fact_sie_analysis
+                    WHERE company_id = %s AND period IN ({placeholders})""",
+                [company_id, *jp_sorted],
+            )
+            for i in range(0, len(analysis_rows), JOURNAL_BATCH):
+                con.executemany(
+                    """INSERT INTO fact_sie_analysis
+                       (company_id, period, series, voucher_number, line_no,
+                        account_code, analysis_type, analysis_id, amount,
+                        currency, source_file, loaded_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    analysis_rows[i:i + JOURNAL_BATCH],
                 )
 
         # SIE_VER: syntetisera YTD-saldon från verifikaten för SE/CA-bolag som
@@ -659,6 +739,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
              f"sie_rows={len(sie_rows)} psaldo_rows={len(psaldo_rows)} "
              f"psaldo_periods={len(psaldo_periods)} "
              f"journal_rows={len(journal_rows)} journal_periods={len(journal_periods)} "
+             f"analysis_rows={len(analysis_rows)} "
              f"sie_ver_rows={sie_ver_count} sie_ver_fallback={sie_ver_fallback} "
              f"sum_ub={total_ub:.2f} sum_res={total_res:.2f}",
              now],
@@ -670,7 +751,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         return "error"
 
     psaldo_msg = f" PSALDO={len(psaldo_rows)}({len(psaldo_periods)} mån)" if psaldo_rows else ""
-    journal_msg = f" JOURNAL={len(journal_rows)}({len(journal_periods)} mån)" if journal_rows else ""
+    journal_msg = f" JOURNAL={len(journal_rows)}({len(journal_periods)} mån) ANALYS={len(analysis_rows)}" if journal_rows else ""
     sie_ver_msg = (f" SIE_VER={sie_ver_count}"
                    + (f"(fallback={sie_ver_fallback})" if sie_ver_fallback else "")
                    if sie_ver_count else "")
