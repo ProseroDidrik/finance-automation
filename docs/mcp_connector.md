@@ -5,7 +5,11 @@ För kollegor som vill ställa frågor mot finance-warehouse direkt i Claude.ai.
 ## Vad kollegan får
 
 - **URL:** `https://app-finauto-mcp-6427.azurewebsites.net/mcp`
-- **Token:** delad bearer-token (admin skickar ut den separat — *kopiera den, den hashas i KV och kan inte återställas*).
+- **Token:** delad bearer-token (admin skickar ut den separat). Den lagras som
+  klartext-secret `mcp-bearer-token` i Key Vault och kan hämtas av admin med
+  `az keyvault secret show --vault-name kv-finauto-6427 --name mcp-bearer-token --query value --output tsv`.
+  (Hashen `sha256[:12]` som `bootstrap_mcp.ps1` skriver ut är bara ett
+  fingeravtryck för loggning — inte hur token:en lagras.)
 
 Två tools blir tillgängliga i Claude.ai-konversationen så fort connectorn är ansluten:
 
