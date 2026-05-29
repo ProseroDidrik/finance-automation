@@ -156,7 +156,9 @@ def load_file(con, path: Path, base_path: Path,
               filter_scenario: str | None,
               valid_companies: set[int],
               is_backup: bool = False,
-              replace_full: bool = False) -> dict[str, int]:
+              replace_full: bool = False,
+              max_period: str | None = None,
+              min_period: str | None = None) -> dict[str, int]:
     """Ladda en fil. Returnerar {status: count}."""
     suffix = path.suffix.lower()
     if suffix in (".xlsx", ".xls"):
@@ -198,6 +200,15 @@ def load_file(con, path: Path, base_path: Path,
 
         # Validera period
         if not period or len(period) != 6 or not period.isdigit():
+            skipped += 1
+            continue
+
+        # Tak/golv på period (t.ex. hoppa över 2026 i filer som går in i 2026 —
+        # de åren äger andra filer auktoritativt; min_period chunkar tunga filer).
+        if max_period and period > max_period:
+            skipped += 1
+            continue
+        if min_period and period < min_period:
             skipped += 1
             continue
 
@@ -335,6 +346,12 @@ def main() -> None:
     parser.add_argument("--replace-full", action="store_true",
                         help="Full ersättning: radera ALLA rader för de (källa, scenario, år) "
                              "filen täcker före INSERT, i stället för per (bolag, period, källa).")
+    parser.add_argument("--max-period", default=None, metavar="YYYYMM",
+                        help="Ladda bara rader med period <= detta (inklusive). T.ex. "
+                             "202512 = hoppa över 2026 i filer som sträcker sig in i 2026.")
+    parser.add_argument("--min-period", default=None, metavar="YYYYMM",
+                        help="Ladda bara rader med period >= detta (inklusive). Kombinera "
+                             "med --max-period för att chunka tunga filer per år (B1ms).")
     args = parser.parse_args()
 
     begin_run("load_history_excel.py", "HIST")
@@ -418,6 +435,8 @@ def main() -> None:
                 valid_companies=valid_companies,
                 is_backup=is_backup,
                 replace_full=args.replace_full,
+                max_period=args.max_period,
+                min_period=args.min_period,
             )
             for k, v in counts.items():
                 totals[k] = totals.get(k, 0) + v
