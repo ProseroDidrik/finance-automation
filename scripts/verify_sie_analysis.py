@@ -57,7 +57,7 @@ def main():
         print(f"[{'OK' if n2 == n else 'FAIL'}] idempotens: {n} -> {n2}")
         jd, ad = period_dist(sie)
         ok = set(ad) <= set(jd)
-        print(f"[{'OK' if ok else 'FAIL'}] period-bindning (analys ⊆ journal): "
+        print(f"[{'OK' if ok else 'FAIL'}] period-bindning (analys subset av journal): "
               f"analys={sorted(ad)} journal={sorted(jd)}")
         row = con.execute(
             """SELECT analysis_type, SUM(amount) FROM fact_sie_analysis
