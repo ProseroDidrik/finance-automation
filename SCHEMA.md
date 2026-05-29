@@ -258,23 +258,23 @@ Delar `dim_analysis_type`/`dim_analysis_member` med SAF-T via `source_format='SI
 | `loaded_at` | TIMESTAMP | |
 
 ### `dim_analysis_type` — dimensionsaxlar
+PK: `(company_id, source_format, analysis_type)` — ingen `id`-kolumn.
 | Kolumn | Typ | Notering |
 |---|---|---|
-| `id` | BIGINT PK | |
-| `company_id` | INT | |
-| `source_format` | TEXT | `'SIE'` eller `'SAFT'` |
-| `analysis_type` | TEXT | Axelkod (SIE: `#DIM`-nr som text; SAF-T: AnalysisType-kod) |
+| `company_id` | INT | del av PK |
+| `source_format` | TEXT | `'SIE'` eller `'SAFT'` — del av PK |
+| `analysis_type` | TEXT | Axelkod (SIE: `#DIM`-nr som text; SAF-T: AnalysisType-kod) — del av PK |
 | `description` | TEXT | Namn på axeln (t.ex. `'Kostnadsställe'`, `'Avdeling'`) |
 | `loaded_at` | TIMESTAMP | |
 
 ### `dim_analysis_member` — dimensionsmedlemmar
+PK: `(company_id, source_format, analysis_type, analysis_id)` — ingen `id`-kolumn.
 | Kolumn | Typ | Notering |
 |---|---|---|
-| `id` | BIGINT PK | |
-| `company_id` | INT | |
-| `source_format` | TEXT | `'SIE'` eller `'SAFT'` |
-| `analysis_type` | TEXT | Axelkod (FK logisk mot `dim_analysis_type`) |
-| `analysis_id` | TEXT | Medlemskod (SIE: `#OBJEKT`-nr; SAF-T: AnalysisID) |
+| `company_id` | INT | del av PK |
+| `source_format` | TEXT | `'SIE'` eller `'SAFT'` — del av PK |
+| `analysis_type` | TEXT | Axelkod (FK logisk mot `dim_analysis_type`) — del av PK |
+| `analysis_id` | TEXT | Medlemskod (SIE: `#OBJEKT`-nr; SAF-T: AnalysisID) — del av PK |
 | `description` | TEXT | Namn på medlemmen (t.ex. `'Drift'`, `'Montørstab'`) |
 | `loaded_at` | TIMESTAMP | |
 
