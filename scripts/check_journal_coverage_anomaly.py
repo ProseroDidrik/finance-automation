@@ -6,21 +6,24 @@ passerar tyst. Här letar vi i stället efter (bolag, period) där journalradant
 KOLLAPSAR mot bolagets typiska FY-volym = signaturen för per-period-DELETE-clobber.
 
 Heuristik (kandidater för mänsklig granskning, inte auto-åtgärd):
-  per (bolag, FY-år): median journalrader över månader med >0;
-  flagga månad där count < FACTOR * median OCH median >= MIN_MEDIAN OCH
-  FY-året har >= MIN_MONTHS aktiva månader (så medianen är meningsfull).
+  per (bolag, FY-år): baslinje = MAX journalrader över månaderna;
+  flagga månad där count < FACTOR * baslinje OCH baslinje >= MIN_BASELINE OCH
+  FY-året har >= MIN_MONTHS månader.
+
+OBS baslinjen är MAX, inte median (bug_003): medianen räknas över SAMMA månader
+vi letar anomalier i, så när >hälften av en högvolym-FY är clobbrad kollapsar
+medianen under tröskeln och hela FY:t hoppas över → de VÄRST clobbrade FY:n gav
+noll träffar. MAX (övre kvantil-idé) är robust mot hur många månader som faller.
 
 Read-only. Mot prod via DATABASE_URL_RO (mcp_readonly).
 """
 import os
-import statistics
 from collections import defaultdict
 import psycopg
 
-DSN = os.environ["DATABASE_URL_RO"]
-FACTOR = 0.10        # < 10% av FY-medianen = kollaps
-MIN_MEDIAN = 100     # bara FY-år med substantiell volym
-MIN_MONTHS = 6       # median meningsfull först vid halvår+
+FACTOR = 0.10        # < 10% av FY-baslinjen = kollaps
+MIN_BASELINE = 100   # bara FY-år med substantiell volym (max-månad)
+MIN_MONTHS = 6       # baslinje meningsfull först vid halvår+
 
 SQL = """
 SELECT company_id, period, count(*) AS n
@@ -29,35 +32,43 @@ GROUP BY 1, 2
 """
 
 
-def main():
-    with psycopg.connect(DSN, connect_timeout=30) as con:
-        with con.cursor() as cur:
-            cur.execute("SET statement_timeout='150s'")
-            cur.execute(SQL)
-            rows = cur.fetchall()
-
-    # gruppera per (bolag, år)
+def flag_anomalies(rows, factor=FACTOR, min_baseline=MIN_BASELINE,
+                   min_months=MIN_MONTHS):
+    """Ren detektor (ingen DB, testbar). rows = [(company_id, period, n), ...].
+    Returnerar sorterad [(company_id, period, n, baslinje), ...] för månader vars
+    journalradantal kollapsar < factor * FY-baslinje. Baslinje = MAX (inte median)
+    så detektorn INTE blir blind när >hälften av en FY är clobbrad (bug_003)."""
     by_cy: dict[tuple, list] = defaultdict(list)
     for cid, period, n in rows:
         by_cy[(cid, period[:4])].append((period, n))
 
     flagged = []
-    for (cid, yr), months in by_cy.items():
+    for (cid, _yr), months in by_cy.items():
         counts = [n for _, n in months]
-        if len(counts) < MIN_MONTHS:
+        if len(counts) < min_months:
             continue
-        med = statistics.median(counts)
-        if med < MIN_MEDIAN:
+        base = max(counts)          # robust mot hur många månader som clobbrats
+        if base < min_baseline:
             continue
         for period, n in sorted(months):
-            if n < FACTOR * med:
-                flagged.append((cid, period, n, int(med)))
+            if n < factor * base:
+                flagged.append((cid, period, n, base))
+    return sorted(flagged)
 
-    flagged.sort()
-    print(f"company | period | journal | FY-median  (count < {int(FACTOR*100)}% av median)")
+
+def main():
+    dsn = os.environ["DATABASE_URL_RO"]
+    with psycopg.connect(dsn, connect_timeout=30) as con:
+        with con.cursor() as cur:
+            cur.execute("SET statement_timeout='280s'")
+            cur.execute(SQL)
+            rows = cur.fetchall()
+
+    flagged = flag_anomalies(rows)
+    print(f"company | period | journal | FY-baslinje(max)  (count < {int(FACTOR*100)}% av max)")
     by_co = defaultdict(int)
-    for cid, period, n, med in flagged:
-        print(f"{cid} | {period} | {n} | {med}")
+    for cid, period, n, base in flagged:
+        print(f"{cid} | {period} | {n} | {base}")
         by_co[cid] += 1
     print(f"\nFlaggade (bolag,period): {len(flagged)}")
     print("Per bolag:", dict(sorted(by_co.items())))

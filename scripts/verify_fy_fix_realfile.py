@@ -2,14 +2,15 @@
 clobbrade 202203 via 2022-daterade strö-rader). Ingen DB — bara parse + gruppering.
 Visar perioder FÖRE och EFTER FY-floor.
 """
-import json, glob, os, sys
+import glob, os, sys
 from datetime import datetime
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import load_saft
 from saft_parser import parse_saft, iter_saft_journal, derive_period, derive_fy_range
+from shared import load_config
 
-base = json.load(open("config.json"))["base_path"]
+base = load_config()["base_path"]
 fp = glob.glob(os.path.join(base, "extracted", "202604", "Norway", "009*"))[0]
 path = Path(fp)
 parsed = parse_saft(path)
