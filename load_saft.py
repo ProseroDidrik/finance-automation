@@ -285,13 +285,23 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
         journal_rows_loaded = 0
         journal_skipped = 0
         journal_vdate_fallback = 0
+        journal_out_of_fy = 0
         analysis_rows_loaded = 0
         journal_periods: set[str] = set()
+        # FY-skopning (clobber-fix): en fils journal får bara röra perioder inom
+        # dess egna räkenskapsår [fy_start, fy_end]. Strö-ValueDate-rader (helårs-
+        # filer re-exporterar äldre FY) droppas så de inte raderar ägande FY:s
+        # period. Övre gräns = min(fy_end, --period) (behåller clean-cut).
+        # Pass 1 och 2 MÅSTE filtrera identiskt → journal_periods (DELETE-setet)
+        # matchar det som faktiskt infogas.
+        jp_floor = fy_start
+        jp_ceil = min(fy_end, period_override) if period_override else fy_end
         if include_journal:
             # Pass 1: vilka perioder täcker filens journal? (ValueDate-härlett)
             for j in iter_saft_journal(path, parsed["ns"]):
                 jp = _journal_period(j, period)
-                if period_override and jp > period_override:
+                if jp < jp_floor or jp > jp_ceil:
+                    journal_out_of_fy += 1
                     continue
                 journal_periods.add(jp)
             if journal_periods:
@@ -321,7 +331,7 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                             journal_vdate_fallback += 1
                         jt, ats, jp, skipped = line_rows(
                             j, company_id, currency, rel_src, now, period,
-                            period_cutoff=period_override)
+                            period_cutoff=jp_ceil, period_floor=jp_floor)
                         if skipped:
                             journal_skipped += 1
                             continue
@@ -365,6 +375,10 @@ def load_file(con, path: Path, base_path: Path, period_override: str | None,
                    f" ANALYS={analysis_rows_loaded}" if include_journal else "")
     cutoff_msg = (f"  CUTOFF<= {period_override}: skippade journal={journal_skipped}"
                   if include_journal and period_override and journal_skipped else "")
+    fy_msg = (f"  OUT_OF_FY: droppade journal={journal_out_of_fy} "
+              f"(utanför {fy_start}-{fy_end})"
+              if include_journal and journal_out_of_fy else "")
+    cutoff_msg += fy_msg
     if include_journal and journal_vdate_fallback:
         log("WARN", company_id,
             f"{path.name}  {journal_vdate_fallback} journal-linjer saknar ValueDate "
@@ -410,16 +424,20 @@ def dim_analysis_rows(analysis_types, company_id, now, source_format="SAFT"):
 
 
 def line_rows(line, company_id, currency, rel_src, now, fallback_period,
-              period_cutoff=None):
+              period_cutoff=None, period_floor=None):
     """Bygg (journal_tuple, analysis_tuples, jp, skipped) för EN journal-linje.
 
     jp härleds EN gång via _journal_period (ValueDate per linje → TransactionDate-
     fallback). BÅDE journaltupeln och alla analystupler får samma jp → analysen
     kan inte periodiseras annorlunda än journalen (skydd mot b711832-regression).
     period_cutoff: om satt och jp > cutoff → skipped=True (journal + analys droppas).
+    period_floor: om satt och jp < floor → skipped=True. FY-start-gränsen som
+    hindrar att en helårsfils strö-ValueDate-rader (re-export av äldre FY) clobbrar
+    ägande FY:s period (se docs/superpowers/specs/2026-05-29-saft-fy-range-*).
     """
     jp = _journal_period(line, fallback_period)
-    if period_cutoff is not None and jp > period_cutoff:
+    if ((period_cutoff is not None and jp > period_cutoff)
+            or (period_floor is not None and jp < period_floor)):
         return None, [], jp, True
     debit = line["debit"] or 0.0
     credit = line["credit"] or 0.0
@@ -441,18 +459,19 @@ def line_rows(line, company_id, currency, rel_src, now, fallback_period,
 
 
 def group_analysis_by_period(lines, company_id, currency, rel_src, now,
-                             fallback_period, period_cutoff=None):
+                             fallback_period, period_cutoff=None,
+                             period_floor=None):
     """Gruppera analystupler per period ur journal-linjer (ingen DB).
 
     Återanvänder line_rows → varje analysrad ärver linjens ValueDate-period (jp).
     Returnerar dict[period -> list[analysis_tuple]]. Linjer med jp > period_cutoff
-    skippas (samma cutoff som load_file). Kärnan i historik-backfillen, testbar
-    utan databas."""
+    eller jp < period_floor skippas (samma FY-skopning som load_file). Kärnan i
+    historik-backfillen, testbar utan databas."""
     by_period: dict[str, list[tuple]] = {}
     for line in lines:
         _jt, ats, jp, skipped = line_rows(
             line, company_id, currency, rel_src, now, fallback_period,
-            period_cutoff=period_cutoff)
+            period_cutoff=period_cutoff, period_floor=period_floor)
         if skipped or not ats:
             continue
         by_period.setdefault(jp, []).extend(ats)
@@ -505,11 +524,16 @@ def backfill_file_analysis(con, path, base_path, period_override, orgnr_lookup,
     rel_src = db.relpath_from_base(path, base_path)
     now = datetime.now()
 
+    # FY-skopning (clobber-fix, samma som load_file): droppa strö-ValueDate-rader
+    # utanför filens räkenskapsår så de inte clobbrar ägande FY:s analysperiod.
+    fy_start, fy_end = derive_fy_range(parsed, period)
+    jp_ceil = min(fy_end, period_override) if period_override else fy_end
+
     # En journal-iter → analys grupperad per period (ValueDate-bunden).
     by_period = group_analysis_by_period(
         iter_saft_journal(path, parsed["ns"]),
         company_id, currency, rel_src, now,
-        fallback_period=period, period_cutoff=period_override)
+        fallback_period=period, period_cutoff=jp_ceil, period_floor=fy_start)
     type_rows, member_rows = dim_analysis_rows(
         parsed.get("analysis_types", []), company_id, now)
     total = sum(len(v) for v in by_period.values())
