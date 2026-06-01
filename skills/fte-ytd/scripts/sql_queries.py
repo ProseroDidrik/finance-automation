@@ -124,9 +124,27 @@ SELECT json_agg(row_to_json(t))::text AS payload FROM (
 
 # NO_YTD_2025_SYNTH_QUERY borttagen i v1.4: fact_journal_saft är bara ~6% inläst
 # för 2025 → syntes fabricerade siffror (~1% av facit). Se pitfall #11. Bolag utan
-# månadsvis SAFT 2025 hanteras nu via helårsproxy (202512) — de finns redan i
-# YTD_TOPGROUP_QUERY (target 202512) och flaggas FULL_YEAR_PROXY_2025 i
-# build_ru_aggregat.FULL_YEAR_ONLY_2025. Ingen separat query behövs.
+# månadsvis SAFT 2025 hanteras via helårsproxy (deras 202512 finns redan i
+# YTD_TOPGROUP_QUERY) och flaggas FULL_YEAR_PROXY_2025.
+
+# v1.5: detektera full_year_only-mängden DYNAMISKT (ersätter v1.4:s hårdkodade
+# lista). Returnerar JSON-array av company_ids; skicka in som `full_year_only_cids`
+# till build_dashboard_data. Avviker resultatet mot tidigare → någon SAFT har
+# laddats om; ingen kodändring behövs (poängen med dynamisk detektion).
+FULL_YEAR_ONLY_DETECT_QUERY = """
+WITH saft_periods_2025 AS (
+  SELECT company_id,
+         COUNT(DISTINCT period) AS n_periods,
+         BOOL_OR(period = '202512') AS has_yearend
+  FROM fact_balances
+  WHERE source_kind = 'SAFT' AND scenario = 'A'
+    AND period BETWEEN '202501' AND '202512'
+  GROUP BY company_id
+)
+SELECT json_agg(company_id ORDER BY company_id)::text AS payload
+FROM saft_periods_2025
+WHERE n_periods = 1 AND has_yearend;
+"""
 
 DIM_COMPANY_QUERY = """
 SELECT json_agg(json_build_object(

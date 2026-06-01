@@ -33,7 +33,8 @@ Ställ klargörande frågor via `AskUserQuestion` om de inte är uppenbart:
 ### 3. Dra rådata
 
 Kör SQL-queries i `scripts/sql_queries.py` — eller kopiera direkt från `references/sql_patterns.md`. Detta ger:
-- `ytd_topgroup_allkinds.json` — YTD per (bolag, period, top_group) för 202504, 202604, 202512. För FULL_YEAR_ONLY_2025-bolag fungerar 202512 som helårsproxy (de saknar 202504).
+- `ytd_topgroup_allkinds.json` — YTD per (bolag, period, top_group) för 202504, 202604, 202512. För full_year_only-bolag fungerar 202512 som helårsproxy (de saknar 202504).
+- `full_year_only_cids` — kör `FULL_YEAR_ONLY_DETECT_QUERY` (dynamisk detektion av bolag med bara helårs-SAFT 2025). Skicka in som sista argument till `build_dashboard_data`.
 - `personnel.json` — FTE och brutto-rörelse per bolag och datum
 - `wh_aaro_202604.json` — Aaro-rollup för facit-validering
 - `dim_company.json` — Bolagsregister med parent_id för RU-bygge
@@ -95,7 +96,7 @@ Se `references/known_pitfalls.md` för utförliga exempel. Snabblista:
 6. **JS template literal-fällan**: `${... + ' pe})` — `}` inuti texten stänger `${}` för tidigt. Skriv `${... + ' pe'})` (med stängande quote).
 7. **Output-storlek**: query_sql trunkerar till 50 rader vid större output. Använd `json_agg(row_to_json(t))::text` för att samla allt i en payload, eller acceptera att resultat sparas till fil.
 8. **journal_saft-2025-syntes är BORTTAGEN (v1.4)** (bara ~6% inläst → fabricerade siffror). Syntetisera inte Total Sales ur journalen. Se pitfall #11.
-9. **36 bolag har bara helårs-SAFT för 2025** (mest NO + Actas DK), hårdkodade i `build_ru_aggregat.FULL_YEAR_ONLY_2025`. De flaggas `FULL_YEAR_PROXY_2025`; financial-YoY mot 202504 nullas (jämför 202512-helår mot Mercurs HELÅRSSIFFRA). FTE-delta är OK. Se pitfall #12.
+9. **~36 bolag har bara helårs-SAFT för 2025** (mest NO + Actas DK), detekteras dynamiskt via `FULL_YEAR_ONLY_DETECT_QUERY` (v1.5; var hårdkodad i v1.4) och skickas in som `full_year_only_cids`. De flaggas `FULL_YEAR_PROXY_2025`; financial-YoY mot 202504 nullas (jämför 202512-helår mot Mercurs HELÅRSSIFFRA). FTE-delta behålls bara om apr-2025-snapshot finns. Se pitfall #12.
 10. **CENTR-valuta är fixad i prod (2026-06-01)** via `db.py COMPANY_CURRENCY_OVERRIDE` (50/51/53 SEK, 52 NOK, 54 DKK). Ingen currency-override behövs längre i skillen — `dim_company.currency` är korrekt. Se pitfall #9 i known_pitfalls.
 
 ## Filstruktur
@@ -126,6 +127,7 @@ fte-ytd/
 
 ## Versionshistorik
 
+- **v1.5** (2026-06-01): Dynamisk detektion av full_year_only-mängden via `FULL_YEAR_ONLY_DETECT_QUERY` (ersätter v1.4:s hårdkodade 36-cid-lista — slipper underhåll vid SAFT-omladdning). Idé från en parallell v1.3.1; resten av v1.3.1 (currency-override, oguardad fte_delta) togs INTE in — override är obsolet (prod fixad) och fte_delta-guarden behölls. Ny signatur: `build_dashboard_data(ytd, companies, personnel, fx, full_year_only_cids)`.
 - **v1.4** (2026-06-01): Faktiskt IMPLEMENTERAT det v1.3 bara dokumenterade. Tog bort `NO_YTD_2025_SYNTH_QUERY` och journal-syntes-mergen i `build_ru_aggregat` (fabricerade NO-2025-siffror). Hårdkodad `FULL_YEAR_ONLY_2025` (36 cids) → flaggar `FULL_YEAR_PROXY_2025`, nullar financial-2025-delta (behåller FTE-delta), använder befintlig 202512-SAFT som helårsproxy. CENTR currency-override behövs ej längre — `dim_company.currency` rättad i prod (db.py). Verifierat mot prod 2026-06-01.
 - **v1.3** (2026-06-01): Avsåg sluta fake-syntetisera 2025 ur journal_saft + helårsproxy, men ändringen nådde bara dokumentationen — koden syntetiserade fortf. (rättat i v1.4).
 - **v1.2** (2026-05-30): Symmetric MAN-omklassificeringar identifierade. Col 139 från Mercur används som 2025-facit. CENTR currency override för cid 50/51/52/53/54.

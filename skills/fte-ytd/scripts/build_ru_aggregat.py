@@ -15,17 +15,13 @@ Aggregering använder abs() per (cid, period, top_group) för att vara robust mo
 import json
 from collections import defaultdict
 
-# Bolag som saknar månadsvis SAFT för 2025 (bara helårs-SAFT på 202512). För dessa
-# finns ingen YTD-apr-2025-baslinje — financial YoY mot 202504 är meningslös.
-# De flaggas FULL_YEAR_PROXY_2025 och jämförs 202512-helår mot Mercurs helår i st.
-# Källa: SELECT company_id FROM fact_balances WHERE source_kind='SAFT' AND scenario='A'
-#        AND period BETWEEN '202501' AND '202512' GROUP BY company_id
-#        HAVING COUNT(DISTINCT period)=1 AND bool_or(period='202512')  (verifierat 2026-06-01).
-FULL_YEAR_ONLY_2025 = {
-    8, 9, 16, 17, 19, 36, 52, 77, 78, 80, 81, 91, 103, 104, 106, 107, 111, 148,
-    157, 158, 165, 171, 175, 176, 189, 198, 200, 201, 202, 204, 205, 217, 233,
-    234, 237, 244,
-}
+# v1.5: full_year_only-mängden DETEKTERAS DYNAMISKT i körtid via
+# sql_queries.FULL_YEAR_ONLY_DETECT_QUERY (bolag med bara helårs-SAFT 202512 för
+# 2025) och skickas in i build_dashboard_data som `full_year_only_cids`. Tidigare
+# (v1.4) var listan hårdkodad här — den ströks för att slippa underhåll när SAFT
+# laddas om. För dessa bolag finns ingen YTD-apr-2025-baslinje: financial YoY mot
+# 202504 är meningslös, de flaggas FULL_YEAR_PROXY_2025 och jämförs 202512-helår
+# mot Mercurs helår i stället.
 
 
 def build_reporting_units(companies):
@@ -72,25 +68,29 @@ def build_reporting_units(companies):
     return ru_meta, cid_to_co, parent_to_children
 
 
-def build_dashboard_data(ytd, companies, personnel, fx):
+def build_dashboard_data(ytd, companies, personnel, fx, full_year_only_cids):
     """Bygg dashboard_data.json-payload från rådata.
 
     Args:
         ytd: list of {target_period, company_id, name, country, currency, kind, top_group, amount_local}
-             — för perioderna 202504, 202604, 202512. För FULL_YEAR_ONLY_2025-bolag
+             — för perioderna 202504, 202604, 202512. För full_year_only-bolag
              saknas 202504 (ingen månadsvis SAFT 2025); deras 202512 används som proxy.
         companies: dim_company list with parent_id
         personnel: per-cid personnel data
         fx: dict {period: {currency: rate_to_SEK}}
+        full_year_only_cids: iterable av company_ids som saknar månadsvis SAFT 2025
+             (bara helårs-SAFT 202512). Detekteras dynamiskt via
+             sql_queries.FULL_YEAR_ONLY_DETECT_QUERY — flaggas FULL_YEAR_PROXY_2025.
 
     Returns:
         dict {'companies': [...], 'meta': {...}}
     """
+    full_year_only = set(full_year_only_cids)
     ru_meta, cid_to_co, _ = build_reporting_units(companies)
     cid_to_ru = {m: ru_id for ru_id, ru in ru_meta.items() for m in ru['member_cids']}
 
     # v1.4: ingen journal_saft-2025-syntes längre (fabricerade siffror, bara ~6%
-    # inläst — se pitfall #11). FULL_YEAR_ONLY_2025-bolag får istället helårsproxy
+    # inläst — se pitfall #11). full_year_only-bolag får istället helårsproxy
     # från sin egen 202512-SAFT (redan i `ytd`) + flaggan FULL_YEAR_PROXY_2025.
     raw_by_cid_p_tg = {}
     all_rows = list(ytd)
@@ -182,13 +182,13 @@ def build_dashboard_data(ytd, companies, personnel, fx):
         k25 = ru['kpis']['202504']
         k26 = ru['kpis']['202604']
         fte_delta = (ru.get('fte_apr_2026') or 0) - (ru.get('fte_apr_2025') or 0)
-        is_proxy = any(m in FULL_YEAR_ONLY_2025 for m in ru['member_cids'])
+        is_proxy = any(m in full_year_only for m in ru['member_cids'])
         if is_proxy:
             # Ingen YTD-apr-2025-baslinje → financial YoY mot 202504 är meningslös.
             # Nulla financial-deltan; jämför 202512-helår mot Mercurs helår i dashboarden.
             # FTE-delta behålls BARA om apr-2025-snapshot finns — annars blir det
             # fte_apr_2026 − 0 = hela 2026-headcounten felaktigt visad som nyanställd
-            # (7 av de 36 saknar apr-2025-snapshot: 52,106,107,175,176,202,233).
+            # (några full_year_only-bolag saknar apr-2025-snapshot, t.ex. cid 52).
             ru['delta'] = {
                 'sales_abs': None, 'sales_pct': None,
                 'personnel_abs': None, 'personnel_pct': None,
