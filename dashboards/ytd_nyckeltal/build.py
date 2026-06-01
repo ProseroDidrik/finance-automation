@@ -112,6 +112,13 @@ def main(argv=None) -> None:
     log("OK", f"HTML: {html_path} ({html_path.stat().st_size // 1024} KB)")
     render_xlsx.render(dash, validation, fyo, xlsx_path)
     log("OK", f"Excel: {xlsx_path}")
+
+    # Persistera mellan-data (post-attach) för felsökning/diff — inte stale.
+    (args.output / "dashboard_data.json").write_text(
+        json.dumps(dash, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    if validation is not None:
+        (args.output / "validation.json").write_text(
+            json.dumps(validation, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     log("DONE", "build ytd_nyckeltal")
 
 
