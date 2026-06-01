@@ -44,10 +44,31 @@ WITH RECURSIVE walk AS (
   SELECT w.company_id, w.account_code, p.account_id, p.parent_id, w.depth + 1
   FROM walk w JOIN dim_account_map p ON w.parent_id = p.account_id WHERE w.depth < 10
 ),
+-- Delade (bolagsagnostiska) trädnoder: account_id satt, account_code/company_id =
+-- NULL. Omfattar P-koder (P_30 …) men även '_'/'BUDG'. `walk` seedar bara company_id
+-- IS NOT NULL → MAN/IMP_ADJ bokade på delade koder droppas annars tyst. Walka upp
+-- dem separat (speglar report_pnl.sql:177).
+pwalk AS (
+  SELECT m.account_id AS pcode, m.account_id AS cur_id, m.parent_id, 0 AS depth
+  FROM dim_account_map m
+  WHERE m.account_code IS NULL AND m.company_id IS NULL AND m.is_aggregated = FALSE
+  UNION ALL
+  SELECT pw.pcode, p.account_id, p.parent_id, pw.depth + 1
+  FROM pwalk pw JOIN dim_account_map p ON pw.parent_id = p.account_id WHERE pw.depth < 12
+),
 acc_aaro AS (  -- NÄRMASTE aaro-grupp-nod ovanför lövet (depth ASC)
-  SELECT DISTINCT ON (company_id, account_code) company_id, account_code, cur_id AS aaro_id
-  FROM walk WHERE cur_id IN ({id_list})
-  ORDER BY company_id, account_code, depth ASC
+  SELECT company_id, account_code, aaro_id FROM (
+    SELECT DISTINCT ON (company_id, account_code) company_id, account_code, cur_id AS aaro_id
+    FROM walk WHERE cur_id IN ({id_list})
+    ORDER BY company_id, account_code, depth ASC
+  ) per_company
+  UNION ALL
+  -- P-koder: company_id = NULL → matchas på account_code oavsett bolag.
+  SELECT NULL::int AS company_id, pcode AS account_code, aaro_id FROM (
+    SELECT DISTINCT ON (pcode) pcode, cur_id AS aaro_id
+    FROM pwalk WHERE cur_id IN ({id_list})
+    ORDER BY pcode, depth ASC
+  ) pcode_aaro
 ),
 fb_signed AS (
   SELECT fb.company_id, fb.period, fb.account_code, fb.source_kind, c.currency,
@@ -73,7 +94,7 @@ base_ytd AS (
   FROM targets t
   JOIN base_pick bp ON bp.period = t.target_period
   JOIN fb_signed fb ON fb.company_id = bp.company_id AND fb.source_kind = bp.base_src
-  JOIN acc_aaro a ON a.company_id = fb.company_id AND a.account_code = fb.account_code
+  JOIN acc_aaro a ON a.account_code = fb.account_code AND (a.company_id = fb.company_id OR a.company_id IS NULL)
   WHERE (bp.base_src IN ('SIE','SIE_VER','SAFT','SAFT_VER') AND fb.period = t.target_period)
      OR (bp.base_src IN ('SIE_PSALDO','IMP')
          AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period)
@@ -84,7 +105,7 @@ adj_ytd AS (
   FROM targets t
   JOIN fb_signed fb ON fb.source_kind IN ('MAN','IMP_ADJ')
     AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period
-  JOIN acc_aaro a ON a.company_id = fb.company_id AND a.account_code = fb.account_code
+  JOIN acc_aaro a ON a.account_code = fb.account_code AND (a.company_id = fb.company_id OR a.company_id IS NULL)
   GROUP BY t.target_period, fb.company_id, fb.currency, a.aaro_id
 )
 SELECT json_agg(row_to_json(u))::text AS payload FROM (

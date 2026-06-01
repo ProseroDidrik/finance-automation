@@ -14,12 +14,38 @@ WITH RECURSIVE walk AS (
   FROM walk w JOIN dim_account_map p ON w.parent_id = p.account_id
   WHERE w.depth < 10
 ),
+-- Bolagsagnostiska (DELADE) trädnoder: account_id satt, account_code/company_id =
+-- NULL. Omfattar Mercurs P-koder (P_30 …) men även '_' och 'BUDG' (→ Other External
+-- Costs). Den vanliga `walk` seedar bara company_id IS NOT NULL och matchar
+-- account_code, så delade noder mappas aldrig → varje MAN/IMP_ADJ bokad på en delad
+-- kod droppas tyst av slutjoinen. Walka upp dem separat. Speglar report_pnl.sql:177
+-- (account_id = account_code, account_code/company_id NULL).
+pwalk AS (
+  SELECT m.account_id AS pcode, m.account_id AS cur_id, m.parent_id, 0 AS depth
+  FROM dim_account_map m
+  WHERE m.account_code IS NULL AND m.company_id IS NULL AND m.is_aggregated = FALSE
+  UNION ALL
+  SELECT pw.pcode, p.account_id, p.parent_id, pw.depth + 1
+  FROM pwalk pw JOIN dim_account_map p ON pw.parent_id = p.account_id
+  WHERE pw.depth < 12
+),
 acc_topgroup AS (
-  SELECT DISTINCT ON (company_id, account_code) company_id, account_code, cur_id AS top_group
-  FROM walk
-  WHERE cur_id IN ('Total Sales','Total Direct Cost','Personnel','Consultants',
-                   'Other External Costs','Premises','Transportation','Depreciation')
-  ORDER BY company_id, account_code, depth DESC
+  SELECT company_id, account_code, top_group FROM (
+    SELECT DISTINCT ON (company_id, account_code) company_id, account_code, cur_id AS top_group
+    FROM walk
+    WHERE cur_id IN ('Total Sales','Total Direct Cost','Personnel','Consultants',
+                     'Other External Costs','Premises','Transportation','Depreciation')
+    ORDER BY company_id, account_code, depth DESC
+  ) per_company
+  UNION ALL
+  -- P-koder: company_id = NULL → matchas på account_code oavsett bolag i slutjoinen.
+  SELECT NULL::int AS company_id, pcode AS account_code, top_group FROM (
+    SELECT DISTINCT ON (pcode) pcode, cur_id AS top_group
+    FROM pwalk
+    WHERE cur_id IN ('Total Sales','Total Direct Cost','Personnel','Consultants',
+                     'Other External Costs','Premises','Transportation','Depreciation')
+    ORDER BY pcode, depth DESC
+  ) pcode_tg
 ),
 fb_signed AS (
   SELECT fb.company_id, fb.period, fb.account_code, fb.source_kind,
@@ -70,7 +96,12 @@ SELECT json_agg(row_to_json(t))::text AS payload FROM (
   SELECT y.target_period, c.company_id, c.name, c.country, c.currency, c.kind, c.parent_id,
     ag.top_group, ROUND(SUM(y.amount)::numeric, 0)::float AS amount_local
   FROM ytd_combined y
-  JOIN acc_topgroup ag ON ag.company_id = y.company_id AND ag.account_code = y.account_code
+  -- Vanliga konton matchas på (company_id, account_code); delade koder (company_id =
+  -- NULL i acc_topgroup) matchas på account_code oavsett bolag. Delade topgroup-koder
+  -- (P_*, '_', BUDG) är icke-numeriska och kolliderar aldrig med per-bolags numeriska
+  -- kontonummer → ingen dubbelmatch.
+  JOIN acc_topgroup ag ON ag.account_code = y.account_code
+    AND (ag.company_id = y.company_id OR ag.company_id IS NULL)
   JOIN dim_company c ON c.company_id = y.company_id
   GROUP BY y.target_period, c.company_id, c.name, c.country, c.currency, c.kind, c.parent_id, ag.top_group
 ) t;

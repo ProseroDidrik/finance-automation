@@ -30,12 +30,34 @@ WITH RECURSIVE walk AS (
   FROM walk w JOIN dim_account_map p ON w.parent_id = p.account_id
   WHERE w.depth < 10
 ),
+-- Delade (bolagsagnostiska) noder: account_id satt, account_code/company_id = NULL.
+-- P-koder (P_30 …) + '_'/'BUDG'. Utan denna gren droppas MAN/IMP_ADJ bokade på
+-- delade koder tyst (se avsnittet "Shared P-koder" nedan). Speglar report_pnl.sql:177.
+pwalk AS (
+  SELECT m.account_id AS pcode, m.account_id AS cur_id, m.parent_id, 0 AS depth
+  FROM dim_account_map m
+  WHERE m.account_code IS NULL AND m.company_id IS NULL AND m.is_aggregated = FALSE
+  UNION ALL
+  SELECT pw.pcode, p.account_id, p.parent_id, pw.depth + 1
+  FROM pwalk pw JOIN dim_account_map p ON pw.parent_id = p.account_id
+  WHERE pw.depth < 12
+),
 acc_topgroup AS (
-  SELECT DISTINCT ON (company_id, account_code) company_id, account_code, cur_id AS top_group
-  FROM walk
-  WHERE cur_id IN ('Total Sales','Total Direct Cost','Personnel','Consultants',
-                   'Other External Costs','Premises','Transportation','Depreciation')
-  ORDER BY company_id, account_code, depth DESC
+  SELECT company_id, account_code, top_group FROM (
+    SELECT DISTINCT ON (company_id, account_code) company_id, account_code, cur_id AS top_group
+    FROM walk
+    WHERE cur_id IN ('Total Sales','Total Direct Cost','Personnel','Consultants',
+                     'Other External Costs','Premises','Transportation','Depreciation')
+    ORDER BY company_id, account_code, depth DESC
+  ) per_company
+  UNION ALL
+  SELECT NULL::int AS company_id, pcode AS account_code, top_group FROM (
+    SELECT DISTINCT ON (pcode) pcode, cur_id AS top_group
+    FROM pwalk
+    WHERE cur_id IN ('Total Sales','Total Direct Cost','Personnel','Consultants',
+                     'Other External Costs','Premises','Transportation','Depreciation')
+    ORDER BY pcode, depth DESC
+  ) shared
 ),
 fb_signed AS (
   -- All fact-data med tecken-flip för P_*-koder (Mercur P-koder är teckenflippade)
@@ -94,7 +116,11 @@ SELECT json_agg(row_to_json(t))::text AS payload FROM (
   SELECT y.target_period, c.company_id, c.name, c.country, c.currency, c.kind, c.parent_id,
     ag.top_group, ROUND(SUM(y.amount)::numeric, 0)::float AS amount_local
   FROM ytd_combined y
-  JOIN acc_topgroup ag ON ag.company_id = y.company_id AND ag.account_code = y.account_code
+  -- Vanliga konton matchas på (company_id, account_code); delade koder (company_id =
+  -- NULL i acc_topgroup) på account_code oavsett bolag. Delade topgroup-koder (P_*,
+  -- '_', BUDG) är icke-numeriska → kolliderar aldrig med per-bolags konton.
+  JOIN acc_topgroup ag ON ag.account_code = y.account_code
+    AND (ag.company_id = y.company_id OR ag.company_id IS NULL)
   JOIN dim_company c ON c.company_id = y.company_id
   GROUP BY y.target_period, c.company_id, c.name, c.country, c.currency, c.kind, c.parent_id, ag.top_group
 ) t;
@@ -137,11 +163,17 @@ Bolag som saknar månadsvis SAFT 2025 (de 36 i `build_ru_aggregat.FULL_YEAR_ONLY
 
 ## KRITISKT: Shared P-koder (P_30, P_35, P_46, P_70 m.fl.)
 
-P-koder är Mercurs P-koder för aggregerade kostnader (P_30 = Försäljning, P_35 = Övrig Försäljning, P_46 = Materialkost, P_70 = Personalkost m.fl.). De finns i `dim_account_map` som `is_aggregated=FALSE` MEN `company_id=NULL` (delas mellan alla bolag).
+> ✅ **FIXAT i copy-paste-basen ovan (2026-06-01).** `pwalk` + `acc_topgroup`-UNION
+> (company_id = NULL för delade noder) och slutjoinens `(ag.company_id = y.company_id
+> OR ag.company_id IS NULL)` hanterar nu detta — du behöver INTE göra något extra om
+> du utgår från basen ovan. Avsnittet nedan förklarar varför. Bakades samtidigt in i
+> `scripts/sql_queries.py`, `dashboards/ytd_nyckeltal/queries.py` + `aaro.py`.
 
-**Min normala walk-CTE filtrerar på `company_id IS NOT NULL`** och missar därmed P-koder. När MAN-bokningar görs direkt på P-koder (vilket är vanligt) hamnar de utanför top_group-aggregeringen.
+P-koder är Mercurs P-koder för aggregerade kostnader (P_30 = Försäljning, P_35 = Övrig Försäljning, P_46 = Materialkost, P_70 = Personalkost m.fl.). De finns i `dim_account_map` som `is_aggregated=FALSE` MEN `company_id=NULL` (delas mellan alla bolag). Samma gäller de icke-P-delade koderna `_` och `BUDG` (→ Other External Costs).
 
-**Lösning: dubbel walk + COALESCE-join:**
+**Den normala walk-CTE:n filtrerar på `company_id IS NOT NULL`** och missar därmed delade koder. När MAN-bokningar görs direkt på P-koder (vilket är vanligt) hamnar de utanför top_group-aggregeringen och **droppas tyst av INNER-joinen**. Konkret fall: cid 160 Total Sales 202504 83,09→86,09 MSEK efter fix.
+
+**Lösning (implementerad ovan). Alternativ formulering: dubbel walk + COALESCE-join:**
 
 ```sql
 WITH RECURSIVE 
