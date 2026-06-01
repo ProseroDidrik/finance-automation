@@ -58,6 +58,10 @@ MERCUR_TO_CID = {
     'Södra Vägens Låsservice AB': 152, 'Norrbottens Larmkonsult AB': 172,
     'Uppsala Säkerhetsteknik AB': 180, 'Låssmeden KanLås AB': 186,
     'Lås-Arne Malmström AB': 197,
+    # cid 102 heter 'Norrköping' i dim_company → fuzzy-score mot 'Låssmeden i
+    # Norrköping AB' blir 0,476 (< 0,5-tröskeln) + 'Låssmeden'-token krockar med
+    # cid 14. Explicit mappning krävs.
+    'Låssmeden i Norrköping AB': 102,
     # DK
     'SIKOM Danmark A/S': 216,
     # Skip
