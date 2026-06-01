@@ -51,6 +51,18 @@ COUNTRY_CURRENCY = {
     "CA": "SEK",
 }
 
+# Per-bolags valutakorrigering: CENTR-bolag ärver land→EUR-defaulten ovan, men de
+# centrala Prosero-bolagen för bok i sin egen lokala valuta (svensk AB=SEK, norsk
+# AS=NOK, dansk A/S=DKK). Utan detta blåses FX-omräknad CENTR-Personnel/OtherExt
+# upp ~10x. Appliceras efter COUNTRY_CURRENCY i sync_dim_company.
+COMPANY_CURRENCY_OVERRIDE = {
+    50: "SEK",  # Prosero Security AB (svensk)
+    51: "SEK",  # Prosero Security Group AB (svensk)
+    52: "NOK",  # Prosero Security AS (norsk)
+    53: "SEK",  # Prosero Security Holding AB (svensk)
+    54: "DKK",  # Prosero Security A/S (dansk)
+}
+
 
 class Conn:
     """Tunn wrapper kring psycopg.Connection som speglar tidigare DuckDB-API.
@@ -610,6 +622,7 @@ def sync_dim_company(con: Conn) -> int:
         currency = COUNTRY_CURRENCY.get(country, "")
         if not currency:
             continue
+        currency = COMPANY_CURRENCY_OVERRIDE.get(bid, currency)
         rows.append((
             bid,
             info.get("name") or "",
