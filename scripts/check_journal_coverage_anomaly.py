@@ -8,8 +8,9 @@ KOLLAPSAR mot bolagets typiska FY-volym = signaturen för per-period-DELETE-clob
 Heuristik (kandidater för mänsklig granskning, inte auto-åtgärd):
   per (bolag, FY-år): baslinje = MAX journalrader över månaderna;
   flagga månad där count < FACTOR * baslinje OCH baslinje >= MIN_BASELINE OCH
-  FY-året har >= MIN_MONTHS månader. FRAMTIDA månader (> innevarande period)
-  exkluderas helt — de har ~0 rader för att de inte inträffat, inte clobbats.
+  FY-året har >= MIN_MONTHS månader. INNEVARANDE + FRAMTIDA månader (>= innevarande
+  period) exkluderas helt — de har ~0 rader (laddas efter månadsskiftet / har inte
+  inträffat), inte för att de clobbats.
 
 OBS baslinjen är MAX, inte median (bug_003): medianen räknas över SAMMA månader
 vi letar anomalier i, så när >hälften av en högvolym-FY är clobbrad kollapsar
@@ -56,12 +57,14 @@ def flag_anomalies(rows, factor=FACTOR, min_baseline=MIN_BASELINE,
     journalradantal kollapsar < factor * FY-baslinje. Baslinje = MAX (inte median)
     så detektorn INTE blir blind när >hälften av en FY är clobbrad (bug_003).
 
-    current_period (YYYYMM): om satt exkluderas FRAMTIDA månader (period >
-    current_period) helt — de räknas varken mot baslinje/MIN_MONTHS eller flaggas.
-    None = ingen filtrering (bakåtkompatibelt för historik-only-rader/tester)."""
+    current_period (YYYYMM): om satt exkluderas INNEVARANDE + FRAMTIDA månader
+    (period >= current_period) helt — innevarande månad är ännu mid-load (SAF-T
+    laddas efter månadsskiftet) och delar framtidens ~0-rader-egenskap. De räknas
+    varken mot baslinje/MIN_MONTHS eller flaggas. None = ingen filtrering
+    (bakåtkompatibelt för historik-only-rader/tester)."""
     if current_period is not None:
         rows = [(cid, period, n) for cid, period, n in rows
-                if period <= current_period]
+                if period < current_period]
     by_cy: dict[tuple, list] = defaultdict(list)
     for cid, period, n in rows:
         by_cy[(cid, period[:4])].append((period, n))
@@ -88,9 +91,10 @@ def main():
             cur.execute(SQL)
             rows = cur.fetchall()
 
-    flagged = flag_anomalies(rows, current_period=current_yyyymm())
+    cur_period = current_yyyymm()
+    flagged = flag_anomalies(rows, current_period=cur_period)
     print(f"company | period | journal | FY-baslinje(max)  (count < {int(FACTOR*100)}% av max, "
-          f"baslinje>={MIN_BASELINE}, exkl. framtida > {current_yyyymm()})")
+          f"baslinje>={MIN_BASELINE}, exkl. innevarande+framtida >= {cur_period})")
     by_co = defaultdict(int)
     for cid, period, n, base in flagged:
         print(f"{cid} | {period} | {n} | {base}")
