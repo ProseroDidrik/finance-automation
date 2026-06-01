@@ -45,8 +45,9 @@ query/FX/best_source-buggar isoleras från renderar-buggar.
 | `db_io.py` | DB-åtkomst via repots `db.py` (read-only), json_agg-runner | nytt |
 | `queries.py` | SQL-mallar (YTD_TOPGROUP, FULL_YEAR_ONLY_DETECT, PERSONNEL, DIM_COMPANY) | kopia av `skills/fte-ytd/scripts/sql_queries.py` |
 | `aggregate.py` | `build_dashboard_data` — RU-aggregat + proxy-flaggning | kopia av `build_ru_aggregat.py` |
-| `mercur.py` | parsa Mercur Resultaträkning-xlsx (2026 + 2025) | `parse_mercur.py` + split_col-fix |
+| `mercur.py` | parsa Mercur Resultaträkning (20)+(21)-xlsx (2026 + 2025) | `parse_mercur.py` + split_col-fix + komplett `parse_aaro_facit` |
 | `validate.py` | Mercur-mappning + diff per RU (2026 + 2025) + attach | `validate_facit.py` + 2025-stöd |
+| `aaro.py` | AARO-konto-klassificering: warehouse vs Mercur (21) per account_id, båda år | nytt (byggare saknades i Cowork-källan) |
 | `render_html.py` | template-baserad HTML-generering | ersätter `update_html.py` |
 | `render_xlsx.py` | Excel-bygge | `build_xlsx.py` + buggfixar |
 | `templates/dashboard_base.html` | HTML-skelett (CSS+JS, data tokeniserad) | extraherad ur v13-HTML |
@@ -86,11 +87,24 @@ py -m pytest dashboards/ytd_nyckeltal/tests/
 ```
 
 `test_aggregate.py` (RU-bygge + proxy-flaggning), `test_validate.py`
-(MERCUR_TO_CID + RU-mappning + 2025-attach). Hermetiska — ingen DB.
+(MERCUR_TO_CID + RU-mappning + 2025-attach), `test_aaro.py` (label-parsning +
+AARO_DATA-byggande). Hermetiska — ingen DB.
+
+## AARO-klassificering
+
+Flik "Aaro-klassificering" (Excel) + `AARO_DATA` (HTML, under Validering-fliken)
+jämför warehouse mot Mercur `Resultaträkning (21).xlsx` per **AARO-grupp-konto**
+(`account_id`, t.ex. 'Sales'/'COGS' + 4-siffrig `aaro_code`), för båda år.
+
+- Warehouse-aggregering: samma `dim_account_map`-walk som topgroup, men fångar
+  `account_id`-nivån (närmaste AARO-nod ovanför lövet). Join-nyckel = `account_id`
+  (4-siffer-koden finns INTE som egen nod). best_source + FX → SEK + abs.
+- Bor i en **flat modul `aaro.py`** (inte underkatalogen `aaro/` som tidigare
+  skisserades) — håller import-mönstret platt med resten av paketet.
+- Byggaren fanns inte i Cowork-källan (bara `build_xlsx`/`update_html` läste
+  `aaro_classification.json`); återskapad här från kontraktet + v13-referensdatan.
 
 ## Uppskjutet (separat PR)
 
-- **Aaro-klassificering** — flik + `AARO_DATA` i HTML. Läggs i
-  `dashboards/ytd_nyckeltal/aaro/`. v1 injicerar `AARO_DATA = []`.
 - Scheduler (cron/Task Scheduler) — v1 är bara CLI.
 - Dynamiska FX ur `dim_exchange_rate`.
