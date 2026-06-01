@@ -10,7 +10,7 @@ FIX = json.loads((Path(__file__).parent / "fixtures" / "sample_ytd.json").read_t
 
 def _build(full_year_only_cids):
     return build_dashboard_data(FIX["ytd"], FIX["companies"], FIX["personnel"],
-                                FIX["fx"], full_year_only_cids)
+                                FIX["fx_rates"], full_year_only_cids)
 
 
 def _ru(dash, cid):
@@ -37,9 +37,22 @@ def test_proxy_flag_when_member_full_year_only():
     assert actas["delta"]["sales_pct"] is None
 
 
-def test_sales_fx_converted_to_sek():
-    """Ålesund (NOK) 202604 Total Sales konverteras till SEK med abs()."""
+def test_sales_fx_per_month_with_carry_forward():
+    """Ålesund (NOK) 202604: varje månadsrörelse × sin egen snittkurs, abs().
+
+    Månader: 202602 −2,0M @0.90, 202603 −2,0M @0.95, 202604 −2,634,480 @ saknad
+    kurs → carry-forward 0.95. Bevisar både per-månads-differentiering och
+    carry-forward (skiljer sig från en enda YTD-kurs)."""
     dash = _build(full_year_only_cids=[])
     aalesund = _ru(dash, 77)
-    # 6 634 480 NOK * 0.94 ≈ 6 236 411 SEK
-    assert abs(aalesund["kpis"]["202604"]["sales"] - 6_634_480 * 0.94) < 1.0
+    expected = abs(-2_000_000 * 0.90 + -2_000_000 * 0.95 + -2_634_480 * 0.95)
+    assert abs(aalesund["kpis"]["202604"]["sales"] - expected) < 1.0
+    # Sanity: skiljer sig från naiv enkel-kurs (skulle bli 6,634,480 × 0.95)
+    assert abs(aalesund["kpis"]["202604"]["sales"] - 6_634_480 * 0.95) > 1.0
+
+
+def test_sek_company_unchanged_rate_1():
+    """SEK-bolag (ej i fx_rates) → kurs 1.0, lokalbelopp == SEK."""
+    from aggregate import _make_fx_resolver
+    rate_of, _ = _make_fx_resolver(FIX["fx_rates"])
+    assert rate_of("SEK", "202604") == 1.0

@@ -32,8 +32,12 @@ DISPLAY_TOP_GROUPS = [
     "Depreciation", "Justerad EBITDA",
 ]
 
-# Koncerntotal Total Sales YTD 202604 (SEK), facit från v13. Smoke-test-ankare.
-EXPECTED_KONCERN_SALES_202604_MSEK = 1591
+# Koncerntotal Total Sales YTD 202604 (SEK) — warehouse self-consistency-ankare.
+# 1598 efter rebase på main (per-månads-FX + P-kods-MAN-fixen 256662c tillsammans);
+# var 1594 (FX utan P-kods-MAN), 1591 vid flat-FX. OBS: detta är warehouse-summan,
+# INTE Mercur koncern-facit (1554) — skillnaden ~2,8% är koncern-elimineringar
+# (pre-existerande, ej FX).
+EXPECTED_KONCERN_SALES_202604_MSEK = 1598
 KONCERN_SALES_TOLERANCE = 0.02  # ±2 %
 
 DEFAULT_PERIOD = "202604"

@@ -24,7 +24,7 @@ if str(_HERE) not in sys.path:
 import db_io  # noqa: E402
 from aggregate import build_dashboard_data  # noqa: E402
 from config import (  # noqa: E402
-    FX, DEFAULT_PERIOD, EXPECTED_KONCERN_SALES_202604_MSEK, KONCERN_SALES_TOLERANCE,
+    DEFAULT_PERIOD, EXPECTED_KONCERN_SALES_202604_MSEK, KONCERN_SALES_TOLERANCE,
 )
 
 
@@ -75,8 +75,9 @@ def build_dash(period: str) -> tuple[dict, list]:
         con.close()
     fyo = raw["full_year_only_cids"] or []
     log("INFO", f"Hämtade: {len(raw['ytd'])} ytd-rader, {len(raw['companies'])} bolag, "
-                f"{len(fyo)} full-year-only-cids")
-    dash = build_dashboard_data(raw["ytd"], raw["companies"], raw["personnel"], FX, fyo)
+                f"{len(raw['fx_rates'])} FX-kurser, {len(fyo)} full-year-only-cids")
+    dash = build_dashboard_data(raw["ytd"], raw["companies"], raw["personnel"],
+                                raw["fx_rates"], fyo)
     log("INFO", f"Byggde {len(dash['companies'])} reporting units")
     return dash, fyo
 
