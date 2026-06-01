@@ -158,29 +158,29 @@ SELECT json_agg(row_to_json(t))::text AS payload FROM (
 # till build_dashboard_data. Avviker resultatet mot tidigare → någon SAFT har
 # laddats om; ingen kodändring behövs (poängen med dynamisk detektion).
 # v1.6: exkludera bolag som har SAFT_VER-syntes (synthesize_saft_ver.py) — de har
-# en riktig interim-YTD-baslinje (jan..nov ur journalen) och ska INTE behandlas
-# som full_year_only/proxy. De får i stället normal YoY mot 202504. SAFT_VER är
-# redan inkopplat i base_pick (under SAFT). Bolag utan SAFT_VER förblir proxy.
+# en interim-YTD-baslinje ur journalen och fick normal YoY mot 202504.
+# v1.7: villkoret bytt från "har NÅGON saft_ver" till "har bas-snapshot VID 202504".
+# Buggen v1.6 fångade: Hemer (cid 157) har saft_ver men bara sept..nov (journalen
+# börjar i september) → INGEN aprilbaslinje. Den exkluderades ändå från proxy och
+# visade då 2025 YTD sales = 0 mot Mercurs 14,99M (felaktig röd prick i st f grå
+# proxy). Det som faktiskt avgör om riktig YoY går = finns bas (SAFT/SAFT_VER) vid
+# jämförelsemånaden 202504. Saknas den OCH helår 202512 finns → proxy.
+# (2025-perioder hårdkodade här som i resten av denna query; YoY-konceptet är
+# 2025-pinnat. Ändras jämförelseåret måste perioderna nedan följa med.)
 FULL_YEAR_ONLY_DETECT_QUERY = """
-WITH saft_periods_2025 AS (
-  SELECT company_id,
-         COUNT(DISTINCT period) AS n_periods,
-         BOOL_OR(period = '202512') AS has_yearend
-  FROM fact_balances
-  WHERE source_kind = 'SAFT' AND scenario = 'A'
-    AND period BETWEEN '202501' AND '202512'
-  GROUP BY company_id
-),
-has_saft_ver AS (
+WITH saft_yearend_2025 AS (
   SELECT DISTINCT company_id
   FROM fact_balances
-  WHERE source_kind = 'SAFT_VER' AND scenario = 'A'
-    AND period BETWEEN '202501' AND '202511'
+  WHERE source_kind = 'SAFT' AND scenario = 'A' AND period = '202512'
+),
+base_at_apr_2025 AS (
+  SELECT DISTINCT company_id
+  FROM fact_balances
+  WHERE source_kind IN ('SAFT', 'SAFT_VER') AND scenario = 'A' AND period = '202504'
 )
 SELECT json_agg(company_id ORDER BY company_id)::text AS payload
-FROM saft_periods_2025 s
-WHERE s.n_periods = 1 AND s.has_yearend
-  AND s.company_id NOT IN (SELECT company_id FROM has_saft_ver);
+FROM saft_yearend_2025 s
+WHERE s.company_id NOT IN (SELECT company_id FROM base_at_apr_2025);
 """
 
 DIM_COMPANY_QUERY = """
