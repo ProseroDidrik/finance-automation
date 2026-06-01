@@ -46,12 +46,24 @@ class FlagAnomalies(unittest.TestCase):
         self.assertEqual(guard.flag_anomalies(rows), [])
 
     def test_future_periods_excluded(self):
-        # FY 2026: jan-jun riktiga (3000), jul-dec framtida (~8, ej inträffade).
+        # FY 2026: jan-jun riktiga (3000, 6 stängda månader), jul-dec framtida
+        # (~8, ej inträffade). current_period 202607 = "kör i juli".
         rows = _fy(9, "2026", [3000, 3000, 3000, 3000, 3000, 3000, 8, 8, 8, 8, 8, 8])
         # Utan gräns: jul-dec flaggas felaktigt som kollaps.
         self.assertEqual(len(guard.flag_anomalies(rows)), 6)
-        # Med innevarande period 202606: framtida exkluderas → inga flaggor.
-        self.assertEqual(guard.flag_anomalies(rows, current_period="202606"), [])
+        # Med innevarande period 202607: jul (innevarande) + aug-dec (framtida)
+        # exkluderas → jan-jun (6 stängda) passerar MIN_MONTHS, inga flaggor.
+        self.assertEqual(guard.flag_anomalies(rows, current_period="202607"), [])
+
+    def test_current_inprogress_month_excluded(self):
+        # Innevarande månad är mid-load (SAF-T laddas efter månadsskiftet) → dess
+        # ~0-rader är inte en clobb. jan-jun stängda (3000), jul = innevarande (8).
+        rows = _fy(9, "2026", [3000, 3000, 3000, 3000, 3000, 3000, 8])
+        # Utan gräns: jul (7:e månaden) flaggas felaktigt som kollaps.
+        self.assertEqual([(c, p, n) for c, p, n, _b in guard.flag_anomalies(rows)],
+                         [(9, "202607", 8)])
+        # Med innevarande period 202607: jul exkluderas (>= gränsen) → inga flaggor.
+        self.assertEqual(guard.flag_anomalies(rows, current_period="202607"), [])
 
     def test_real_clobber_still_flagged_with_current_period(self):
         # Äkta clobb i en passerad månad flaggas fortf. när current_period är satt.
