@@ -40,6 +40,25 @@ class FlagAnomalies(unittest.TestCase):
         rows = _fy(9, "2026", [8, 3000, 3000])
         self.assertEqual(guard.flag_anomalies(rows), [])
 
+    def test_small_company_base_below_min_not_flagged(self):
+        # Pyttebolag: max-månad 345 < MIN_BASELINE(500) → kollaps-flaggor är brus.
+        rows = _fy(175, "2025", [6, 33, 345, 300, 280, 310, 290, 320, 300, 305, 295, 312])
+        self.assertEqual(guard.flag_anomalies(rows), [])
+
+    def test_future_periods_excluded(self):
+        # FY 2026: jan-jun riktiga (3000), jul-dec framtida (~8, ej inträffade).
+        rows = _fy(9, "2026", [3000, 3000, 3000, 3000, 3000, 3000, 8, 8, 8, 8, 8, 8])
+        # Utan gräns: jul-dec flaggas felaktigt som kollaps.
+        self.assertEqual(len(guard.flag_anomalies(rows)), 6)
+        # Med innevarande period 202606: framtida exkluderas → inga flaggor.
+        self.assertEqual(guard.flag_anomalies(rows, current_period="202606"), [])
+
+    def test_real_clobber_still_flagged_with_current_period(self):
+        # Äkta clobb i en passerad månad flaggas fortf. när current_period är satt.
+        rows = _fy(9, "2025", [3000, 8, 3000, 3000, 3000, 3000])  # feb clobbad
+        flagged = guard.flag_anomalies(rows, current_period="202606")
+        self.assertEqual([(c, p, n) for c, p, n, _b in flagged], [(9, "202502", 8)])
+
 
 if __name__ == "__main__":
     unittest.main()

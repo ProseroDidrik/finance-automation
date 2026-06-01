@@ -8,22 +8,39 @@ KOLLAPSAR mot bolagets typiska FY-volym = signaturen för per-period-DELETE-clob
 Heuristik (kandidater för mänsklig granskning, inte auto-åtgärd):
   per (bolag, FY-år): baslinje = MAX journalrader över månaderna;
   flagga månad där count < FACTOR * baslinje OCH baslinje >= MIN_BASELINE OCH
-  FY-året har >= MIN_MONTHS månader.
+  FY-året har >= MIN_MONTHS månader. FRAMTIDA månader (> innevarande period)
+  exkluderas helt — de har ~0 rader för att de inte inträffat, inte clobbats.
 
 OBS baslinjen är MAX, inte median (bug_003): medianen räknas över SAMMA månader
 vi letar anomalier i, så när >hälften av en högvolym-FY är clobbrad kollapsar
 medianen under tröskeln och hela FY:t hoppas över → de VÄRST clobbrade FY:n gav
 noll träffar. MAX (övre kvantil-idé) är robust mot hur många månader som faller.
 
+KÄND RESIDUAL: bolag med EN volym-tung månad och låg jämn rörelse i övriga
+(t.ex. Buysec cid 176: en månad ~3300, resten ~130) flaggas på MAX-baslinjen
+trots komplett källa. Radantal ensamt kan inte skilja en sån lumpy-men-hel
+fördelning från en äkta clobb (remnant 2–120 överlappar lumpy 110–145) utan att
+riskera missa riktiga clobbar — lämnas till mänsklig granskning (kolla källfilens
+radantal, jfr Elverum-flödet).
+
 Read-only. Mot prod via DATABASE_URL_RO (mcp_readonly).
 """
+import datetime
 import os
 from collections import defaultdict
 import psycopg
 
 FACTOR = 0.10        # < 10% av FY-baslinjen = kollaps
-MIN_BASELINE = 100   # bara FY-år med substantiell volym (max-månad)
+MIN_BASELINE = 500   # bara FY-år med substantiell volym (max-månad). Höjt 100→500:
+                     # pyttebolag (max-månad < 500) ger meningslösa kollaps-flaggor
+                     # (en lugn månad är brus, inte clobb).
 MIN_MONTHS = 6       # baslinje meningsfull först vid halvår+
+
+
+def current_yyyymm() -> str:
+    """Innevarande period (YYYYMM) — gräns för att exkludera framtida månader."""
+    t = datetime.date.today()
+    return f"{t.year:04d}{t.month:02d}"
 
 SQL = """
 SELECT company_id, period, count(*) AS n
@@ -33,11 +50,18 @@ GROUP BY 1, 2
 
 
 def flag_anomalies(rows, factor=FACTOR, min_baseline=MIN_BASELINE,
-                   min_months=MIN_MONTHS):
+                   min_months=MIN_MONTHS, current_period=None):
     """Ren detektor (ingen DB, testbar). rows = [(company_id, period, n), ...].
     Returnerar sorterad [(company_id, period, n, baslinje), ...] för månader vars
     journalradantal kollapsar < factor * FY-baslinje. Baslinje = MAX (inte median)
-    så detektorn INTE blir blind när >hälften av en FY är clobbrad (bug_003)."""
+    så detektorn INTE blir blind när >hälften av en FY är clobbrad (bug_003).
+
+    current_period (YYYYMM): om satt exkluderas FRAMTIDA månader (period >
+    current_period) helt — de räknas varken mot baslinje/MIN_MONTHS eller flaggas.
+    None = ingen filtrering (bakåtkompatibelt för historik-only-rader/tester)."""
+    if current_period is not None:
+        rows = [(cid, period, n) for cid, period, n in rows
+                if period <= current_period]
     by_cy: dict[tuple, list] = defaultdict(list)
     for cid, period, n in rows:
         by_cy[(cid, period[:4])].append((period, n))
@@ -64,8 +88,9 @@ def main():
             cur.execute(SQL)
             rows = cur.fetchall()
 
-    flagged = flag_anomalies(rows)
-    print(f"company | period | journal | FY-baslinje(max)  (count < {int(FACTOR*100)}% av max)")
+    flagged = flag_anomalies(rows, current_period=current_yyyymm())
+    print(f"company | period | journal | FY-baslinje(max)  (count < {int(FACTOR*100)}% av max, "
+          f"baslinje>={MIN_BASELINE}, exkl. framtida > {current_yyyymm()})")
     by_co = defaultdict(int)
     for cid, period, n, base in flagged:
         print(f"{cid} | {period} | {n} | {base}")
