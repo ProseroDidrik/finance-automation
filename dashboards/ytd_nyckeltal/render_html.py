@@ -45,14 +45,18 @@ def extract_template(src_html: Path, out_template: Path) -> Path:
     return out_template
 
 
-def render(dash: dict, validation, template_path: Path, out_path: Path) -> Path:
-    """Injicera dash/validation/aaro i templaten och skriv klar HTML."""
+def render(dash: dict, validation, template_path: Path, out_path: Path,
+           aaro_data=None) -> Path:
+    """Injicera dash/validation/aaro i templaten och skriv klar HTML.
+
+    aaro_data=None → tom array (aaro-fliken renderas tom men kraschar inte).
+    """
     tmpl = Path(template_path).read_text(encoding='utf-8')
     payloads = {
         'DATA': dash,
         'VALIDATION': validation or {'rows': [], 'utfall_facit': {}, 'utfall_wh': {},
                                      'utfall_facit_25': {}, 'full_year_only_cids': []},
-        'AARO_DATA': [],   # uppskjuten — tom array håller JS:en glad
+        'AARO_DATA': aaro_data or [],
     }
     for lbl, tok in TOKENS.items():
         blob = json.dumps(payloads[lbl], ensure_ascii=False, default=str)

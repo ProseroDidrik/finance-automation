@@ -294,7 +294,40 @@ def _sheet_metod(wb, dash, val):
     ws.column_dimensions['A'].width = 130
 
 
-def render(dash, validation, fyo, out_path):
+def _sheet_aaro(wb, aaro_data):
+    ws = wb.create_sheet('Aaro-klassificering')
+    ws['A1'] = 'Klassificeringsanalys per aaro-konto — 2026 + 2025'
+    ws['A1'].font = TITLE
+    ws['A2'] = 'Warehouse vs Mercur Resultaträkning (21) per AARO-grupp-konto (account_id). YTD apr båda år.'
+    ws['A2'].font = MUTED
+    hdrs = ['Top Group', 'Account ID', 'Aaro', 'Beskrivning',
+            '2026 Facit', '2026 WH', '2026 Δ%', '2025 Facit', '2025 WH', '2025 Δ%']
+    for ci, h in enumerate(hdrs, 1):
+        c = ws.cell(row=3, column=ci, value=h)
+        c.font = HDR; c.fill = HDR_FILL; c.border = BORDER
+    r = 4
+    for a in sorted(aaro_data, key=lambda x: (x['top_group'], x['account_id'], x['aaro_code'])):
+        ws.cell(row=r, column=1, value=a['top_group'])
+        ws.cell(row=r, column=2, value=a['account_id'])
+        ws.cell(row=r, column=3, value=a['aaro_code'])
+        ws.cell(row=r, column=4, value=a['desc'])
+        ws.cell(row=r, column=5, value=round((a.get('facit_utfall') or 0) / 1e6, 3))
+        ws.cell(row=r, column=6, value=round((a.get('warehouse_total') or 0) / 1e6, 3))
+        ws.cell(row=r, column=7, value=a.get('diff_pct'))
+        ws.cell(row=r, column=7).number_format = '0.0%'
+        ws.cell(row=r, column=8, value=round((a.get('facit_utfall_25') or 0) / 1e6, 3))
+        ws.cell(row=r, column=9, value=round((a.get('warehouse_total_25') or 0) / 1e6, 3))
+        ws.cell(row=r, column=10, value=a.get('diff_pct_25'))
+        ws.cell(row=r, column=10).number_format = '0.0%'
+        for col in (5, 6, 8, 9):
+            ws.cell(row=r, column=col).number_format = NUMFMT
+        r += 1
+    for ci, w in enumerate([18, 22, 8, 30, 12, 12, 9, 12, 12, 9], 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.freeze_panes = 'A4'
+
+
+def render(dash, validation, fyo, out_path, aaro_data=None):
     """Bygg arbetsboken och spara till out_path. validation=None → reducerad bok."""
     wb = Workbook()
     wb.remove(wb.active)
@@ -304,6 +337,8 @@ def render(dash, validation, fyo, out_path):
     if validation:
         _sheet_validering_2026(wb, validation)
         _sheet_validering_2025(wb, dash, validation)
+    if aaro_data:
+        _sheet_aaro(wb, aaro_data)
     _sheet_metod(wb, dash, validation)
     wb.save(out_path)
     return wb

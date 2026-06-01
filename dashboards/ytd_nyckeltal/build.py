@@ -95,22 +95,27 @@ def main(argv=None) -> None:
         log("DONE", f"data-only: {out}")
         return
 
-    # Validering + rendering kopplas in i efterföljande steg.
+    # Validering + AARO-klassificering + rendering.
     validation = None
+    aaro_data = None
     do_validate = args.facit_dir and not args.no_validate
     if do_validate:
         import validate  # noqa: E402
         import mercur     # noqa: E402
+        import aaro       # noqa: E402
         validation = validate.run(dash, fyo, args.facit_dir, mercur, args.period)
         log("INFO", f"Validering: {len(validation['rows'])} RU-rader mot Mercur")
+        aaro_data = aaro.run(args.facit_dir, mercur, args.period)
+        log("INFO", f"AARO-klassificering: {len(aaro_data)} konto-rader mot Mercur")
 
     import render_html  # noqa: E402
     import render_xlsx  # noqa: E402
     html_path = args.output / "Nyckeltal.html"
     xlsx_path = args.output / "Nyckeltal.xlsx"
-    render_html.render(dash, validation, _HERE / "templates" / "dashboard_base.html", html_path)
+    render_html.render(dash, validation, _HERE / "templates" / "dashboard_base.html",
+                       html_path, aaro_data=aaro_data)
     log("OK", f"HTML: {html_path} ({html_path.stat().st_size // 1024} KB)")
-    render_xlsx.render(dash, validation, fyo, xlsx_path)
+    render_xlsx.render(dash, validation, fyo, xlsx_path, aaro_data=aaro_data)
     log("OK", f"Excel: {xlsx_path}")
 
     # Persistera mellan-data (post-attach) för felsökning/diff — inte stale.
@@ -119,6 +124,9 @@ def main(argv=None) -> None:
     if validation is not None:
         (args.output / "validation.json").write_text(
             json.dumps(validation, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    if aaro_data is not None:
+        (args.output / "aaro_classification.json").write_text(
+            json.dumps(aaro_data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     log("DONE", "build ytd_nyckeltal")
 
 
