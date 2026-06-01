@@ -26,7 +26,7 @@ fb_signed AS (
          fb.amount * CASE WHEN fb.account_code LIKE 'P_%' THEN -1 ELSE 1 END AS amount
   FROM fact_balances fb
   WHERE fb.scenario='A'
-    AND fb.source_kind IN ('SIE_PSALDO','SIE_VER','SIE','SAFT','IMP','MAN','IMP_ADJ')
+    AND fb.source_kind IN ('SIE_PSALDO','SIE_VER','SIE','SAFT','SAFT_VER','IMP','MAN','IMP_ADJ')
     AND fb.period BETWEEN '{start_period}' AND '{end_period}'
 ),
 base_pick AS (
@@ -36,10 +36,11 @@ base_pick AS (
       WHEN bool_or(source_kind='SIE_VER') THEN 'SIE_VER'
       WHEN bool_or(source_kind='SIE') THEN 'SIE'
       WHEN bool_or(source_kind='SAFT') THEN 'SAFT'
+      WHEN bool_or(source_kind='SAFT_VER') THEN 'SAFT_VER'
       WHEN bool_or(source_kind='IMP') THEN 'IMP'
     END AS base_src
   FROM fb_signed
-  WHERE source_kind IN ('SIE_PSALDO','SIE_VER','SIE','SAFT','IMP')
+  WHERE source_kind IN ('SIE_PSALDO','SIE_VER','SIE','SAFT','SAFT_VER','IMP')
   GROUP BY company_id, period
 ),
 targets AS (SELECT * FROM (VALUES {targets}) AS t(target_period)),
@@ -49,7 +50,7 @@ base_ytd AS (
   FROM targets t
   JOIN base_pick bp ON bp.period = t.target_period
   JOIN fb_signed fb ON fb.company_id = bp.company_id AND fb.source_kind = bp.base_src
-  WHERE (bp.base_src IN ('SIE','SIE_VER','SAFT') AND fb.period = t.target_period)
+  WHERE (bp.base_src IN ('SIE','SIE_VER','SAFT','SAFT_VER') AND fb.period = t.target_period)
      OR (bp.base_src IN ('SIE_PSALDO','IMP') AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period)
   GROUP BY t.target_period, bp.company_id, fb.account_code
 ),
@@ -131,6 +132,10 @@ SELECT json_agg(row_to_json(t))::text AS payload FROM (
 # lista). Returnerar JSON-array av company_ids; skicka in som `full_year_only_cids`
 # till build_dashboard_data. Avviker resultatet mot tidigare → någon SAFT har
 # laddats om; ingen kodändring behövs (poängen med dynamisk detektion).
+# v1.6: exkludera bolag som har SAFT_VER-syntes (synthesize_saft_ver.py) — de har
+# en riktig interim-YTD-baslinje (jan..nov ur journalen) och ska INTE behandlas
+# som full_year_only/proxy. De får i stället normal YoY mot 202504. SAFT_VER är
+# redan inkopplat i base_pick (under SAFT). Bolag utan SAFT_VER förblir proxy.
 FULL_YEAR_ONLY_DETECT_QUERY = """
 WITH saft_periods_2025 AS (
   SELECT company_id,
@@ -140,10 +145,17 @@ WITH saft_periods_2025 AS (
   WHERE source_kind = 'SAFT' AND scenario = 'A'
     AND period BETWEEN '202501' AND '202512'
   GROUP BY company_id
+),
+has_saft_ver AS (
+  SELECT DISTINCT company_id
+  FROM fact_balances
+  WHERE source_kind = 'SAFT_VER' AND scenario = 'A'
+    AND period BETWEEN '202501' AND '202511'
 )
 SELECT json_agg(company_id ORDER BY company_id)::text AS payload
-FROM saft_periods_2025
-WHERE n_periods = 1 AND has_yearend;
+FROM saft_periods_2025 s
+WHERE s.n_periods = 1 AND s.has_yearend
+  AND s.company_id NOT IN (SELECT company_id FROM has_saft_ver);
 """
 
 DIM_COMPANY_QUERY = """
