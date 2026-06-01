@@ -3,7 +3,14 @@
 KRITISKT: Anropa describe_schema FÖRST i varje session — semantiken kan ha ändrats.
 """
 
-# Stora YTD-query: per (bolag, period, top_group) för flera target_periods
+# Stora YTD-query: per (bolag, target_period, top_group, MÅNAD) → månadsrörelse.
+# v1.8: emitterar MÅNADSRÖRELSER (inte färdig YTD) så aggregate.py kan FX-konvertera
+# varje månad mot sin egen snittkurs (matchar Mercurs P&L-konsolidering: rad ×
+# månadskurs). amount_local summeras i Python = oförändrad YTD; amount_sek byggs ur
+# SAMMA rader. För YTD-källor (SIE/SAFT/*_VER) härleds månadsrörelsen via
+# bal[m]-LAG(bal[m]) partitionerat PER ÅR (jan subtraherar inte fg-årets helår) och
+# telescoperar korrekt genom SAFT_VER→SAFT-bytet i dec. Monthly-källor
+# (SIE_PSALDO/IMP) + justeringar (MAN/IMP_ADJ) är redan rörelser.
 YTD_TOPGROUP_QUERY = """
 WITH RECURSIVE walk AS (
   SELECT m.company_id, m.account_code, m.account_id AS cur_id, m.parent_id, 0 AS depth
@@ -74,51 +81,86 @@ base_pick AS (
   GROUP BY company_id, period
 ),
 targets AS (SELECT * FROM (VALUES {targets}) AS t(target_period)),
-base_ytd AS (
-  -- KRITISKT: SIE_PSALDO + IMP är monthly (summera), SIE + SIE_VER + SAFT är ytd (ta direkt)
-  SELECT t.target_period, bp.company_id, fb.account_code, SUM(fb.amount) AS amount
-  FROM targets t
-  JOIN base_pick bp ON bp.period = t.target_period
-  JOIN fb_raw fb ON fb.company_id = bp.company_id AND fb.source_kind = bp.base_src
-  WHERE (bp.base_src IN ('SIE','SIE_VER','SAFT','SAFT_VER') AND fb.period = t.target_period)
-     OR (bp.base_src IN ('SIE_PSALDO','IMP') AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period)
-  GROUP BY t.target_period, bp.company_id, fb.account_code
+co_conv AS (
+  -- Per bolag: är bas-källan SIE-konvention (SE/NO/CA, intäkt negativ)? IMP (FI/DK/DE)
+  -- lagrar Mercur-konv (intäkt positiv). Styr villkorlig P-kods-flip i adj_mvmt nedan.
+  SELECT company_id,
+         bool_or(base_src IN ('SIE','SIE_VER','SIE_PSALDO','SAFT','SAFT_VER')) AS is_sie
+  FROM base_pick GROUP BY company_id
 ),
-adj_ytd AS (
-  -- P-koder lagras i Mercur-konvention (intäkt positiv). Flippa till SIE-konvention
-  -- BARA när bolagets bas-källa är SIE/SAFT (SE/NO/CA) — då matchar P-koden den
-  -- SIE-konv basen. För IMP-bas (FI/DK/DE) är basen redan Mercur-konv → ingen flip,
-  -- annars adderas en säljSÄNKANDE P-kods-MAN med fel tecken och dubblar felet
-  -- (Arvolukko 134 2025: 28,7M i st f rätt 17,8M). base_src=NULL → ingen flip.
-  -- Speglar report_pnl.sql:s villkorade flip (där via best_source.is_sie).
-  SELECT t.target_period, fb.company_id, fb.account_code,
-         SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%'
-                               AND bp.base_src IN ('SIE_PSALDO','SIE_VER','SIE','SAFT','SAFT_VER')
-                              THEN -1 ELSE 1 END) AS amount
-  FROM targets t
-  JOIN fb_raw fb ON fb.source_kind IN ('MAN','IMP_ADJ')
-    AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period
-  LEFT JOIN base_pick bp ON bp.company_id = fb.company_id AND bp.period = t.target_period
-  GROUP BY t.target_period, fb.company_id, fb.account_code
+-- Per-månad: vald källas värde (YTD-saldo för ytd-källor, månadsbelopp för monthly).
+-- KRITISKT: SUM per (bolag,period,konto) — fact_balances kan ha FLERA rader per
+-- konto/period (dimensions-splittar, upp till 3st). Utan denna aggregering ser
+-- LAG nedan dubbletter inom SAMMA period och korrumperar månadsrörelsen.
+-- fb_raw (oflippat); bas-källor saknar P-koder så ingen flip behövs här.
+picked AS (
+  SELECT bp.company_id, bp.period, bp.base_src, fb.account_code, SUM(fb.amount) AS val
+  FROM base_pick bp
+  JOIN fb_raw fb ON fb.company_id = bp.company_id
+    AND fb.source_kind = bp.base_src AND fb.period = bp.period
+  GROUP BY bp.company_id, bp.period, bp.base_src, fb.account_code
 ),
-ytd_combined AS (
-  SELECT target_period, company_id, account_code, SUM(amount) AS amount FROM (
-    SELECT * FROM base_ytd UNION ALL SELECT * FROM adj_ytd
-  ) u GROUP BY target_period, company_id, account_code
+-- Härled månadsrörelse: ytd-källor → bal[m]-LAG(bal[m]) per (bolag,konto,ÅR);
+-- monthly-källor → val rakt av.
+base_mvmt AS (
+  SELECT company_id, account_code, period,
+    CASE WHEN base_src IN ('SIE','SIE_VER','SAFT','SAFT_VER')
+         THEN val - COALESCE(
+            LAG(val) OVER (PARTITION BY company_id, account_code, substring(period,1,4)
+                           ORDER BY period), 0)
+         ELSE val END AS movement
+  FROM picked
+),
+adj_mvmt AS (
+  -- MAN/IMP_ADJ är redan månadsrörelser. P-koder lagras Mercur-konv (intäkt positiv);
+  -- flippa till SIE-konv BARA för SIE/SAFT-bas-bolag (co_conv.is_sie) — IMP-bas
+  -- (FI/DK/DE) är redan Mercur-konv → ingen flip (annars dubblas felet, Arvolukko 134).
+  -- Speglar report_pnl.sql:s villkorade flip.
+  SELECT fb.company_id, fb.account_code, fb.period,
+         SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%' AND COALESCE(cc.is_sie, false)
+                              THEN -1 ELSE 1 END) AS movement
+  FROM fb_raw fb
+  LEFT JOIN co_conv cc ON cc.company_id = fb.company_id
+  WHERE fb.source_kind IN ('MAN','IMP_ADJ')
+  GROUP BY fb.company_id, fb.account_code, fb.period
+),
+all_mvmt AS (
+  SELECT company_id, account_code, period, movement FROM base_mvmt
+  UNION ALL
+  SELECT company_id, account_code, period, movement FROM adj_mvmt
+),
+-- Rulla in i varje target: månad inom [target-årets jan, target]
+ytd_month AS (
+  SELECT t.target_period, m.company_id, m.account_code, m.period AS month, m.movement
+  FROM targets t
+  JOIN all_mvmt m ON m.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period
 )
-SELECT json_agg(row_to_json(t))::text AS payload FROM (
-  SELECT y.target_period, c.company_id, c.name, c.country, c.currency, c.kind, c.parent_id,
-    ag.top_group, ROUND(SUM(y.amount)::numeric, 0)::float AS amount_local
-  FROM ytd_combined y
-  -- Vanliga konton matchas på (company_id, account_code); delade koder (company_id =
-  -- NULL i acc_topgroup) matchas på account_code oavsett bolag. Delade topgroup-koder
-  -- (P_*, '_', BUDG) är icke-numeriska och kolliderar aldrig med per-bolags numeriska
-  -- kontonummer → ingen dubbelmatch.
+SELECT json_agg(row_to_json(x))::text AS payload FROM (
+  -- INGEN per-månads-avrundning: Python summerar månaderna och avrundar först på
+  -- YTD-nivå (renderarna). Per-månads-ROUND införde 4 SEK-brus som bröt SEK-bolags
+  -- byte-identitet (Σ exakta rörelser telescoperar till samma YTD som tidigare).
+  SELECT y.target_period, c.company_id, c.currency, ag.top_group, y.month,
+    SUM(y.movement)::float AS movement_local
+  FROM ytd_month y
+  -- Delade P-koder (company_id = NULL i acc_topgroup) matchas på account_code oavsett
+  -- bolag; vanliga konton på (company_id, account_code). P-koder är icke-numeriska →
+  -- ingen dubbelmatch. Utan OR-grenen droppas P-kods-MAN tyst (regression).
   JOIN acc_topgroup ag ON ag.account_code = y.account_code
     AND (ag.company_id = y.company_id OR ag.company_id IS NULL)
   JOIN dim_company c ON c.company_id = y.company_id
-  GROUP BY y.target_period, c.company_id, c.name, c.country, c.currency, c.kind, c.parent_id, ag.top_group
-) t;
+  GROUP BY y.target_period, c.company_id, c.currency, ag.top_group, y.month
+) x;
+"""
+
+# Månadssnittskurser (rate_type='avg') mot SEK ur dim_exchange_rate, för FX-fönstret.
+# aggregate.py applicerar carry-forward för månader som saknas (t.ex. innevarande
+# månad innan kurserna laddats) och SEK=1.0.
+FX_RATES_QUERY = """
+SELECT json_agg(json_build_object(
+  'currency', currency, 'period', period, 'rate', rate
+))::text AS payload
+FROM dim_exchange_rate
+WHERE rate_type='avg' AND period BETWEEN '{start_period}' AND '{end_period}';
 """
 
 PERSONNEL_QUERY = """

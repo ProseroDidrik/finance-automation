@@ -51,15 +51,20 @@ def fetch_all(con, period: str) -> dict:
     """
     per = derive_periods(period)
     targets = f"('{per['prev']}'),('{per['cur']}'),('{per['prev_fy']}')"
+    start_period = f"{per['prev'][:4]}01"   # täck fg-årets januari → i år
     ytd_sql = queries.render_query(
         queries.YTD_TOPGROUP_QUERY,
-        start_period=f"{per['prev'][:4]}01",   # täck fg-årets januari → i år
+        start_period=start_period,
         end_period=per["cur"],
         targets=targets,
+    )
+    fx_sql = queries.render_query(
+        queries.FX_RATES_QUERY, start_period=start_period, end_period=per["cur"],
     )
     return {
         "full_year_only_cids": run_payload(con, queries.FULL_YEAR_ONLY_DETECT_QUERY),
         "ytd": run_payload(con, ytd_sql),
+        "fx_rates": run_payload(con, fx_sql),
         "personnel": run_payload(con, queries.PERSONNEL_QUERY),
         "companies": run_payload(con, queries.DIM_COMPANY_QUERY),
     }
