@@ -159,54 +159,68 @@ def parse_top_group_facit(fp, split_col=111):
     return facit_2026, facit_2025
 
 
+def _parse_aaro_label(label):
+    """'  Sales 3010 Sales, external' → ('Sales', '3010', 'Sales, external').
+
+    account_id kan innehålla mellanslag ('Other Sales') — den icke-giriga (.+?)
+    expanderar tills den 4-siffriga aaro-koden matchar.
+    """
+    m = re.search(r'^(.+?)\s+(\d{4})\s+(.+)$', label.strip())
+    if not m:
+        return None
+    return m.group(1).strip(), m.group(2), m.group(3).strip()
+
+
 def parse_aaro_facit(fp):
-    """Parsa Resultaträkning (21).xlsx → list of {top_group, account_id, aaro_code, desc, bolag: {name: amount}}."""
+    """Parsa Resultaträkning (21).xlsx → (aaro_2026, aaro_2025).
+
+    Filen listar per AARO-konto (indent 2: '{account_id} {aaro_code:4} {desc}')
+    under en indent-0 top_group ('Försäljning', 'Materialkostnader', ...). Vi tar
+    KONCERN-utfallet per rad: kolumnen 'Utfall' (2026) resp 'Utfall fg. år' (2025)
+    — samma två-regions-split som parse_top_group_facit (Col 1 vs Col 111).
+
+    Returnerar (aaro_2026, aaro_2025), båda list[{top_group, account_id, aaro_code,
+    desc, utfall}]. utfall i rå SEK (Mercur-konvention). Rad-ordningen bevaras och
+    är identisk mellan åren (samma AARO-rader).
+    """
     wb = python_calamine.CalamineWorkbook.from_path(fp)
     ws = wb.get_sheet_by_name('Resultaträkning')
     rows = ws.to_python()
     hdr = rows[8]
 
-    seen = set()
-    unique_cols = []
-    for i, h in enumerate(hdr):
-        if not h:
-            continue
-        h = h.strip() if isinstance(h, str) else str(h)
-        if h in seen:
-            continue
-        seen.add(h)
-        unique_cols.append((i, h))
+    def _koncern_col(target):
+        for i, h in enumerate(hdr):
+            if isinstance(h, str) and h.strip() == target:
+                return i
+        raise ValueError(f"Hittade inte koncernkolumn {target!r} i Resultaträkning (21)")
 
-    def parse_aaro_label(label):
-        """'  Sales 3010 Sales, external' → ('Sales', '3010', 'Sales, external')"""
-        stripped = label.strip()
-        m = re.search(r'^(.+?)\s+(\d{4})\s+(.+)$', stripped)
-        if not m:
-            return None
-        return m.group(1).strip(), m.group(2), m.group(3).strip()
+    col_2026 = _koncern_col('Utfall')          # Col 1
+    col_2025 = _koncern_col('Utfall fg. år')   # Col 111
 
-    aaro_facit = {}
+    def _val(row, ci):
+        v = row[ci] if ci < len(row) else None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    out_2026, out_2025 = [], []
     current_top = None
-    for ri, row in enumerate(rows[9:], start=10):
-        if not row[0]:
+    for row in rows[9:]:
+        if not row or not row[0] or not isinstance(row[0], str) or not row[0].strip():
             continue
         label = row[0]
-        if not isinstance(label, str) or label.strip() == '':
-            continue
         indent = len(label) - len(label.lstrip())
         if indent == 0:
             current_top = label.strip()
             continue
-        p = parse_aaro_label(label)
+        p = _parse_aaro_label(label)
         if not p:
             continue
         account_id, aaro_code, desc = p
-        key = (account_id, aaro_code, current_top)
-        aaro_facit.setdefault(key, {
-            'top_group': current_top, 'account_id': account_id,
-            'aaro_code': aaro_code, 'desc': desc, 'bolag': {},
-        })
-        for col_idx, bn in unique_cols:
-            if col_idx >= len(row):
-                continue
+        base = {'top_group': current_top, 'account_id': account_id,
+                'aaro_code': aaro_code, 'desc': desc}
+        out_2026.append({**base, 'utfall': _val(row, col_2026)})
+        out_2025.append({**base, 'utfall': _val(row, col_2025)})
+    return out_2026, out_2025
           
