@@ -59,6 +59,13 @@ def parse_sheet(ws) -> list[tuple[str, str, float]]:
     """Returnerar lista av (period, currency, rate) från ett sheet.
 
     Förväntar rad 2 = månadsrubriker (B2+), rad 3+ = valutor.
+
+    Dedup per (period, currency), första förekomsten vinner: "Constant currency"-
+    arket har två kolumnblock — de äkta constant-kurserna FÖLJT av ett block som
+    speglar genomsnittskurserna (samma period återkommer med ett annat värde).
+    Utan dedup blir det dubbletter på primärnyckeln (period, currency, rate_type)
+    och hela INSERT:en rullas tillbaka. Vänster-till-höger ⇒ constant-blocket
+    (det första) behålls. Genomsnittskurs-arket saknar dubblettkolumner (no-op där).
     """
     rows = list(ws.iter_rows(values_only=True))
     if len(rows) < 2:
@@ -71,6 +78,7 @@ def parse_sheet(ws) -> list[tuple[str, str, float]]:
         periods.append(parse_period(cell) if cell else None)
 
     results: list[tuple[str, str, float]] = []
+    seen: set[tuple[str, str]] = set()
     for row in rows[2:]:
         if not row or row[0] is None:
             continue
@@ -83,11 +91,15 @@ def parse_sheet(ws) -> list[tuple[str, str, float]]:
             period = periods[i]
             if period is None or val is None:
                 continue
+            key = (period, currency)
+            if key in seen:           # dubblettkolumn (constant-arkets avg-block)
+                continue
             try:
                 rate = float(val)
             except (TypeError, ValueError):
                 continue
             if rate > 0:
+                seen.add(key)
                 results.append((period, currency, rate))
 
     return results
