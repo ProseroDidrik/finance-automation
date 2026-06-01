@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<title>Nyckeltal Prosero — YTD 2026 vs 2025</title>
+<style>
+:root {
+  --bg: #f7f8fa; --card: #ffffff; --border: #e4e6eb;
+  --text: #1a1a1a; --muted: #6b7280; --accent: #2563eb;
+  --good: #059669; --bad: #dc2626; --warn: #d97706; --neutral: #4b5563;
+}
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; margin:0; padding:0; background:var(--bg); color:var(--text); font-size:13px; }
+.container { max-width:1500px; margin:0 auto; padding:20px; }
+header { margin-bottom:24px; }
+h1 { font-size:22px; margin:0 0 4px 0; }
+.subtitle { color:var(--muted); font-size:13px; }
+
+.tab-nav { display:flex; gap:4px; margin-bottom:16px; border-bottom:2px solid var(--border); }
+.tab-btn { padding:10px 18px; cursor:pointer; border:none; background:transparent; font:inherit; color:var(--muted); border-bottom:3px solid transparent; margin-bottom:-2px; font-weight:500; }
+.tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); }
+.tab-btn:hover { color:var(--text); }
+.tab-panel { display:none; }
+.tab-panel.active { display:block; }
+
+.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:24px; }
+.kpi { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; }
+.kpi .label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; }
+.kpi .value { font-size:20px; font-weight:600; margin-top:6px; }
+.kpi .delta { font-size:12px; margin-top:2px; }
+.delta.up-good { color:var(--good); }
+.delta.down-bad { color:var(--bad); }
+.delta.up { color:var(--bad); }
+.delta.down { color:var(--good); }
+
+.controls { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; margin-bottom:16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.controls label { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px; }
+select, input { font:inherit; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:white; }
+
+.panel { background:var(--card); border:1px solid var(--border); border-radius:8px; margin-bottom:16px; overflow:hidden; }
+.panel-header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+.panel-title { font-weight:600; font-size:14px; }
+.panel-meta { color:var(--muted); font-size:11px; }
+.scroll-wrap { max-height:700px; overflow-y:auto; }
+
+table { width:100%; border-collapse:collapse; }
+th, td { text-align:right; padding:6px 10px; border-bottom:1px solid #f3f4f6; font-variant-numeric:tabular-nums; }
+th { background:#fafbfc; color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:0.3px; cursor:pointer; position:sticky; top:0; user-select:none; }
+th:hover { background:#f0f1f3; }
+th .arrow { color:var(--accent); font-size:9px; margin-left:2px; }
+td.name, th.name { text-align:left; }
+td.country, th.country { text-align:left; }
+tbody tr { cursor:pointer; }
+tbody tr:hover { background:#f8fafc; }
+tbody tr.expanded { background:#eff6ff; }
+
+.facit-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; cursor:help; }
+.facit-dot.green { background:#10b981; }
+.facit-dot.yellow { background:#f59e0b; }
+.facit-dot.red { background:#ef4444; }
+.facit-dot.gray { background:#d1d5db; }
+.status-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+.status-dot.ok { background:var(--good); }
+.status-dot.warn { background:var(--warn); }
+.status-dot.bad { background:var(--bad); }
+
+.pct.up { color:var(--bad); }
+.pct.down { color:var(--good); }
+.pct.good { color:var(--good); }
+.pct.bad { color:var(--bad); }
+.diff-good { color:var(--good); font-weight:600; }
+.diff-warn { color:var(--warn); font-weight:600; }
+.diff-bad { color:var(--bad); font-weight:600; }
+
+.badge { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; font-weight:500; }
+.badge-no { background:#fef3c7; color:#92400e; }
+.badge-warn { background:#fed7aa; color:#9a3412; }
+.badge-fte { background:#e0e7ff; color:#3730a3; }
+
+.detail-row td { background:#f9fafb; padding:0; }
+.detail-content { padding:14px 20px; }
+.detail-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-top:10px; }
+.detail-card { background:white; border:1px solid var(--border); border-radius:6px; padding:10px; }
+.detail-card .lbl { color:var(--muted); font-size:10px; text-transform:uppercase; }
+.detail-card .v25, .detail-card .v26 { font-size:13px; margin-top:4px; }
+
+.narrative { background:#eff6ff; border-left:3px solid var(--accent); padding:12px 16px; margin-bottom:16px; border-radius:0 6px 6px 0; }
+.narrative h3 { margin:0 0 8px 0; font-size:14px; }
+.narrative ul { margin:4px 0; padding-left:20px; }
+.narrative li { margin:4px 0; font-size:13px; }
+.flagged-callout { background:#fef3c7; border-left:3px solid var(--warn); padding:10px 14px; margin-bottom:16px; border-radius:0 6px 6px 0; font-size:12px; }
+.footer { color:var(--muted); font-size:11px; margin-top:30px; padding-top:16px; border-top:1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+<h1>Nyckeltal Prosero-koncernen — YTD 2026 vs 2025</h1>
+<div class="subtitle">Underlag för Eva · Uppdaterad 2026-06-01 (v13) — Actas med SAFT_VER YTD 2025, 31 bolag fortf. full_year_proxy</div>
+</header>
+
+<div class="tab-nav">
+<button class="tab-btn active" data-tab="nyckeltal">Nyckeltal</button>
+<button class="tab-btn" data-tab="validering">Validering mot Mercur</button>
+</div>
+
+<div class="tab-panel active" id="tab-nyckeltal">
+
+<div class="narrative">
+<h3>Sammanfattning</h3>
+<ul id="summary-bullets"></ul>
+</div>
+
+<div class="flagged-callout">
+<strong>Datakvalitet:</strong>
+<ul style="margin:6px 0;">
+<li><strong>Actas (cid 81/132) har riktig YTD 2025</strong> tack vare omladdad SAF-T-journal — `synthesize_saft_ver.py` har materialiserat YTD-saldon som `SAFT_VER` i fact_balances 202501-202511. Matchar Mercur Col 139 inom 0,1 %.</li><li><strong>31 bolag har fortfarande bara helårs-SAFT</strong> (mest NO-bolag, deras journaler är inte verifierade än). Dessa visas med <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#a78bfa;border:1.5px solid #6d28d9;vertical-align:middle;"></span> i 2025-pricken och jämförs på helårsnivå.</li>
+<li><strong>CENTR-bolagens currency</strong> har overriden tillämpats (cid 50,51,53→SEK, cid 52→NOK, cid 54→DKK). Dim_company hade fel EUR-tagging.</li>
+<li><strong>FTE-data</strong>: 94 av 108 bolag har FTE apr-2026.</li>
+</ul>
+</div>
+
+<div style="margin:8px 0; padding:8px 12px; background:#f9fafb; border-radius:6px; font-size:12px;">
+<strong>Färgkod facit-status (vänster prick = 2026, höger = 2025):</strong>
+<span class="facit-dot green"></span> Grön = nästintill exakt (≤1%) ·
+<span class="facit-dot yellow"></span> Gul = 1-5% ·
+<span class="facit-dot red"></span> Röd = >5% ·
+<span class="facit-dot gray"></span> Grå = ej i Mercur
+</div>
+
+<div class="kpi-grid" id="kpi-grid"></div>
+
+<div class="controls">
+<label>Land: <select id="filter-country"><option value="">Alla</option></select></label>
+<label>Sortera på:
+<select id="sort-by">
+<option value="sales_26">Oms YTD 2026</option>
+<option value="sales_pct">Δ Oms %</option>
+<option value="pers_pct">Δ Pers %</option>
+<option value="cons_pct">Δ Konsult %</option>
+<option value="gp_pct">Δ Brutto %</option>
+<option value="pers_pct_of_sales">Pers% av Oms</option>
+<option value="bv_per_pkr">BV/PKr</option>
+<option value="sales_per_fte">Oms/FTE</option>
+<option value="fte_delta">Δ FTE</option>
+</select></label>
+<label>Facit 2026:
+<select id="facit-filter">
+<option value="">Alla</option>
+<option value="green">Grön (≤1%)</option>
+<option value="yellow">Gul (1-5%)</option>
+<option value="red">Röd (>5%)</option>
+<option value="gray">Grå</option>
+</select></label>
+<label>Facit 2025:
+<select id="facit-filter-25">
+<option value="">Alla</option>
+<option value="green">Grön (≤1%)</option>
+<option value="yellow">Gul (1-5%)</option>
+<option value="red">Röd (>5%)</option>
+<option value="gray">Grå</option>
+</select></label>
+<label><input type="text" id="search" placeholder="Sök bolag…" style="width:200px;"></label>
+<span style="margin-left:auto; color:var(--muted); font-size:11px;" id="count"></span>
+</div>
+
+<div class="panel">
+<div class="panel-header">
+<div class="panel-title">Nyckeltal per bolag</div>
+<div class="panel-meta">Klicka rad för drilldown · Belopp i KSEK</div>
+</div>
+<div class="scroll-wrap">
+<table id="main-table">
+<thead><tr id="thead-row"></tr></thead>
+<tbody id="tbody"></tbody>
+</table>
+</div>
+</div>
+
+<div class="panel">
+<div class="panel-header"><div class="panel-title">Utstickare — vad sticker ut</div></div>
+<div id="outliers" style="padding:14px 20px;"></div>
+</div>
+
+</div><!-- /nyckeltal -->
+
+<div class="tab-panel" id="tab-validering">
+
+<div class="narrative">
+<h3>Validering mot Mercur Resultaträkning YTD apr 2026</h3>
+<div id="val-summary"></div>
+</div>
+
+<div class="kpi-grid" id="val-kpi-grid"></div>
+
+<div class="panel">
+<div class="panel-header"><div class="panel-title">Koncerntotal per top_group</div></div>
+<div style="padding:14px 18px;">
+<table style="width:100%;"><thead><tr>
+<th class="name" style="text-align:left;">Top Group</th><th>Facit (MSEK)</th><th>Warehouse (MSEK)</th><th>Diff (MSEK)</th><th>Diff %</th><th>Status</th>
+</tr></thead><tbody id="val-koncerntotal"></tbody></table>
+</div>
+</div>
+
+<div class="panel">
+<div class="panel-header">
+<div class="panel-title">Per reporting unit — diff på Total Sales</div>
+</div>
+<div style="padding:10px 18px;">
+<label style="font-size:12px;">Filter:
+<select id="val-filter">
+<option value="all">Alla matchade</option>
+<option value="ok">Bara OK (≤±5%)</option>
+<option value="warn">Bara avvikande (>±5%)</option>
+<option value="big">Bara stora diff (>±20%)</option>
+</select></label>
+<label style="margin-left:14px;"><input type="checkbox" id="val-only-cons"> Bara konsoliderade</label>
+</div>
+<div class="scroll-wrap" style="max-height:500px;"><table>
+<thead><tr id="val-thead"></tr></thead>
+<tbody id="val-tbody"></tbody>
+</table></div>
+</div>
+
+<div class="panel">
+<div class="panel-header">
+<div class="panel-title">Klassificeringsanalys per aaro-konto</div>
+<div class="panel-meta">Var ligger diffarna konto för konto</div>
+</div>
+<div style="padding:10px 18px;">
+<label style="font-size:12px;">Visa:
+<select id="aaro-filter">
+<option value="all">Alla aaro-konton</option>
+<option value="big">Stora diff (>±20%)</option>
+<option value="medium">Avvikande (>±5%)</option>
+<option value="ok">OK (≤±5%)</option>
+</select></label>
+<label style="margin-left:14px; font-size:12px;">Top group:
+<select id="aaro-tg-filter"><option value="">Alla</option></select></label>
+</div>
+<div class="scroll-wrap" style="max-height:600px;"><table>
+<thead><tr>
+<th style="text-align:left;">Top Group</th><th style="text-align:left;">Account ID</th><th>Aaro</th>
+<th style="text-align:left;">Beskrivning</th><th colspan="3" style="background:#dbeafe;">2026</th><th colspan="3" style="background:#fce7f3;">2025</th>
+</tr><tr style="font-size:10px; background:#f9fafb;">
+<th></th><th></th><th></th><th></th>
+<th>Facit MSEK</th><th>WH MSEK</th><th>Δ%</th>
+<th>Facit MSEK</th><th>WH MSEK</th><th>Δ%</th>
+</tr></thead><tbody id="aaro-tbody"></tbody></table></div>
+</div>
+
+<div class="panel">
+<div class="panel-header"><div class="panel-title">Omappade bolag</div></div>
+<div style="padding:14px 18px; font-size:12px;" id="val-unmapped"></div>
+</div>
+
+</div><!-- /validering -->
+
+<div class="footer">
+<details><summary>Metod & antaganden</summary>
+<div style="padding:8px 0; line-height:1.6;">
+YTD apr 2026 = period 202604. YTD apr 2025 = 202504. Helår 2025 = 202512.<br>
+Best source per land (SE: SIE_PSALDO→SIE_VER→SIE→IMP. NO: SAFT→IMP. FI/DK/DE/CENTR: IMP. CA: SIE→IMP).<br>
+SIE_PSALDO + IMP är monthly, summeras jan→period. SIE + SIE_VER + SAFT är ytd, tas vid period. MAN + IMP_ADJ läggs ovanpå.<br>
+Tecken-normalisering: abs() per (cid, period, top_group). FX avg per månad. CENTR-currency override applicerad.
+</div></details>
+</div>
+
+</div>
+
+<script>
+const DATA = __DATA_JSON__;
+const VALIDATION = __VALIDATION_JSON__;
+const AARO_DATA = __AARO_JSON__;
+
+const FMT_K = v => v == null ? '—' : new Intl.NumberFormat('sv-SE',{maximumFractionDigits:0}).format(v/1000);
+const FMT_M = v => v == null ? '—' : (v/1e6).toFixed(1);
+const FMT_PCT = v => v == null ? '—' : (v*100).toFixed(1)+'%';
+const FMT_PCT_DELTA = v => v == null ? '—' : (v>=0?'+':'')+(v*100).toFixed(1)+'%';
+const FMT_NUM = v => v == null ? '—' : v.toFixed(1);
+const safe = v => (v == null || isNaN(v)) ? 0 : v;
+
+function buildRow(c) {
+  const k25 = (c.kpis && c.kpis['202504']) || {};
+  const k26 = (c.kpis && c.kpis['202604']) || {};
+  const k25full = (c.kpis && c.kpis['202512']) || {};
+  const d = c.delta || {};
+  return {
+    company_id: c.company_id, name: c.name, country: c.country, kind: c.kind,
+    flags: c.flags || [], facit: c.facit,
+    sales_25: k25.sales, sales_26: k26.sales, sales_pct: d.sales_pct,
+    pers_25: k25.personnel, pers_26: k26.personnel, pers_pct: d.personnel_pct,
+    pers_pct_of_sales: k26.sales ? (k26.personnel/k26.sales) : null,
+    cons_25: k25.consultants, cons_26: k26.consultants, cons_pct: d.consultants_pct,
+    gp_25: k25.gross_profit, gp_26: k26.gross_profit, gp_pct: d.gp_pct,
+    gross_margin_26: k26.gross_margin,
+    bv_per_pkr: (k26.gross_profit && k26.personnel) ? (k26.gross_profit/k26.personnel) : null,
+    sales_per_fte: c.sales_per_fte, gp_per_fte: c.gp_per_fte,
+    fte_25: c.fte_apr_2025, fte_26: c.fte_apr_2026, fte_delta: d.fte_delta,
+    hires_2026: c.hires_2026, leavers_2026: c.leavers_2026,
+    raw: c
+  };
+}
+const ROWS = DATA.companies.map(buildRow);
+
+function aggregate(rows) {
+  const t = {sales_25:0,sales_26:0,pers_25:0,pers_26:0,cons_25:0,cons_26:0,gp_25:0,gp_26:0,fte_25:0,fte_26:0,hires_26:0,leavers_26:0,n:0};
+  for (const r of rows) {
+    t.sales_25 += safe(r.sales_25); t.sales_26 += safe(r.sales_26);
+    t.pers_25 += safe(r.pers_25); t.pers_26 += safe(r.pers_26);
+    t.cons_25 += safe(r.cons_25); t.cons_26 += safe(r.cons_26);
+    t.gp_25 += safe(r.gp_25); t.gp_26 += safe(r.gp_26);
+    t.fte_25 += safe(r.fte_25); t.fte_26 += safe(r.fte_26);
+    t.hires_26 += safe(r.hires_2026); t.leavers_26 += safe(r.leavers_2026);
+    t.n++;
+  }
+  return t;
+}
+
+const state = {country:'', sortBy:'sales_26', sortDir:-1, search:'', facitFilter:'', facitFilter25:'', expanded:null};
+
+function getFilteredRows() {
+  let rs = ROWS.slice();
+  if (state.facitFilter) {
+    rs = rs.filter(r => {
+      const f = r.facit;
+      if (state.facitFilter === 'gray') return !f || f.ts_diff_pct === null;
+      if (!f || f.ts_diff_pct === null) return false;
+      const p = Math.abs(f.ts_diff_pct);
+      if (state.facitFilter === 'green') return p < 0.01;
+      if (state.facitFilter === 'yellow') return p >= 0.01 && p < 0.05;
+      if (state.facitFilter === 'red') return p >= 0.05;
+      return true;
+    });
+  }
+  if (state.facitFilter25) {
+    rs = rs.filter(r => {
+      const f = r.facit;
+      if (state.facitFilter25 === 'gray') return !f || f.ts_2025_diff_pct == null;
+      if (!f || f.ts_2025_diff_pct == null) return false;
+      const p = Math.abs(f.ts_2025_diff_pct);
+      if (state.facitFilter25 === 'green') return p < 0.01;
+      if (state.facitFilter25 === 'yellow') return p >= 0.01 && p < 0.05;
+      if (state.facitFilter25 === 'red') return p >= 0.05;
+      return true;
+    });
+  }
+  if (state.country) rs = rs.filter(r => r.country === state.country);
+  if (state.search) {
+    const q = state.search.toLowerCase();
+    rs = rs.filter(r => r.name.toLowerCase().includes(q));
+  }
+  rs.sort((a,b) => {
+    const av = a[state.sortBy], bv = b[state.sortBy];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return (av - bv) * state.sortDir;
+  });
+  return rs;
+}
+
+const COLUMNS = [
+  {key:'name', label:'Bolag', cls:'name'},
+  {key:'country', label:'Land', cls:'country'},
+  {key:'sales_26', label:'Oms 26 YTD', render: r => FMT_K(r.sales_26)},
+  {key:'sales_25', label:'Oms 25 YTD', render: r => FMT_K(r.sales_25)},
+  {key:'sales_pct', label:'Δ Oms %', render: r => {
+    if (r.sales_pct == null) return '—';
+    const cls = r.sales_pct > 0 ? 'pct good' : 'pct bad';
+    return '<span class="'+cls+'">'+FMT_PCT_DELTA(r.sales_pct)+'</span>';
+  }},
+  {key:'gross_margin_26', label:'BM 26', render: r => FMT_PCT(r.gross_margin_26)},
+  {key:'gp_pct', label:'Δ Brutto %', render: r => {
+    if (r.gp_pct == null) return '—';
+    const cls = r.gp_pct > 0 ? 'pct good' : 'pct bad';
+    return '<span class="'+cls+'">'+FMT_PCT_DELTA(r.gp_pct)+'</span>';
+  }},
+  {key:'pers_pct_of_sales', label:'Pers% Oms', render: r => FMT_PCT(r.pers_pct_of_sales)},
+  {key:'pers_pct', label:'Δ Pers %', render: r => {
+    if (r.pers_pct == null) return '—';
+    const cls = r.pers_pct > 0 ? 'pct up' : 'pct down';
+    return '<span class="'+cls+'">'+FMT_PCT_DELTA(r.pers_pct)+'</span>';
+  }},
+  {key:'cons_pct', label:'Δ Konsult %', render: r => {
+    if (r.cons_pct == null) return '—';
+    const cls = r.cons_pct > 0.2 ? 'pct up' : r.cons_pct < -0.2 ? 'pct down' : 'pct';
+    return '<span class="'+cls+'">'+FMT_PCT_DELTA(r.cons_pct)+'</span>';
+  }},
+  {key:'bv_per_pkr', label:'BV/PKr', render: r => FMT_NUM(r.bv_per_pkr)},
+  {key:'fte_26', label:'FTE apr-26', render: r => r.fte_26 == null ? '<span class="badge badge-no">saknas</span>' : FMT_NUM(r.fte_26)},
+  {key:'fte_delta', label:'Δ FTE', render: r => r.fte_delta == null ? '—' : (r.fte_delta>0?'+':'')+r.fte_delta.toFixed(1)},
+  {key:'hires_2026', label:'Anställda', render: r => r.hires_2026 != null ? '+'+r.hires_2026 : '—'},
+  {key:'leavers_2026', label:'Slutat', render: r => r.leavers_2026 != null ? '−'+r.leavers_2026 : '—'},
+  {key:'sales_per_fte', label:'Oms/FTE', render: r => r.sales_per_fte == null ? '—' : FMT_K(r.sales_per_fte)},
+];
+
+function renderHead() {
+  document.getElementById('thead-row').innerHTML = COLUMNS.map(c => {
+    const arr = (state.sortBy === c.key) ? '<span class="arrow">'+(state.sortDir<0?'▼':'▲')+'</span>' : '';
+    return '<th class="'+(c.cls||'')+'" data-key="'+c.key+'">'+c.label+' '+arr+'</th>';
+  }).join('');
+  document.querySelectorAll('#thead-row th').forEach(th => {
+    th.addEventListener('click', () => {
+      const k = th.dataset.key;
+      if (state.sortBy === k) state.sortDir *= -1;
+      else { state.sortBy = k; state.sortDir = -1; }
+      document.getElementById('sort-by').value = k;
+      render();
+    });
+  });
+}
+
+function facitDotFor(diffPct, fM, wM, label) {
+  if (diffPct == null) {
+    return '<span class="facit-dot gray" title="Ej i Mercur ('+label+')"></span>';
+  }
+  const p = Math.abs(diffPct);
+  let cls = 'red', desc = 'Stor diff';
+  if (p < 0.01) { cls = 'green'; desc = 'Nästintill exakt'; }
+  else if (p < 0.05) { cls = 'yellow'; desc = 'Mindre diff'; }
+  const pctStr = (diffPct>=0?'+':'')+(diffPct*100).toFixed(1)+'%';
+  return '<span class="facit-dot '+cls+'" title="'+label+': '+desc+' ('+pctStr+'). Facit: '+fM.toFixed(1)+' MSEK · WH: '+wM.toFixed(1)+' MSEK"></span>';
+}
+function facitDot(r) {
+  const isFullYearProxy = (r.flags || []).includes('FULL_YEAR_PROXY_2025');
+  const proxyDot = '<span class="facit-dot" style="background:#a78bfa; border:1.5px solid #6d28d9;" title="2025: Helår-proxy från SAFT 202512 (månadsvis SAFT saknas) — kan ej direktjämföras mot Mercur YTD apr"></span>';
+  if (!r.facit) {
+    const d25 = isFullYearProxy ? proxyDot : '<span class="facit-dot gray" title="Ej i Mercur"></span>';
+    return '<span class="facit-dot gray" title="Ej i Mercur"></span>' + d25;
+  }
+  const d26 = facitDotFor(r.facit.ts_diff_pct, r.facit.ts_facit/1e6, r.facit.ts_wh/1e6, 'YTD 2026');
+  const d25 = isFullYearProxy
+    ? proxyDot
+    : facitDotFor(r.facit.ts_2025_diff_pct, (r.facit.ts_2025_facit||0)/1e6, (r.facit.ts_2025_wh||0)/1e6, 'YTD 2025');
+  return d26 + d25;
+}
+
+function renderRow(r) {
+  const flagBadges = r.flags.map(f => {
+    const map = {
+      'FULL_YEAR_PROXY_2025':'<span class="badge" style="background:#ede9fe; color:#5b21b6;" title="2025 visas som helårs-proxy från SAFT 202512 — månadsvis SAFT saknas">helår-2025</span>',
+      'NO_FTE':'<span class="badge badge-fte" title="Saknar FTE">FTE saknas</span>',
+      'REPORTING_UNIT_CONS':'<span class="badge badge-fte" title="Konsoliderad enhet (sub-bolag inkl)">kons</span>',
+      'NO_SALES_DATA':'<span class="badge badge-warn">ingen oms</span>',
+    };
+    return map[f] || '';
+  }).join(' ');
+  const cells = COLUMNS.map(c => {
+    if (c.key === 'name') {
+      return '<td class="name">'+facitDot(r)+'<strong>'+r.name+'</strong> '+flagBadges+'</td>';
+    }
+    if (c.key === 'country') {
+      return '<td class="country">'+r.country+'</td>';
+    }
+    return '<td class="'+(c.cls||'')+'">'+c.render(r)+'</td>';
+  }).join('');
+  return '<tr data-id="'+r.company_id+'">'+cells+'</tr>';
+}
+
+function renderDetail(r) {
+  const k25 = (r.raw.kpis && r.raw.kpis['202504']) || {};
+  const k26 = (r.raw.kpis && r.raw.kpis['202604']) || {};
+  const k25full = (r.raw.kpis && r.raw.kpis['202512']) || {};
+  const cats = [
+    {lbl:'Nettoomsättning', k:'sales'}, {lbl:'Bruttoresultat', k:'gross_profit'},
+    {lbl:'Direktkostnad', k:'tdc'}, {lbl:'Personalkostnad', k:'personnel'},
+    {lbl:'Konsulter', k:'consultants'}, {lbl:'Övr externa', k:'other_ext'},
+    {lbl:'Lokaler', k:'premises'}, {lbl:'Transport', k:'transport'},
+    {lbl:'Avskrivningar', k:'depreciation'},
+  ];
+  const cards = cats.map(c => {
+    const v25 = k25[c.k]; const v26 = k26[c.k]; const vfull = k25full[c.k];
+    const pct = (v25 && v26) ? (v26-v25)/Math.abs(v25) : null;
+    let cls = '';
+    if (pct != null) {
+      if (c.k==='sales' || c.k==='gross_profit') cls = pct>0.05 ? 'good' : pct<-0.05 ? 'bad' : '';
+      else cls = pct>0.05 ? 'up' : pct<-0.05 ? 'down' : '';
+    }
+    return '<div class="detail-card">'+
+      '<div class="lbl">'+c.lbl+'</div>'+
+      '<div class="v26">2026 YTD: <strong>'+FMT_K(v26)+'</strong> KSEK</div>'+
+      '<div class="v25">2025 YTD: '+FMT_K(v25)+'</div>'+
+      '<div class="v25">2025 helår: '+FMT_K(vfull)+'</div>'+
+      '<div class="pct '+cls+'">'+(pct == null ? '' : FMT_PCT_DELTA(pct))+'</div>'+
+      '</div>';
+  }).join('');
+  return '<tr class="detail-row"><td colspan="'+COLUMNS.length+'"><div class="detail-content">'+
+    '<div style="font-weight:600; margin-bottom:4px;">'+r.name+' — drilldown</div>'+
+    '<div style="color:var(--muted); font-size:11px;">'+r.country+' · '+r.kind+' · cid '+r.company_id+'</div>'+
+    '<div class="detail-grid">'+cards+'</div>'+
+    '</div></td></tr>';
+}
+
+function render() {
+  renderHead();
+  const rs = getFilteredRows();
+  const tbody = document.getElementById('tbody');
+  let html = '';
+  for (const r of rs) {
+    html += renderRow(r);
+    if (state.expanded === r.company_id) html += renderDetail(r);
+  }
+  tbody.innerHTML = html;
+  tbody.querySelectorAll('tr[data-id]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const id = parseInt(tr.dataset.id);
+      state.expanded = state.expanded === id ? null : id;
+      render();
+    });
+  });
+  document.getElementById('count').textContent = rs.length + ' bolag';
+  renderKpis(rs);
+  renderOutliers(rs);
+}
+
+function renderKpis(rs) {
+  const t = aggregate(rs);
+  const gm26 = t.sales_26 ? t.gp_26/t.sales_26 : null;
+  const gm25 = t.sales_25 ? t.gp_25/t.sales_25 : null;
+  const pp26 = t.sales_26 ? t.pers_26/t.sales_26 : null;
+  const pp25 = t.sales_25 ? t.pers_25/t.sales_25 : null;
+  function kpi(label, v25, v26, isCost) {
+    const pct = v25 ? (v26-v25)/Math.abs(v25) : null;
+    let cls = '';
+    if (pct != null) {
+      if (isCost) cls = pct>0 ? 'up' : 'down';
+      else cls = pct>0 ? 'up-good' : 'down-bad';
+    }
+    return '<div class="kpi">'+
+      '<div class="label">'+label+'</div>'+
+      '<div class="value">'+FMT_M(v26)+' MSEK</div>'+
+      '<div class="delta '+cls+'">YTD 25: '+FMT_M(v25)+(pct==null?'':' · '+FMT_PCT_DELTA(pct))+'</div>'+
+      '</div>';
+  }
+  function kpiSimple(label, val, sub) {
+    return '<div class="kpi"><div class="label">'+label+'</div><div class="value">'+val+'</div><div class="delta">'+sub+'</div></div>';
+  }
+  document.getElementById('kpi-grid').innerHTML = [
+    kpi('Nettoomsättning YTD 2026', t.sales_25, t.sales_26, false),
+    kpi('Personalkostnad YTD 2026', t.pers_25, t.pers_26, true),
+    kpi('Konsultkostnad YTD 2026', t.cons_25, t.cons_26, true),
+    kpi('Bruttoresultat YTD 2026', t.gp_25, t.gp_26, false),
+    kpiSimple('Bruttomarginal 2026', FMT_PCT(gm26), 'YTD 25: '+FMT_PCT(gm25)),
+    kpiSimple('Personalkost % 2026', FMT_PCT(pp26), 'YTD 25: '+FMT_PCT(pp25)),
+    kpiSimple('FTE apr-26', FMT_NUM(t.fte_26), 'apr-25: '+FMT_NUM(t.fte_25)+' · Δ '+(t.fte_26-t.fte_25).toFixed(1)),
+    kpiSimple('Rörelse 2026', '+'+t.hires_26+' / −'+t.leavers_26, 'netto '+(t.hires_26-t.leavers_26)),
+  ].join('');
+}
+
+function renderOutliers(rs) {
+  const o = document.getElementById('outliers');
+  function topN(arr, key, n, desc) {
+    return arr.filter(r => r[key] != null && !isNaN(r[key]))
+      .sort((a,b) => (desc?-1:1) * (a[key] - b[key])).slice(0, n);
+  }
+  function listHTML(arr, key, fmt) {
+    return '<ol style="margin:4px 0; padding-left:18px;">' + arr.map(r =>
+      '<li>'+r.name+' <span style="color:var(--muted)">('+r.country+')</span> — '+(fmt||(v=>FMT_PCT_DELTA(v)))(r[key])+'</li>'
+    ).join('') + '</ol>';
+  }
+  const clean = rs.filter(r => !r.flags.includes('NO_SALES_DATA') && r.country !== 'CENTR');
+  o.innerHTML = '<div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">'+
+    '<div>'+
+      '<h4 style="margin:0 0 6px 0; font-size:13px;">Topp 5 oms-vinnare</h4>'+
+      listHTML(topN(clean, 'sales_pct', 5, true), 'sales_pct')+
+      '<h4 style="margin:16px 0 6px 0; font-size:13px;">Topp 5 oms-tappare</h4>'+
+      listHTML(topN(clean, 'sales_pct', 5, false), 'sales_pct')+
+      '<h4 style="margin:16px 0 6px 0; font-size:13px;">Topp 5 personalkost-ökning</h4>'+
+      listHTML(topN(clean.filter(r=>r.pers_25 && r.pers_25>50000), 'pers_pct', 5, true), 'pers_pct')+
+      '<h4 style="margin:16px 0 6px 0; font-size:13px;">Topp 5 konsultkost-ökning</h4>'+
+      listHTML(topN(clean.filter(r=>(r.cons_25 && r.cons_25>10000) || (r.cons_26 && r.cons_26>10000)), 'cons_pct', 5, true), 'cons_pct')+
+    '</div>'+
+    '<div>'+
+      '<h4 style="margin:0 0 6px 0; font-size:13px;">Topp 5 bruttovinst-tappare</h4>'+
+      listHTML(topN(clean.filter(r=>r.gp_25 && Math.abs(r.gp_25)>100000), 'gp_pct', 5, false), 'gp_pct')+
+      '<h4 style="margin:16px 0 6px 0; font-size:13px;">Högst personalkost% (YTD 26)</h4>'+
+      listHTML(topN(clean.filter(r=>r.pers_pct_of_sales != null && r.pers_pct_of_sales < 2), 'pers_pct_of_sales', 5, true), 'pers_pct_of_sales', v=>FMT_PCT(v))+
+      '<h4 style="margin:16px 0 6px 0; font-size:13px;">Flest nettoanställningar 2026</h4>'+
+      (() => {
+        const r2 = clean.filter(r=>r.hires_2026 != null).map(r => Object.assign({}, r, {net: safe(r.hires_2026)-safe(r.leavers_2026)})).sort((a,b)=>b.net-a.net).slice(0,5);
+        return '<ol style="margin:4px 0; padding-left:18px;">' + r2.map(r =>
+          '<li>'+r.name+' <span style="color:var(--muted)">('+r.country+')</span> — netto +'+r.net+' (+'+r.hires_2026+'/−'+r.leavers_2026+')</li>'
+        ).join('') + '</ol>';
+      })()+
+    '</div></div>';
+}
+
+function renderSummary() {
+  const exNo = ROWS.filter(r => r.country !== 'CENTR');
+  const t = aggregate(exNo);
+  const consPctSE = (() => {
+    const se = ROWS.filter(r => r.country === 'Sweden');
+    const tSe = aggregate(se);
+    return tSe.cons_25 ? (tSe.cons_26-tSe.cons_25)/tSe.cons_25 : null;
+  })();
+  const gm26 = t.sales_26 ? t.gp_26/t.sales_26 : null;
+  const gm25 = t.sales_25 ? t.gp_25/t.sales_25 : null;
+  const pp26 = t.sales_26 ? t.pers_26/t.sales_26 : null;
+  const pp25 = t.sales_25 ? t.pers_25/t.sales_25 : null;
+  const ppDelta = (pp26 && pp25) ? (pp26-pp25)*100 : null;
+  const bvpkr26 = t.pers_26 ? t.gp_26/t.pers_26 : null;
+  const bvpkr25 = t.pers_25 ? t.gp_25/t.pers_25 : null;
+  const gmDelta = (gm26 && gm25) ? (gm26-gm25)*100 : null;
+  const salesPct = t.sales_25 ? (t.sales_26-t.sales_25)/t.sales_25 : null;
+  const gpPct = t.gp_25 ? (t.gp_26-t.gp_25)/t.gp_25 : null;
+  const bullets = [
+    '<li><strong>Konsultkostnader Sverige:</strong> '+(consPctSE == null ? '—' : FMT_PCT_DELTA(consPctSE))+' YTD.</li>',
+    '<li><strong>Personalkostnadsprocent:</strong> '+FMT_PCT(pp26)+' YTD 26 vs '+FMT_PCT(pp25)+' YTD 25 ('+(ppDelta == null ? '—' : (ppDelta>=0?'+':'')+ppDelta.toFixed(1)+' pe')+').</li>',
+    '<li><strong>Bruttovinst/personalkrona:</strong> '+FMT_NUM(bvpkr26)+' YTD 26 vs '+FMT_NUM(bvpkr25)+' YTD 25.</li>',
+    '<li><strong>Bruttomarginal:</strong> '+FMT_PCT(gm26)+' vs '+FMT_PCT(gm25)+' ('+(gmDelta == null ? '—' : (gmDelta>=0?'+':'')+gmDelta.toFixed(1)+' pe')+').</li>',
+    '<li><strong>Total omsättning:</strong> '+FMT_PCT_DELTA(salesPct)+' YTD. Bruttovinst '+FMT_PCT_DELTA(gpPct)+'.</li>',
+    '<li><strong>Personal:</strong> '+t.fte_26.toFixed(1)+' FTE apr-26 vs '+t.fte_25.toFixed(1)+' apr-25 (Δ '+(t.fte_26-t.fte_25).toFixed(1)+'). YTD-rörelse: +'+t.hires_26+' / −'+t.leavers_26+'.</li>',
+  ];
+  document.getElementById('summary-bullets').innerHTML = bullets.join('');
+}
+
+// === VALIDATION TAB ===
+function classifyDiff(p) {
+  if (p == null) return {cls:'', dot:'', label:'—'};
+  const a = Math.abs(p);
+  if (a < 0.05) return {cls:'diff-good', dot:'ok', label:'OK'};
+  if (a < 0.20) return {cls:'diff-warn', dot:'warn', label:'Avvik.'};
+  return {cls:'diff-bad', dot:'bad', label:'Stor diff'};
+}
+
+let valState = {filter:'all', onlyCons:false};
+let aaroState = {filter:'all', tg:''};
+
+function renderValidation() {
+  const rows = VALIDATION.rows;
+  const okCount = rows.filter(r => r['Total Sales'].diff_pct != null && Math.abs(r['Total Sales'].diff_pct) < 0.05).length;
+  const warnCount = rows.filter(r => r['Total Sales'].diff_pct != null && Math.abs(r['Total Sales'].diff_pct) >= 0.05 && Math.abs(r['Total Sales'].diff_pct) < 0.20).length;
+  const badCount = rows.filter(r => r['Total Sales'].diff_pct != null && Math.abs(r['Total Sales'].diff_pct) >= 0.20).length;
+  const total = rows.filter(r => r['Total Sales'].diff_pct != null).length;
+  
+  document.getElementById('val-summary').innerHTML = 
+    '<p>Mercur Resultaträkning YTD apr 2026 jämfört med warehouse efter SIE_PSALDO-fix och CENTR-currency-override.</p>'+
+    '<ul>'+
+    '<li><strong>'+okCount+' av '+total+' bolag</strong> ('+Math.round(okCount/total*100)+'%) inom ±5% på Total Sales.</li>'+
+    '<li><strong>'+warnCount+'</strong> avvikelse 5-20% · <strong>'+badCount+'</strong> >20%</li>'+
+    '<li>Personnel matchar inom -1.5% av facit (554 vs 562 MSEK), Consultants inom -3%, Other External -0.5%.</li>'+
+    '</ul>';
+  
+  const facit = VALIDATION.utfall_facit;
+  const ru_total = VALIDATION.ru_total_wh;
+  const tgs = ['Total Sales','Total Direct Cost','Personnel','Bruttovinst'];
+  document.getElementById('val-kpi-grid').innerHTML = tgs.map(tg => {
+    const fv = facit[tg] || 0; const wv = ru_total[tg] || 0;
+    const pct = fv ? (fv-wv)/fv : null;
+    const cl = classifyDiff(pct);
+    return '<div class="kpi">'+
+      '<div class="label">'+tg+'</div>'+
+      '<div class="value">'+FMT_M(fv)+' MSEK</div>'+
+      '<div class="delta '+cl.cls+'">Warehouse: '+FMT_M(wv)+' MSEK · '+(pct==null?'—':FMT_PCT_DELTA(pct))+' <span class="status-dot '+cl.dot+'"></span></div>'+
+      '</div>';
+  }).join('');
+  
+  document.getElementById('val-koncerntotal').innerHTML = VALIDATION.top_groups.map(tg => {
+    const fv = facit[tg] || 0; const wv = ru_total[tg] || 0;
+    const pct = fv > 1000 ? (fv-wv)/fv : null;
+    const cl = classifyDiff(pct);
+    return '<tr>'+
+      '<td style="text-align:left; font-weight:500;">'+tg+'</td>'+
+      '<td>'+FMT_M(fv)+'</td><td>'+FMT_M(wv)+'</td><td>'+FMT_M(fv-wv)+'</td>'+
+      '<td class="'+cl.cls+'">'+(pct==null?'—':FMT_PCT_DELTA(pct))+'</td>'+
+      '<td><span class="status-dot '+cl.dot+'"></span> '+cl.label+'</td>'+
+      '</tr>';
+  }).join('');
+  
+  renderValRows();
+  
+  const unmappedSkip = VALIDATION.unmapped.filter(u=>u.reason==='manual_skip');
+  const unmappedReal = VALIDATION.unmapped.filter(u=>u.reason!=='manual_skip');
+  document.getElementById('val-unmapped').innerHTML = 
+    '<p><strong>Skippade (förväntat — elimineringsbolag och jämförelsekolumner):</strong></p>'+
+    '<ul style="font-size:11px;">'+unmappedSkip.map(u=>'<li>'+u.name+'</li>').join('')+'</ul>'+
+    '<p><strong>Ej mappade till warehouse:</strong></p>'+
+    (unmappedReal.length === 0 ? '<em style="color:var(--good);">Inga.</em>' : 
+      '<ul style="font-size:11px;">'+unmappedReal.map(u=>'<li>'+u.name+'</li>').join('')+'</ul>');
+}
+
+function renderValRows() {
+  let rs = VALIDATION.rows.slice();
+  if (valState.onlyCons) rs = rs.filter(r => r.kind === 'consolidated');
+  rs = rs.filter(r => {
+    const p = r['Total Sales'].diff_pct;
+    if (p == null) return valState.filter === 'all';
+    const a = Math.abs(p);
+    if (valState.filter === 'ok') return a < 0.05;
+    if (valState.filter === 'warn') return a >= 0.05;
+    if (valState.filter === 'big') return a >= 0.20;
+    return true;
+  });
+  rs.sort((a,b) => {
+    const pa = a['Total Sales'].diff_pct, pb = b['Total Sales'].diff_pct;
+    if (pa == null) return 1; if (pb == null) return -1;
+    return Math.abs(pb) - Math.abs(pa);
+  });
+  const cols = ['Total Sales','Total Direct Cost','Bruttovinst','Personnel','Consultants','Premises','Transportation'];
+  document.getElementById('val-thead').innerHTML = 
+    '<th style="text-align:left;">Bolag</th><th>Land</th><th>Typ</th>'+
+    cols.map(tg => '<th colspan="3">'+tg+'</th>').join('');
+  document.getElementById('val-tbody').innerHTML = rs.map(r => {
+    const kindBadge = r.kind === 'consolidated' ? '<span class="badge badge-fte">kons</span>' : '';
+    return '<tr><td style="text-align:left;"><strong>'+r.name+'</strong></td>'+
+      '<td>'+r.country+'</td><td>'+kindBadge+'</td>'+
+      cols.map(tg => {
+        const cell = r[tg];
+        const cl = classifyDiff(cell.diff_pct);
+        return '<td>'+FMT_M(cell.facit)+'</td><td>'+FMT_M(cell.wh)+'</td><td class="'+cl.cls+'">'+(cell.diff_pct==null?'—':FMT_PCT_DELTA(cell.diff_pct))+'</td>';
+      }).join('')+'</tr>';
+  }).join('');
+}
+
+function renderAaro() {
+  let rs = AARO_DATA.slice();
+  if (aaroState.tg) rs = rs.filter(r => r.top_group === aaroState.tg);
+  rs = rs.filter(r => {
+    const p = r.diff_pct;
+    if (p == null) return aaroState.filter === 'all';
+    const a = Math.abs(p);
+    if (aaroState.filter === 'ok') return a < 0.05;
+    if (aaroState.filter === 'medium') return a >= 0.05;
+    if (aaroState.filter === 'big') return a >= 0.20;
+    return true;
+  });
+  rs.sort((a,b) => a.top_group.localeCompare(b.top_group) || Math.abs(b.diff||0) - Math.abs(a.diff||0));
+  document.getElementById('aaro-tbody').innerHTML = rs.map(r => {
+    const fM26 = (r.facit_utfall/1e6).toFixed(2);
+    const wM26 = (r.warehouse_total/1e6).toFixed(2);
+    const fM25 = ((r.facit_utfall_25||0)/1e6).toFixed(2);
+    const wM25 = ((r.warehouse_total_25||0)/1e6).toFixed(2);
+    function statusFor(p) {
+      if (p == null) return {cls:'', label:'—', dot:'gray'};
+      const a = Math.abs(p);
+      if (a < 0.05) return {cls:'diff-good', label:'OK', dot:'ok'};
+      if (a < 0.20) return {cls:'diff-warn', label:'Avvik.', dot:'warn'};
+      return {cls:'diff-bad', label:'Stor diff', dot:'bad'};
+    }
+    const s26 = statusFor(r.diff_pct);
+    const s25 = statusFor(r.diff_pct_25);
+    const p26 = r.diff_pct == null ? '—' : (r.diff_pct>=0?'+':'')+(r.diff_pct*100).toFixed(1)+'%';
+    const p25 = r.diff_pct_25 == null ? '—' : (r.diff_pct_25>=0?'+':'')+(r.diff_pct_25*100).toFixed(1)+'%';
+    return '<tr>'+
+      '<td style="text-align:left; color:var(--muted); font-size:11px;">'+r.top_group+'</td>'+
+      '<td style="text-align:left; font-weight:500;">'+r.account_id+'</td>'+
+      '<td>'+r.aaro_code+'</td>'+
+      '<td style="text-align:left; font-size:11px; color:var(--muted);">'+r.desc+'</td>'+
+      '<td>'+fM26+'</td><td>'+wM26+'</td><td class="'+s26.cls+'">'+p26+'</td>'+
+      '<td>'+fM25+'</td><td>'+wM25+'</td><td class="'+s25.cls+'">'+p25+'</td>'+
+      '</tr>';
+  }).join('');
+}
+
+// Init
+const countries = [...new Set(ROWS.map(r => r.country))].sort();
+const sel = document.getElementById('filter-country');
+countries.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+
+sel.addEventListener('change', e => { state.country = e.target.value; state.expanded = null; render(); });
+document.getElementById('sort-by').addEventListener('change', e => { state.sortBy = e.target.value; render(); });
+document.getElementById('search').addEventListener('input', e => { state.search = e.target.value; render(); });
+document.getElementById('facit-filter').addEventListener('change', e => { state.facitFilter = e.target.value; render(); });
+document.getElementById('facit-filter-25').addEventListener('change', e => { state.facitFilter25 = e.target.value; render(); });
+
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
+    if (tab === 'validering') {
+      renderValidation();
+      const tgs = [...new Set(AARO_DATA.map(r => r.top_group))].sort();
+      const sel2 = document.getElementById('aaro-tg-filter');
+      if (sel2.options.length <= 1) {
+        tgs.forEach(tg => { const o = document.createElement('option'); o.value = tg; o.textContent = tg; sel2.appendChild(o); });
+        document.getElementById('aaro-filter').addEventListener('change', e => { aaroState.filter = e.target.value; renderAaro(); });
+        document.getElementById('aaro-tg-filter').addEventListener('change', e => { aaroState.tg = e.target.value; renderAaro(); });
+        document.getElementById('val-filter').addEventListener('change', e => { valState.filter = e.target.value; renderValRows(); });
+        document.getElementById('val-only-cons').addEventListener('change', e => { valState.onlyCons = e.target.checked; renderValRows(); });
+      }
+      renderAaro();
+    }
+  });
+});
+
+renderSummary();
+render();
+</script>
+
+</body>
+</html>
