@@ -15,6 +15,8 @@ Aggregering använder abs() per (cid, period, top_group) för att vara robust mo
 import json
 from collections import defaultdict
 
+import fx as fxmod
+
 # v1.5: full_year_only-mängden DETEKTERAS DYNAMISKT i körtid via
 # sql_queries.FULL_YEAR_ONLY_DETECT_QUERY (bolag med bara helårs-SAFT 202512 för
 # 2025) och skickas in i build_dashboard_data som `full_year_only_cids`. Tidigare
@@ -68,16 +70,49 @@ def build_reporting_units(companies):
     return ru_meta, cid_to_co, parent_to_children
 
 
-def build_dashboard_data(ytd, companies, personnel, fx, full_year_only_cids):
+def _ytd_sek_by_key(ytd, monthly_rates):
+    """Konvertera månadsgrain-rader → {(cid, target_period, top_group): abs(YTD-SEK)}.
+
+    Per-månads-FX (matchar Mercur): ytd-rader (SAFT/SIE/SIE_VER) differentieras till
+    månadsrörelse (mån − föreg. mån inom årsfönstret) och multipliceras med den
+    månadens kurs; monthly-rader (PSALDO/IMP + MAN/IMP_ADJ) FX:as direkt. abs()
+    appliceras på YTD-SEK-summan (teckenrobust, som tidigare).
+    """
+    groups = defaultdict(list)  # key → [(month, period_type, currency, amount_local)]
+    for r in ytd:
+        key = (r['company_id'], r['target_period'], r['top_group'])
+        groups[key].append((r['month'], r['period_type'], r['currency'], r['amount_local'] or 0))
+
+    out = {}
+    for key, items in groups.items():
+        sek = 0.0
+        # ytd-rader: differentiera kumulativt saldo → månadsrörelse (sorterat, prev=0).
+        # Varje grupp = ETT target = ETT årsfönster, så prev nollas naturligt per år.
+        prev = 0.0
+        for month, _pt, cur, amt in sorted((m, pt, c, a) for (m, pt, c, a) in items if pt == 'ytd'):
+            sek += (amt - prev) * fxmod.rate(monthly_rates, month, cur)
+            prev = amt
+        # monthly-rader: rörelsen FX:as rakt av.
+        for month, pt, cur, amt in items:
+            if pt == 'monthly':
+                sek += amt * fxmod.rate(monthly_rates, month, cur)
+        out[key] = abs(sek)
+    return out
+
+
+def build_dashboard_data(ytd, companies, personnel, monthly_rates, full_year_only_cids):
     """Bygg dashboard_data.json-payload från rådata.
 
     Args:
-        ytd: list of {target_period, company_id, name, country, currency, kind, top_group, amount_local}
-             — för perioderna 202504, 202604, 202512. För full_year_only-bolag
-             saknas 202504 (ingen månadsvis SAFT 2025); deras 202512 används som proxy.
+        ytd: list of {target_period, company_id, currency, top_group, month, period_type,
+             amount_local} — månadsgrain (v1.7). En rad per (target, bolag, top_group,
+             månad). period_type='ytd' → amount_local är YTD-saldot den månaden
+             (differentieras), 'monthly' → månadsrörelse. För full_year_only-bolag
+             saknas 202504-fönstret; deras 202512 används som proxy.
         companies: dim_company list with parent_id
         personnel: per-cid personnel data
-        fx: dict {period: {currency: rate_to_SEK}}
+        monthly_rates: dict {period(YYYYMM): {currency: rate_to_SEK}} — månadsvis
+             genomsnittskurs (fx.load_monthly_rates). FX appliceras PER MÅNAD.
         full_year_only_cids: iterable av company_ids som saknar månadsvis SAFT 2025
              (bara helårs-SAFT 202512). Detekteras dynamiskt via
              sql_queries.FULL_YEAR_ONLY_DETECT_QUERY — flaggas FULL_YEAR_PROXY_2025.
@@ -92,26 +127,16 @@ def build_dashboard_data(ytd, companies, personnel, fx, full_year_only_cids):
     # v1.4: ingen journal_saft-2025-syntes längre (fabricerade siffror, bara ~6%
     # inläst — se pitfall #11). full_year_only-bolag får istället helårsproxy
     # från sin egen 202512-SAFT (redan i `ytd`) + flaggan FULL_YEAR_PROXY_2025.
-    raw_by_cid_p_tg = {}
-    all_rows = list(ytd)
+    sek_by_key = _ytd_sek_by_key(ytd, monthly_rates)
 
-    for r in all_rows:
-        key = (r['company_id'], r['target_period'], r['top_group'])
-        raw_by_cid_p_tg[key] = raw_by_cid_p_tg.get(key, 0) + r['amount_local']
-
-    # Aggregate per RU using abs() (sign-robust)
+    # Aggregate per RU (abs() redan applicerad i _ytd_sek_by_key, teckenrobust)
     ru_data = {ru_id: {**ru, 'periods': {'202504': {}, '202604': {}, '202512': {}}}
                for ru_id, ru in ru_meta.items()}
 
-    for (cid, period, tg), raw in raw_by_cid_p_tg.items():
+    for (cid, period, tg), amt_sek in sek_by_key.items():
         ru_id = cid_to_ru.get(cid)
         if ru_id is None:
             continue
-        co = cid_to_co.get(cid)
-        if not co:
-            continue
-        rate = fx[period].get(co['currency'], 1.0)
-        amt_sek = abs(raw) * rate
         ru_data[ru_id]['periods'][period][tg] = ru_data[ru_id]['periods'][period].get(tg, 0) + amt_sek
 
     # Personnel
@@ -234,7 +259,7 @@ def build_dashboard_data(ytd, companies, personnel, fx, full_year_only_cids):
         'companies': companies_out,
         'meta': {
             'periods': ['202504', '202604', '202512'],
-            'aggregation': 'per RU with abs() — SIE_PSALDO=monthly handling',
-            'fx_assumptions': fx,
+            'aggregation': 'per RU with abs() — per-månads-FX (v1.7)',
+            'fx_assumptions': monthly_rates,
         },
     }

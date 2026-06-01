@@ -22,9 +22,10 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import db_io  # noqa: E402
+import fx as fxmod  # noqa: E402
 from aggregate import build_dashboard_data  # noqa: E402
 from config import (  # noqa: E402
-    FX, DEFAULT_PERIOD, EXPECTED_KONCERN_SALES_202604_MSEK, KONCERN_SALES_TOLERANCE,
+    DEFAULT_PERIOD, EXPECTED_KONCERN_SALES_202604_MSEK, KONCERN_SALES_TOLERANCE,
 )
 
 
@@ -39,6 +40,9 @@ def parse_args(argv=None):
                     help="Mapp med Mercur Resultaträkning (20).xlsx m.fl. Utelämna = ingen validering.")
     ap.add_argument("--output", type=Path, default=Path("./tmp/v14"),
                     help="Output-mapp för Nyckeltal.html + .xlsx")
+    ap.add_argument("--fx-file", type=Path, default=None,
+                    help="Valutakurser.xlsx (månadssnitt). Default = _params/Valutakurser.xlsx "
+                         "(worktree → main-repo fallback).")
     ap.add_argument("--no-validate", action="store_true",
                     help="Hoppa över Mercur-validering även om --facit-dir anges.")
     ap.add_argument("--data-only", action="store_true",
@@ -66,7 +70,7 @@ def verify_data_layer(dash: dict) -> None:
             "Stannar innan rendering — kolla queries/FX/best_source.")
 
 
-def build_dash(period: str) -> tuple[dict, list]:
+def build_dash(period: str, monthly_rates: dict) -> tuple[dict, list]:
     """Kör datalagret: queries → aggregate. Returnerar (dash, full_year_only_cids)."""
     con = db_io.connect()
     try:
@@ -74,9 +78,9 @@ def build_dash(period: str) -> tuple[dict, list]:
     finally:
         con.close()
     fyo = raw["full_year_only_cids"] or []
-    log("INFO", f"Hämtade: {len(raw['ytd'])} ytd-rader, {len(raw['companies'])} bolag, "
+    log("INFO", f"Hämtade: {len(raw['ytd'])} månadsgrain-rader, {len(raw['companies'])} bolag, "
                 f"{len(fyo)} full-year-only-cids")
-    dash = build_dashboard_data(raw["ytd"], raw["companies"], raw["personnel"], FX, fyo)
+    dash = build_dashboard_data(raw["ytd"], raw["companies"], raw["personnel"], monthly_rates, fyo)
     log("INFO", f"Byggde {len(dash['companies'])} reporting units")
     return dash, fyo
 
@@ -86,7 +90,11 @@ def main(argv=None) -> None:
     log("START", f"build ytd_nyckeltal  period {args.period}")
     args.output.mkdir(parents=True, exist_ok=True)
 
-    dash, fyo = build_dash(args.period)
+    fx_path = args.fx_file or fxmod.default_fx_path(_HERE.parents[1])
+    monthly_rates = fxmod.load_monthly_rates(fx_path)
+    log("INFO", f"FX: {len(monthly_rates)} månader ur {fx_path.name} (per-månads-konvertering)")
+
+    dash, fyo = build_dash(args.period, monthly_rates)
     verify_data_layer(dash)
 
     if args.data_only:
@@ -105,7 +113,7 @@ def main(argv=None) -> None:
         import aaro       # noqa: E402
         validation = validate.run(dash, fyo, args.facit_dir, mercur, args.period)
         log("INFO", f"Validering: {len(validation['rows'])} RU-rader mot Mercur")
-        aaro_data = aaro.run(args.facit_dir, mercur, args.period)
+        aaro_data = aaro.run(args.facit_dir, mercur, monthly_rates, args.period)
         log("INFO", f"AARO-klassificering: {len(aaro_data)} konto-rader mot Mercur")
 
     import render_html  # noqa: E402

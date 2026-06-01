@@ -3,7 +3,18 @@
 KRITISKT: Anropa describe_schema FÖRST i varje session — semantiken kan ha ändrats.
 """
 
-# Stora YTD-query: per (bolag, period, top_group) för flera target_periods
+# Stora YTD-query: per (bolag, top_group, MÅNAD) för flera target_periods.
+#
+# v1.7 — MÅNADSGRAIN för korrekt FX: tidigare kollapsade queryn till YTD i lokal
+# valuta och Python multiplicerade med EN kurs per period. Det gav ~1,4 % FX-fel
+# på NOK-bolag (Mercur konverterar varje månads rörelse med den månadens kurs).
+# Nu emittas en rad per (target, bolag, top_group, månad) med `period_type`:
+#   - 'ytd'     (SIE/SIE_VER/SAFT/SAFT_VER): amount_local = YTD-saldot DEN månaden.
+#                Python differentierar (mån − föreg. mån) innan FX per månad.
+#   - 'monthly' (SIE_PSALDO/IMP + MAN/IMP_ADJ): amount_local = månadens rörelse,
+#                FX:as direkt per månad.
+# Verifierat (2026-06): inget bolag växlar period_type inom ett år, så bas (ytd)
+# och justeringslager (monthly) kan särskiljas på `period_type` i Python.
 YTD_TOPGROUP_QUERY = """
 WITH RECURSIVE walk AS (
   SELECT m.company_id, m.account_code, m.account_id AS cur_id, m.parent_id, 0 AS depth
@@ -44,35 +55,49 @@ base_pick AS (
   GROUP BY company_id, period
 ),
 targets AS (SELECT * FROM (VALUES {targets}) AS t(target_period)),
-base_ytd AS (
-  -- KRITISKT: SIE_PSALDO + IMP är monthly (summera), SIE + SIE_VER + SAFT är ytd (ta direkt)
-  SELECT t.target_period, bp.company_id, fb.account_code, SUM(fb.amount) AS amount
+base_at_target AS (
+  -- Bolaget MÅSTE ha en bas-rad vid SJÄLVA target-månaden (OLD-paritet). Annars
+  -- skulle differencing nedan telescope:a fram ett INAKTUELLT YTD ur sista
+  -- tillgängliga månad (t.ex. bolag som bara levererat SAFT t.o.m. mars), och
+  -- visa det som om det vore aprils YTD — gamla koden uteslöt sådana bolag.
+  SELECT t.target_period, bp.company_id
   FROM targets t
   JOIN base_pick bp ON bp.period = t.target_period
-  JOIN fb_signed fb ON fb.company_id = bp.company_id AND fb.source_kind = bp.base_src
-  WHERE (bp.base_src IN ('SIE','SIE_VER','SAFT','SAFT_VER') AND fb.period = t.target_period)
-     OR (bp.base_src IN ('SIE_PSALDO','IMP') AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period)
-  GROUP BY t.target_period, bp.company_id, fb.account_code
 ),
-adj_ytd AS (
-  SELECT t.target_period, fb.company_id, fb.account_code, SUM(fb.amount) AS amount
+base_monthly AS (
+  -- En rad per (target, bolag, konto, MÅNAD) i bas-källan. period_type styr om
+  -- amount_local är YTD-saldo (ytd) eller månadsrörelse (monthly).
+  SELECT t.target_period, bp.company_id, fb.account_code, fb.period AS month,
+    CASE WHEN bp.base_src IN ('SIE','SIE_VER','SAFT','SAFT_VER') THEN 'ytd' ELSE 'monthly' END AS period_type,
+    SUM(fb.amount) AS amount
+  FROM targets t
+  JOIN base_at_target bat ON bat.target_period = t.target_period
+  JOIN base_pick bp ON bp.company_id = bat.company_id
+                   AND bp.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period
+  JOIN fb_signed fb ON fb.company_id = bp.company_id AND fb.source_kind = bp.base_src
+                   AND fb.period = bp.period
+  GROUP BY t.target_period, bp.company_id, fb.account_code, fb.period, period_type
+),
+adj_monthly AS (
+  -- Justeringslager (MAN/IMP_ADJ) är alltid månadsrörelse → period_type='monthly'.
+  SELECT t.target_period, fb.company_id, fb.account_code, fb.period AS month,
+    'monthly' AS period_type, SUM(fb.amount) AS amount
   FROM targets t
   JOIN fb_signed fb ON fb.source_kind IN ('MAN','IMP_ADJ')
     AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period
-  GROUP BY t.target_period, fb.company_id, fb.account_code
+  GROUP BY t.target_period, fb.company_id, fb.account_code, fb.period
 ),
-ytd_combined AS (
-  SELECT target_period, company_id, account_code, SUM(amount) AS amount FROM (
-    SELECT * FROM base_ytd UNION ALL SELECT * FROM adj_ytd
-  ) u GROUP BY target_period, company_id, account_code
+monthly_combined AS (
+  SELECT * FROM base_monthly UNION ALL SELECT * FROM adj_monthly
 )
 SELECT json_agg(row_to_json(t))::text AS payload FROM (
-  SELECT y.target_period, c.company_id, c.name, c.country, c.currency, c.kind, c.parent_id,
-    ag.top_group, ROUND(SUM(y.amount)::numeric, 0)::float AS amount_local
-  FROM ytd_combined y
+  SELECT y.target_period, c.company_id, c.currency, ag.top_group,
+    y.month, y.period_type,
+    ROUND(SUM(y.amount)::numeric, 0)::float AS amount_local
+  FROM monthly_combined y
   JOIN acc_topgroup ag ON ag.company_id = y.company_id AND ag.account_code = y.account_code
   JOIN dim_company c ON c.company_id = y.company_id
-  GROUP BY y.target_period, c.company_id, c.name, c.country, c.currency, c.kind, c.parent_id, ag.top_group
+  GROUP BY y.target_period, c.company_id, c.currency, ag.top_group, y.month, y.period_type
 ) t;
 """
 

@@ -18,6 +18,7 @@ Alla belopp i RÅ SEK. `diff`/`diff_25` behövs (JS-sorten läser Math.abs(diff)
 from __future__ import annotations
 
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -25,7 +26,8 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import db_io  # noqa: E402
-from config import derive_periods, fx_for  # noqa: E402
+import fx as fxmod  # noqa: E402
+from config import derive_periods  # noqa: E402
 
 BASE_SOURCES = ("SIE_PSALDO", "SIE_VER", "SIE", "SAFT", "SAFT_VER", "IMP")
 ALL_SOURCES = BASE_SOURCES + ("MAN", "IMP_ADJ")
@@ -68,41 +70,64 @@ base_pick AS (
   GROUP BY company_id, period
 ),
 targets AS (SELECT * FROM (VALUES {targets_sql}) AS t(target_period)),
-base_ytd AS (
-  SELECT t.target_period, bp.company_id, fb.currency, a.aaro_id, SUM(fb.amount) AS amount
-  FROM targets t
-  JOIN base_pick bp ON bp.period = t.target_period
-  JOIN fb_signed fb ON fb.company_id = bp.company_id AND fb.source_kind = bp.base_src
-  JOIN acc_aaro a ON a.company_id = fb.company_id AND a.account_code = fb.account_code
-  WHERE (bp.base_src IN ('SIE','SIE_VER','SAFT','SAFT_VER') AND fb.period = t.target_period)
-     OR (bp.base_src IN ('SIE_PSALDO','IMP')
-         AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period)
-  GROUP BY t.target_period, bp.company_id, fb.currency, a.aaro_id
+base_at_target AS (  -- OLD-paritet: bolaget måste ha bas-rad vid target-månaden
+  SELECT t.target_period, bp.company_id
+  FROM targets t JOIN base_pick bp ON bp.period = t.target_period
 ),
-adj_ytd AS (
-  SELECT t.target_period, fb.company_id, fb.currency, a.aaro_id, SUM(fb.amount) AS amount
+base_monthly AS (  -- månadsgrain (v1.7): period_type styr ytd-saldo vs månadsrörelse
+  SELECT t.target_period, bp.company_id, fb.currency, a.aaro_id, fb.period AS month,
+    CASE WHEN bp.base_src IN ('SIE','SIE_VER','SAFT','SAFT_VER') THEN 'ytd' ELSE 'monthly' END AS period_type,
+    SUM(fb.amount) AS amount
+  FROM targets t
+  JOIN base_at_target bat ON bat.target_period = t.target_period
+  JOIN base_pick bp ON bp.company_id = bat.company_id
+                   AND bp.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period
+  JOIN fb_signed fb ON fb.company_id = bp.company_id AND fb.source_kind = bp.base_src
+                   AND fb.period = bp.period
+  JOIN acc_aaro a ON a.company_id = fb.company_id AND a.account_code = fb.account_code
+  GROUP BY t.target_period, bp.company_id, fb.currency, a.aaro_id, fb.period, period_type
+),
+adj_monthly AS (
+  SELECT t.target_period, fb.company_id, fb.currency, a.aaro_id, fb.period AS month,
+    'monthly' AS period_type, SUM(fb.amount) AS amount
   FROM targets t
   JOIN fb_signed fb ON fb.source_kind IN ('MAN','IMP_ADJ')
     AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period
   JOIN acc_aaro a ON a.company_id = fb.company_id AND a.account_code = fb.account_code
-  GROUP BY t.target_period, fb.company_id, fb.currency, a.aaro_id
+  GROUP BY t.target_period, fb.company_id, fb.currency, a.aaro_id, fb.period
 )
 SELECT json_agg(row_to_json(u))::text AS payload FROM (
-  SELECT target_period, company_id, currency, aaro_id, SUM(amount) AS amount_local
-  FROM (SELECT * FROM base_ytd UNION ALL SELECT * FROM adj_ytd) x
-  GROUP BY target_period, company_id, currency, aaro_id
+  SELECT target_period, company_id, currency, aaro_id, month, period_type,
+         SUM(amount) AS amount_local
+  FROM (SELECT * FROM base_monthly UNION ALL SELECT * FROM adj_monthly) x
+  GROUP BY target_period, company_id, currency, aaro_id, month, period_type
 ) u;
 """
 
 
-def _wh_totals(rows):
-    """warehouse_total per (aaro_id, period) i SEK: abs(amount_local)*FX, summa över bolag."""
-    out: dict[tuple[str, str], float] = {}
+def _wh_totals(rows, monthly_rates):
+    """warehouse_total per (aaro_id, period) i SEK med PER-MÅNADS-FX.
+
+    Differentiering + FX görs PER bolag (varje bolags egna YTD-serie), abs()
+    appliceras per (bolag, aaro_id, period) och summeras sedan över bolag — samma
+    teckenrobusta semantik som tidigare, nu med korrekt månadskurs.
+    """
+    groups: dict[tuple, list] = defaultdict(list)
     for r in rows:
-        per = r["target_period"]
-        rate = fx_for(per).get(r["currency"], 1.0)
-        sek = abs(r["amount_local"] or 0) * rate
-        out[(r["aaro_id"], per)] = out.get((r["aaro_id"], per), 0.0) + sek
+        key = (r["company_id"], r["target_period"], r["aaro_id"])
+        groups[key].append((r["month"], r["period_type"], r["currency"], r["amount_local"] or 0))
+
+    out: dict[tuple[str, str], float] = {}
+    for (_cid, per, aid), items in groups.items():
+        sek = 0.0
+        prev = 0.0
+        for month, _pt, cur, amt in sorted((m, pt, c, a) for (m, pt, c, a) in items if pt == "ytd"):
+            sek += (amt - prev) * fxmod.rate(monthly_rates, month, cur)
+            prev = amt
+        for month, pt, cur, amt in items:
+            if pt == "monthly":
+                sek += amt * fxmod.rate(monthly_rates, month, cur)
+        out[(aid, per)] = out.get((aid, per), 0.0) + abs(sek)
     return out
 
 
@@ -130,8 +155,11 @@ def build_aaro_classification(aaro_2026, aaro_2025, wh_totals, cur, prev):
     return records
 
 
-def run(facit_dir, mercur, period="202604"):
-    """Parsa Mercur (21) + kör warehouse-query → AARO_DATA-lista."""
+def run(facit_dir, mercur, monthly_rates, period="202604"):
+    """Parsa Mercur (21) + kör warehouse-query → AARO_DATA-lista.
+
+    monthly_rates = fx.load_monthly_rates-dict; FX appliceras per månad i _wh_totals.
+    """
     per = derive_periods(period)
     fp = Path(facit_dir) / "Resultaträkning (21).xlsx"
     aaro_2026, aaro_2025 = mercur.parse_aaro_facit(fp)
@@ -145,5 +173,5 @@ def run(facit_dir, mercur, period="202604"):
         rows = db_io.run_payload(con, sql)
     finally:
         con.close()
-    wh = _wh_totals(rows)
+    wh = _wh_totals(rows, monthly_rates)
     return build_aaro_classification(aaro_2026, aaro_2025, wh, per["cur"], per["prev"])

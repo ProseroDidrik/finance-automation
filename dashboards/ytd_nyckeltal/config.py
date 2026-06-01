@@ -1,22 +1,13 @@
 """Konfiguration för YTD-nyckeltalsdashboarden.
 
-FX-kurser, top_group-listor och period-härledning. Allt som är "data om bygget"
-(inte SQL, inte renderingslogik) bor här så build.py hålls tunn.
+Top_group-listor och period-härledning. Allt som är "data om bygget" (inte SQL,
+inte renderingslogik) bor här så build.py hålls tunn.
+
+FX bor INTE här längre: månadsvisa kurser laddas ur `_params/Valutakurser.xlsx`
+av `fx.py` och appliceras PER MÅNAD (se aggregate._ytd_sek_by_key). Den gamla
+hårdkodade enkurs-tabellen (NOK 202604=0.94) gav ~1,4 % FX-fel på NOK-bolag.
 """
 from __future__ import annotations
-
-# --- FX: månadssnitt mot SEK ------------------------------------------------
-# Kommer egentligen från dim_exchange_rate (avg/månad). Hårdkodade här precis som
-# i Cowork v13 (v13_build_pipeline.py) — dynamisk hämtning är en senare follow-up.
-# Nycklar = de tre perioder dashboarden jämför: YTD apr i år, YTD apr fg år, helår fg år.
-FX = {
-    "202604": {"SEK": 1.0, "NOK": 0.94,  "DKK": 1.431, "EUR": 10.691},
-    "202504": {"SEK": 1.0, "NOK": 0.957, "DKK": 1.497, "EUR": 11.165},
-    "202512": {"SEK": 1.0, "NOK": 0.945, "DKK": 1.479, "EUR": 11.041},
-}
-
-# Default-FX för en period som saknas i FX (1:1 SEK + närmaste kända kurs).
-FX_FALLBACK = {"SEK": 1.0, "NOK": 0.95, "DKK": 1.48, "EUR": 11.0}
 
 # --- Top groups -------------------------------------------------------------
 # De grupper YTD_TOPGROUP_QUERY hämtar ur dim_account_map-hierarkin.
@@ -32,8 +23,14 @@ DISPLAY_TOP_GROUPS = [
     "Depreciation", "Justerad EBITDA",
 ]
 
-# Koncerntotal Total Sales YTD 202604 (SEK), facit från v13. Smoke-test-ankare.
-EXPECTED_KONCERN_SALES_202604_MSEK = 1591
+# Warehouse koncerntotal Total Sales YTD 202604 (SEK) — datalager-tripwire.
+# v1.7: 1591→1597 efter per-månads-FX (NOK-bolag konverteras nu med rätt månadskurs,
+# ~1,4 % högre → +6 MSEK på koncernen). OBS: detta är WAREHOUSE-summan (sum-of-parts),
+# inte Mercurs konsoliderade koncern (~1554 MSEK, ~−2,8 % lägre). Den diffen är
+# strukturell och INTE FX (fanns redan i v13/v14) — sannolikt intercompany-
+# elimineringar som en rak summa inte replikerar (ej fullt verifierat). Ankaret
+# fångar datalager-regressioner mot warehouse-summan, inte den koncerndiffen.
+EXPECTED_KONCERN_SALES_202604_MSEK = 1597
 KONCERN_SALES_TOLERANCE = 0.02  # ±2 %
 
 DEFAULT_PERIOD = "202604"
@@ -53,8 +50,3 @@ def derive_periods(period: str) -> dict[str, str]:
         "prev": f"{year - 1}{mm}",
         "prev_fy": f"{year - 1}12",
     }
-
-
-def fx_for(period: str) -> dict[str, float]:
-    """FX-rad för en period, med fallback om perioden saknas i FX-tabellen."""
-    return FX.get(period, FX_FALLBACK)
