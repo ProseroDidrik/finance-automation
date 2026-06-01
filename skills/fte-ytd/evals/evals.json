@@ -1,0 +1,49 @@
+{
+  "skill_name": "fte-ytd",
+  "evals": [
+    {
+      "id": 0,
+      "name": "happy-path-full-pipeline",
+      "prompt": "Eva vill ha YTD-nyckeltal inför kvartalsmötet på fredag — koncerntotal Sales, Personal, Bruttovinst, Konsultkostnader, plus per-bolag tabell sorterad på omsättning. Använd warehouse-data för YTD apr 2026 vs YTD apr 2025 plus helår 2025 för per-huvud-tal. Spara dashboard som HTML i mappen Get testfiles.",
+      "expected_output": "Standalone HTML-fil i Get testfiles. Total Sales YTD 2026 ska vara nära 1554 MSEK (Mercur Utfall). 108+ reporting units. Två-flikar-layout med 'Nyckeltal' aktiv. Korrekt SIE_PSALDO-monthly-summering — LH Electronic Alarm (cid 11) ska visa ~36M sales, inte ~8M.",
+      "files": [],
+      "assertions": [
+        {"text": "HTML-fil sparad till Get testfiles-mappen", "check_type": "file_exists"},
+        {"text": "Total Sales YTD 2026 mellan 1500 och 1620 MSEK", "check_type": "value_range"},
+        {"text": "Antal reporting units >= 100", "check_type": "value_min"},
+        {"text": "HTML inkluderar standalone CSS/JS — ingen <link> eller external <script src=>", "check_type": "html_self_contained"},
+        {"text": "JS validerar med node --check", "check_type": "js_syntax"},
+        {"text": "describe_schema anropades före query_sql", "check_type": "workflow"}
+      ]
+    },
+    {
+      "id": 1,
+      "name": "validate-against-mercur-facit",
+      "prompt": "Jag har laddat upp Resultaträkning (20).xlsx från Mercur — kan du köra valideringsfliken och visa hur warehouse matchar facit per bolag? Jag vill se vilka bolag som har stora diffar.",
+      "expected_output": "Dashboard med Validering-flik. ≥100 bolag mappade. Koncerntotal Total Sales diff < 3 %. Per-RU-tabell med grön/gul/röd-status. Tre stora mappnings-fel som ALDRIG ska förekomma: 'Ålesund' → cid 77 (inte 80), 'Lås & Sikring AS (Elverum)' → cid 148 (inte 16), 'Lås & Sikring AS Namsos' → cid 217.",
+      "files": ["uploads/Resultaträkning (20).xlsx", "uploads/Resultaträkning Bolag.xlsx"],
+      "assertions": [
+        {"text": "Validering-flik existerar och är klickbar", "check_type": "html_element"},
+        {"text": "Antal mappade Mercur-bolag >= 100", "check_type": "value_min"},
+        {"text": "Koncerntotal Total Sales diff < 3 %", "check_type": "value_max_abs"},
+        {"text": "Antal gröna RUs (diff <= 1%) >= 50", "check_type": "value_min"},
+        {"text": "'Ålesund' mappas till cid 77, inte cid 80", "check_type": "mapping_correct"},
+        {"text": "'Lås & Sikring AS (Elverum)' mappas till cid 148", "check_type": "mapping_correct"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "aaro-drilldown-classification",
+      "prompt": "Vi har också Resultaträkning (21).xlsx på aaro-konto-nivå. Bygg ut valideringsfliken med en klassificeringsanalys — jag vill se vilka aaro-konton som inte matchar mellan warehouse och Mercur, så vi vet var pengarna ligger fel klassificerade.",
+      "expected_output": "Dashboard-valideringsflik utökad med Klassificeringsanalys-sektion. Tabell över 70+ aaro-konton med facit, warehouse, diff%, status. Filter på top_group + diff-storlek. LEAS (5220) ska vara röd med facit ~9M vs warehouse 200+ MSEK (känt klassificeringsproblem).",
+      "files": ["uploads/Resultaträkning (20).xlsx", "uploads/Resultaträkning (21).xlsx", "uploads/Resultaträkning Bolag.xlsx"],
+      "assertions": [
+        {"text": "Klassificeringsanalys-sektion finns i valideringsfliken", "check_type": "html_element"},
+        {"text": "Antal aaro-rader >= 60", "check_type": "value_min"},
+        {"text": "Aaro LEAS visas som röd med diff <= -100%", "check_type": "aaro_specific"},
+        {"text": "Filter-dropdown för top_group fungerar", "check_type": "html_interactive"},
+        {"text": "Aaro Sales (3010) visas som grön (diff < 5%)", "check_type": "aaro_specific"}
+      ]
+    }
+  ]
+}
