@@ -69,56 +69,52 @@ def parse_bolag(fp):
     return bolag
 
 
-def parse_top_group_facit(fp, split_col=111):
-    """Parsa Resultaträkning (20).xlsx → (facit_2026, facit_2025).
+ROW_TO_TG = {
+    'Total Försäljning': 'Total Sales',
+    'Summa direkta kostnader': 'Total Direct Cost',
+    'Lokalkostnader': 'Premises',
+    'Transportkostnader': 'Transportation',
+    'Konsultkostnader': 'Consultants',
+    'Övriga externa kostnader': 'Other External Costs',
+    'Personalkostnader': 'Personnel',
+    'Bruttovinst': 'Bruttovinst',
+    'Justerad EBITDA': 'Justerad EBITDA',
+    'Avskrivningar (fixed assets)': 'Depreciation_fixed',
+    'Avskrivningar (leased assets)': 'Depreciation_leased',
+}
 
-    KRITISKT: Mercur har TVÅ kolumner per bolag i samma fil:
-    - Col 1-110 = 2026 utfall
-    - Col 111 = 'Utfall fg. år' (koncerntotal 2025)
-    - Col 112+ = 2025 utfall per bolag
 
-    Returnerar tuple (facit_2026, facit_2025), båda i format {bolag_name: {top_group: amount}}.
-    Koncerntotalen kommer från Col 1 (key='Utfall' i 2026) respektive Col 111 (key='Utfall' i 2025).
+def _unique_cols(hdr, lo, hi):
+    """Unika (col_idx, header) i kolumnintervallet [lo, hi), dedupat på namn.
+
+    KRITISKT: bolagsnamnen UPPREPAS mellan 2026- och 2025-regionen. Att deduppa
+    per region (inte globalt) är hela poängen — annars fångas bara 2026 (vilket
+    var buggen i v1.6: split_col ignorerades helt och 2025 föll bort).
     """
-    wb = python_calamine.CalamineWorkbook.from_path(fp)
-    ws = wb.get_sheet_by_name('Resultaträkning')
-    rows = ws.to_python()
-    hdr = rows[7]
-
-    seen = set()
-    unique_cols = []
-    for i, h in enumerate(hdr):
+    seen, out = set(), []
+    for i in range(lo, min(hi, len(hdr))):
+        h = hdr[i]
         if not h:
             continue
         h = h.strip() if isinstance(h, str) else str(h)
         if h in seen:
             continue
         seen.add(h)
-        unique_cols.append((i, h))
+        out.append((i, h))
+    return out
 
-    ROW_TO_TG = {
-        'Total Försäljning': 'Total Sales',
-        'Summa direkta kostnader': 'Total Direct Cost',
-        'Lokalkostnader': 'Premises',
-        'Transportkostnader': 'Transportation',
-        'Konsultkostnader': 'Consultants',
-        'Övriga externa kostnader': 'Other External Costs',
-        'Personalkostnader': 'Personnel',
-        'Bruttovinst': 'Bruttovinst',
-        'Justerad EBITDA': 'Justerad EBITDA',
-        'Avskrivningar (fixed assets)': 'Depreciation_fixed',
-        'Avskrivningar (leased assets)': 'Depreciation_leased',
-    }
 
+def _build_facit(rows, cols):
+    """Bygg {bolag_name: {top_group: amount}} för en uppsättning kolumner."""
     facit = {}
-    for ri, row in enumerate(rows[8:], start=9):
+    for row in rows[8:]:
         if not row[0]:
             continue
         label = row[0].strip() if isinstance(row[0], str) else None
         if label not in ROW_TO_TG:
             continue
         tg = ROW_TO_TG[label]
-        for col_idx, bn in unique_cols:
+        for col_idx, bn in cols:
             if col_idx >= len(row):
                 continue
             v = row[col_idx]
@@ -133,8 +129,34 @@ def parse_top_group_facit(fp, split_col=111):
                 facit[bn]['Depreciation'] = facit[bn].get('Depreciation', 0) + v
             else:
                 facit[bn][tg] = v
-
     return facit
+
+
+def parse_top_group_facit(fp, split_col=111):
+    """Parsa Resultaträkning (20).xlsx → (facit_2026, facit_2025).
+
+    Mercur har TVÅ kolumnregioner i SAMMA fil (samma bolagsnamn upprepas):
+    - Col 1      = 'Utfall'        → 2026 koncerntotal
+    - Col 2..110 = 2026 utfall per bolag
+    - Col 111    = 'Utfall fg. år' → 2025 koncerntotal
+    - Col 112+   = 2025 utfall per bolag
+
+    Returnerar (facit_2026, facit_2025), båda {bolag_name: {top_group: amount}}.
+    Koncerntotalen ligger under key 'Utfall' i BÅDA dicts ('Utfall fg. år'
+    normaliseras till 'Utfall') så nedströms-koden slår upp likadant.
+    """
+    wb = python_calamine.CalamineWorkbook.from_path(fp)
+    ws = wb.get_sheet_by_name('Resultaträkning')
+    rows = ws.to_python()
+    hdr = rows[7]
+
+    facit_2026 = _build_facit(rows, _unique_cols(hdr, 0, split_col))
+    facit_2025 = _build_facit(rows, _unique_cols(hdr, split_col, len(hdr)))
+
+    if 'Utfall fg. år' in facit_2025:
+        facit_2025['Utfall'] = facit_2025.pop('Utfall fg. år')
+
+    return facit_2026, facit_2025
 
 
 def parse_aaro_facit(fp):
