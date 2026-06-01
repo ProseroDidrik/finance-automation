@@ -47,9 +47,13 @@ acc_topgroup AS (
     ORDER BY pcode, depth DESC
   ) pcode_tg
 ),
-fb_signed AS (
-  SELECT fb.company_id, fb.period, fb.account_code, fb.source_kind,
-         fb.amount * CASE WHEN fb.account_code LIKE 'P_%' THEN -1 ELSE 1 END AS amount
+fb_raw AS (
+  -- Rå belopp utan teckenflip. P-kods-flippen görs i adj_ytd, villkorad på
+  -- bas-källans konvention (se kommentar där) — INTE ovillkorligt här, eftersom
+  -- IMP-bas (FI/DK/DE) lagrar intäkt positiv (Mercur-konv) medan SIE/SAFT lagrar
+  -- intäkt negativ (SIE-konv). P-koder finns bara på MAN (verifierat), så base_ytd
+  -- påverkas inte av att flippen flyttats.
+  SELECT fb.company_id, fb.period, fb.account_code, fb.source_kind, fb.amount
   FROM fact_balances fb
   WHERE fb.scenario='A'
     AND fb.source_kind IN ('SIE_PSALDO','SIE_VER','SIE','SAFT','SAFT_VER','IMP','MAN','IMP_ADJ')
@@ -65,7 +69,7 @@ base_pick AS (
       WHEN bool_or(source_kind='SAFT_VER') THEN 'SAFT_VER'
       WHEN bool_or(source_kind='IMP') THEN 'IMP'
     END AS base_src
-  FROM fb_signed
+  FROM fb_raw
   WHERE source_kind IN ('SIE_PSALDO','SIE_VER','SIE','SAFT','SAFT_VER','IMP')
   GROUP BY company_id, period
 ),
@@ -75,16 +79,26 @@ base_ytd AS (
   SELECT t.target_period, bp.company_id, fb.account_code, SUM(fb.amount) AS amount
   FROM targets t
   JOIN base_pick bp ON bp.period = t.target_period
-  JOIN fb_signed fb ON fb.company_id = bp.company_id AND fb.source_kind = bp.base_src
+  JOIN fb_raw fb ON fb.company_id = bp.company_id AND fb.source_kind = bp.base_src
   WHERE (bp.base_src IN ('SIE','SIE_VER','SAFT','SAFT_VER') AND fb.period = t.target_period)
      OR (bp.base_src IN ('SIE_PSALDO','IMP') AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period)
   GROUP BY t.target_period, bp.company_id, fb.account_code
 ),
 adj_ytd AS (
-  SELECT t.target_period, fb.company_id, fb.account_code, SUM(fb.amount) AS amount
+  -- P-koder lagras i Mercur-konvention (intäkt positiv). Flippa till SIE-konvention
+  -- BARA när bolagets bas-källa är SIE/SAFT (SE/NO/CA) — då matchar P-koden den
+  -- SIE-konv basen. För IMP-bas (FI/DK/DE) är basen redan Mercur-konv → ingen flip,
+  -- annars adderas en säljSÄNKANDE P-kods-MAN med fel tecken och dubblar felet
+  -- (Arvolukko 134 2025: 28,7M i st f rätt 17,8M). base_src=NULL → ingen flip.
+  -- Speglar report_pnl.sql:s villkorade flip (där via best_source.is_sie).
+  SELECT t.target_period, fb.company_id, fb.account_code,
+         SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%'
+                               AND bp.base_src IN ('SIE_PSALDO','SIE_VER','SIE','SAFT','SAFT_VER')
+                              THEN -1 ELSE 1 END) AS amount
   FROM targets t
-  JOIN fb_signed fb ON fb.source_kind IN ('MAN','IMP_ADJ')
+  JOIN fb_raw fb ON fb.source_kind IN ('MAN','IMP_ADJ')
     AND fb.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period
+  LEFT JOIN base_pick bp ON bp.company_id = fb.company_id AND bp.period = t.target_period
   GROUP BY t.target_period, fb.company_id, fb.account_code
 ),
 ytd_combined AS (

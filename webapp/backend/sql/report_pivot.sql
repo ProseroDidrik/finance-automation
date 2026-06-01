@@ -96,7 +96,12 @@ best_source AS (
                     WHEN MAX(CASE WHEN fb.source_kind = 'IMP'     THEN 1 ELSE 0 END) = 1 THEN 'IMP'
                     ELSE NULL
                 END
-        END) AS source_kind
+        END) AS source_kind,
+        -- Konventionsflagga för P-kods-flippen i raw_balances. SE/NO/CA har alltid
+        -- en SIE/SAFT-bas → intäkt negativ (SIE-konv); FI/DK/DE/CENTR kör IMP-bas →
+        -- intäkt positiv (Mercur-konv). Per bolag, oberoende av source_kind-override
+        -- (%%s). Håll i synk med country-grenarna i source_kind-CASEt ovan.
+        bool_or(c.country IN ('Sweden','Norway','CA')) AS is_sie
     FROM fact_balances fb
     JOIN dim_company c ON c.company_id = fb.company_id
     JOIN company_filter cf ON cf.company_id = fb.company_id
@@ -105,7 +110,9 @@ best_source AS (
 ),
 
 -- 3. Råa balances för valt scenario, summerade per (bolag, period, konto, period_type).
---    P-koder normaliseras till SIE-konvention (negat).
+--    P-koder normaliseras till SIE-konvention (negat) BARA för SE/NO/CA (bs.is_sie);
+--    FI/DK/DE/CENTR (IMP-bas) är redan Mercur-konv och flippas inte (annars dubblas
+--    säljsänkande P-kods-MAN med fel tecken, jfr Arvolukko 134).
 --
 --    Additivt: bas-källan (best_source) ELLER ett justeringslager (MAN/IMP_ADJ).
 --    Lager-filtret — tre booleska parametrar — styr vilka lager som tas med.
@@ -119,7 +126,7 @@ raw_balances AS (
     SELECT
         fb.company_id, fb.period, fb.account_code, fb.period_type,
         MAX(fb.account_name) AS account_name,
-        SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%%' THEN -1 ELSE 1 END) AS amount
+        SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%%' AND bs.is_sie THEN -1 ELSE 1 END) AS amount
     FROM fact_balances fb
     JOIN best_source bs
         ON bs.company_id  = fb.company_id

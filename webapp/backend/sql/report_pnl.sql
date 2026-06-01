@@ -80,7 +80,14 @@ best_source AS (
           WHEN MAX(CASE WHEN fb.source_kind = 'IMP'     THEN 1 ELSE 0 END) = 1 THEN 'IMP'
           ELSE NULL
         END
-    END) AS source_kind
+    END) AS source_kind,
+    -- Konventionsflagga för P-kods-flippen i raw_balances. SE/NO/CA har alltid en
+    -- SIE/SAFT-bas (verifierat: 0 IMP-only bland dem) → intäkt negativ (SIE-konv).
+    -- FI/DK/DE/CENTR kör IMP-bas → intäkt positiv (Mercur-konv). Per bolag (country
+    -- konstant) och oberoende av source_kind-override (%%s), så budget-kolumnen
+    -- (override 'MAN') får samma flagga. Måste hållas i synk med country-grenarna i
+    -- source_kind-CASEt ovan.
+    bool_or(c.country IN ('Sweden','Norway','CA')) AS is_sie
   FROM fact_balances fb
   JOIN dim_company c ON c.company_id = fb.company_id
   WHERE fb.company_id = %s
@@ -93,8 +100,12 @@ best_source AS (
 --
 -- P-koder (t.ex. P_30, P_40) lagras av load_history_excel.py i Mercur-
 -- presentationskonvention: intäkt positiv, kostnad negativ.
--- Alla andra konton följer SIE-konvention: intäkt negativ, kostnad positiv.
--- Vi normaliserar till SIE-konvention här så att resten av queryn fungerar lika.
+-- SE/NO/CA-konton (SIE/SAFT-bas) följer SIE-konvention: intäkt negativ. Där
+-- flippas P-koden till SIE-konvention så den matchar basen.
+-- FI/DK/DE/CENTR-konton (IMP-bas) lagras DÄREMOT redan i Mercur-konvention
+-- (intäkt positiv) — där får P-koden INTE flippas, annars adderas en
+-- säljsänkande P-kods-MAN med fel tecken och dubblar felet (Arvolukko 134).
+-- Villkoret är bs.is_sie (per bolag, se best_source).
 --
 -- Scenario-filter: NULL = alla scenarion summeras; 'A' = utfall; 'B' = budget.
 -- GROUP BY summerar därefter ihop ev. dubbletter inom valt scenario per
@@ -102,7 +113,7 @@ best_source AS (
 raw_balances AS (
   SELECT fb.company_id, fb.period, fb.account_code, fb.period_type,
          MAX(fb.account_name) AS account_name,
-         SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%%' THEN -1 ELSE 1 END) AS amount
+         SUM(fb.amount * CASE WHEN fb.account_code LIKE 'P_%%' AND bs.is_sie THEN -1 ELSE 1 END) AS amount
   FROM fact_balances fb
   JOIN best_source bs
     ON bs.company_id  = fb.company_id
