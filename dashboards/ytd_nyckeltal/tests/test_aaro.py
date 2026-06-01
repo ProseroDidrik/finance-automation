@@ -1,7 +1,7 @@
 """Tester för aaro — label-parsning + AARO_DATA-byggande (hermetiska, ingen DB/xlsx)."""
 import conftest  # noqa: F401  (sätter sys.path)
 from mercur import _parse_aaro_label
-from aaro import build_aaro_classification
+from aaro import build_aaro_classification, _wh_totals
 
 
 def test_parse_aaro_label():
@@ -50,6 +50,34 @@ def test_build_aaro_classification_shape_and_diff():
     assert cogs['facit_utfall'] == 400_000             # abs av -400k
     assert cogs['warehouse_total_25'] == 0             # saknades i wh → 0
     assert cogs['diff_pct_25'] is not None             # facit 350k > 1000 → beräknas
+
+
+def test_wh_totals_per_manads_fx():
+    """_wh_totals: movement_local × månadskurs (rate_of), abs() per bolag, summa över bolag."""
+    rate_of = lambda cur, month: {'202601': 0.91545, '202602': 0.93951}.get(month, 1.0) if cur == 'NOK' else 1.0
+    rows = [
+        # bolag 9, NOK, två månadsrörelser på Sales
+        {'company_id': 9, 'target_period': '202602', 'aaro_id': 'Sales',
+         'month': '202601', 'currency': 'NOK', 'movement_local': -1_000_000},
+        {'company_id': 9, 'target_period': '202602', 'aaro_id': 'Sales',
+         'month': '202602', 'currency': 'NOK', 'movement_local': -500_000},
+    ]
+    out = _wh_totals(rows, rate_of)
+    expected = abs(-1_000_000 * 0.91545 - 500_000 * 0.93951)
+    assert abs(out[('Sales', '202602')] - expected) < 1e-6
+
+
+def test_wh_totals_sums_abs_per_company():
+    """Två bolag på samma aaro_id → abs() per bolag, sedan summa (teckenrobust)."""
+    rate_of = lambda cur, month: 1.0
+    rows = [
+        {'company_id': 1, 'target_period': '202601', 'aaro_id': 'COGS',
+         'month': '202601', 'currency': 'NOK', 'movement_local': -300_000},
+        {'company_id': 2, 'target_period': '202601', 'aaro_id': 'COGS',
+         'month': '202601', 'currency': 'NOK', 'movement_local': 200_000},
+    ]
+    out = _wh_totals(rows, rate_of)
+    assert out[('COGS', '202601')] == 500_000  # abs(-300k)+abs(200k), inte 100k
 
 
 def test_build_aaro_classification_small_facit_no_pct():

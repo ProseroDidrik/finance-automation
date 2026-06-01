@@ -125,15 +125,26 @@ adj_mvmt AS (
   GROUP BY fb.company_id, fb.account_code, fb.period
 ),
 all_mvmt AS (
-  SELECT company_id, account_code, period, movement FROM base_mvmt
+  SELECT company_id, account_code, period, movement, true AS is_base FROM base_mvmt
   UNION ALL
-  SELECT company_id, account_code, period, movement FROM adj_mvmt
+  SELECT company_id, account_code, period, movement, false AS is_base FROM adj_mvmt
+),
+-- At-target-grind: bas-bidraget kräver att bolaget har en bas-rad VID target-månaden.
+-- Annars summeras bas-rörelserna jan..sista-tillgängliga och telescoperar fram ett
+-- INAKTUELLT YTD (t.ex. bolag som bara levererat SAFT t.o.m. mars visar mars-YTD som
+-- aprils). Justeringslager (MAN/IMP_ADJ, is_base=false) är oberoende — alltid med.
+base_at_target AS (
+  SELECT t.target_period, bp.company_id
+  FROM targets t JOIN base_pick bp ON bp.period = t.target_period
 ),
 -- Rulla in i varje target: månad inom [target-årets jan, target]
 ytd_month AS (
   SELECT t.target_period, m.company_id, m.account_code, m.period AS month, m.movement
   FROM targets t
   JOIN all_mvmt m ON m.period BETWEEN substring(t.target_period,1,4) || '01' AND t.target_period
+  WHERE m.is_base = false
+     OR EXISTS (SELECT 1 FROM base_at_target b
+                WHERE b.target_period = t.target_period AND b.company_id = m.company_id)
 )
 SELECT json_agg(row_to_json(x))::text AS payload FROM (
   -- INGEN per-månads-avrundning: Python summerar månaderna och avrundar först på
@@ -219,30 +230,29 @@ SELECT json_agg(row_to_json(t))::text AS payload FROM (
 # lista). Returnerar JSON-array av company_ids; skicka in som `full_year_only_cids`
 # till build_dashboard_data. Avviker resultatet mot tidigare → någon SAFT har
 # laddats om; ingen kodändring behövs (poängen med dynamisk detektion).
-# v1.6: exkludera bolag som har SAFT_VER-syntes (synthesize_saft_ver.py) — de har
-# en riktig interim-YTD-baslinje (jan..nov ur journalen) och ska INTE behandlas
-# som full_year_only/proxy. De får i stället normal YoY mot 202504. SAFT_VER är
-# redan inkopplat i base_pick (under SAFT). Bolag utan SAFT_VER förblir proxy.
+# v1.6: exkludera bolag som har SAFT_VER-syntes (synthesize_saft_ver.py) — de fick
+# normal YoY mot 202504 i st f proxy.
+# v1.8b: villkoret bytt från "har NÅGON saft_ver" till "har bas-snapshot VID 202504".
+# Buggen v1.6 fångade: Hemer (cid 157) har saft_ver men bara sept..nov (journalen
+# börjar i september) → INGEN aprilbaslinje. Den exkluderades ändå från proxy och
+# visade 2025 YTD sales = 0 mot Mercurs 14,99M (felaktig röd prick i st f grå proxy).
+# Det som faktiskt avgör om riktig YoY går = finns bas (SAFT/SAFT_VER) vid
+# jämförelsemånaden 202504. Saknas den OCH helår 202512 finns → proxy.
+# (2025-perioder hårdkodade som tidigare i denna query; YoY-konceptet är 2025-pinnat.)
 FULL_YEAR_ONLY_DETECT_QUERY = """
-WITH saft_periods_2025 AS (
-  SELECT company_id,
-         COUNT(DISTINCT period) AS n_periods,
-         BOOL_OR(period = '202512') AS has_yearend
-  FROM fact_balances
-  WHERE source_kind = 'SAFT' AND scenario = 'A'
-    AND period BETWEEN '202501' AND '202512'
-  GROUP BY company_id
-),
-has_saft_ver AS (
+WITH saft_yearend_2025 AS (
   SELECT DISTINCT company_id
   FROM fact_balances
-  WHERE source_kind = 'SAFT_VER' AND scenario = 'A'
-    AND period BETWEEN '202501' AND '202511'
+  WHERE source_kind = 'SAFT' AND scenario = 'A' AND period = '202512'
+),
+base_at_apr_2025 AS (
+  SELECT DISTINCT company_id
+  FROM fact_balances
+  WHERE source_kind IN ('SAFT', 'SAFT_VER') AND scenario = 'A' AND period = '202504'
 )
 SELECT json_agg(company_id ORDER BY company_id)::text AS payload
-FROM saft_periods_2025 s
-WHERE s.n_periods = 1 AND s.has_yearend
-  AND s.company_id NOT IN (SELECT company_id FROM has_saft_ver);
+FROM saft_yearend_2025 s
+WHERE s.company_id NOT IN (SELECT company_id FROM base_at_apr_2025);
 """
 
 DIM_COMPANY_QUERY = """
