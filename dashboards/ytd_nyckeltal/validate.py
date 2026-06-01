@@ -212,8 +212,10 @@ def build_validation(dash, fyo, facit_2026, facit_2025):
 
     return {
         'rows': rows,
+        'top_groups': TOP_GROUPS,            # runtime-JS:ens koncern-tabell itererar denna
         'utfall_facit': utfall_facit,
-        'utfall_wh': utfall_wh,
+        'utfall_wh': utfall_wh,              # render_xlsx.py läser detta namn
+        'ru_total_wh': utfall_wh,            # template-JS:en läser detta namn (samma värde)
         'utfall_facit_25': utfall_facit_25,
         'full_year_only_cids': sorted(fyo),
         'unmapped': unmapped,
