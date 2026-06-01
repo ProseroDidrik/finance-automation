@@ -11,6 +11,7 @@ Star schema: fact_balances + dim_company + dim_period. Verifikat-rader
 from __future__ import annotations
 
 import os
+import re
 from datetime import date, datetime
 from pathlib import Path
 import calendar
@@ -200,6 +201,11 @@ def database_url() -> str:
     Returnerar råa DATABASE_URL (legacy). T9 hanterar webappens egen rollindelning.
     """
     return _database_url("legacy")
+
+
+def _redact_url(url: str) -> str:
+    """Maska lösenordet i en postgres-URL innan den loggas till stdout."""
+    return re.sub(r"(://[^:/?#@]+:)[^@]+(@)", r"\1***\2", url)
 
 
 def connect(read_only: bool = False, role: str = "etl") -> Conn:
@@ -740,7 +746,7 @@ def main() -> None:
     with connect(role="admin") as con:
         init_schema(con)
         n = sync_dim_company(con)
-        print(f"[OK]     dim_company  {n} bolag synkade  ({_database_url('admin')})")
+        print(f"[OK]     dim_company  {n} bolag synkade  ({_redact_url(_database_url('admin'))})")
 
 
 if __name__ == "__main__":
