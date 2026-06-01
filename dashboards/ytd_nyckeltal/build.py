@@ -66,8 +66,8 @@ def verify_data_layer(dash: dict) -> None:
             "Stannar innan rendering — kolla queries/FX/best_source.")
 
 
-def build_dash(period: str) -> tuple[dict, list]:
-    """Kör datalagret: queries → aggregate. Returnerar (dash, full_year_only_cids)."""
+def build_dash(period: str) -> tuple[dict, list, list]:
+    """Kör datalagret: queries → aggregate. Returnerar (dash, full_year_only_cids, fx_rates)."""
     con = db_io.connect()
     try:
         raw = db_io.fetch_all(con, period)
@@ -79,7 +79,7 @@ def build_dash(period: str) -> tuple[dict, list]:
     dash = build_dashboard_data(raw["ytd"], raw["companies"], raw["personnel"],
                                 raw["fx_rates"], fyo)
     log("INFO", f"Byggde {len(dash['companies'])} reporting units")
-    return dash, fyo
+    return dash, fyo, raw["fx_rates"]
 
 
 def main(argv=None) -> None:
@@ -87,7 +87,7 @@ def main(argv=None) -> None:
     log("START", f"build ytd_nyckeltal  period {args.period}")
     args.output.mkdir(parents=True, exist_ok=True)
 
-    dash, fyo = build_dash(args.period)
+    dash, fyo, fx_rates = build_dash(args.period)
     verify_data_layer(dash)
 
     if args.data_only:
@@ -106,7 +106,7 @@ def main(argv=None) -> None:
         import aaro       # noqa: E402
         validation = validate.run(dash, fyo, args.facit_dir, mercur, args.period)
         log("INFO", f"Validering: {len(validation['rows'])} RU-rader mot Mercur")
-        aaro_data = aaro.run(args.facit_dir, mercur, args.period)
+        aaro_data = aaro.run(args.facit_dir, mercur, fx_rates, args.period)
         log("INFO", f"AARO-klassificering: {len(aaro_data)} konto-rader mot Mercur")
 
     import render_html  # noqa: E402
