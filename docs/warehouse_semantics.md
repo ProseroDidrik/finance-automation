@@ -96,7 +96,8 @@ via en separat roll, inte via mcp_readonly.
 
 | `source_kind` | Land | `period_type` |
 |---|---|---|
-| `SIE`, `SIE_PSALDO` | Sverige + CA | `'ytd'` (ackumulerat från 1 jan) |
+| `SIE`, `SIE_VER` | Sverige + CA | `'ytd'` (ackumulerat från 1 jan) |
+| `SIE_PSALDO` | Sverige + CA | `'monthly'` (`#PSALDO` = **månadsrörelse**; kumulera jan→period för YTD) |
 | `SAFT` | Norge | `'ytd'` |
 | `IMP` | FI/DK/DE/CENTR + Mercur-historik alla | `'monthly'` (rörelse just den månaden) |
 | `IMP_ADJ`, `MAN` | Mercur-justeringar, alla länder | `'monthly'` |
@@ -133,7 +134,7 @@ till basen — de **summeras alltid ovanpå**. Saknas bas-källa (t.ex. bara
 
     utfall = bas-källa (0 eller 1)  +  MAN-A  +  IMP_ADJ-A
 
-`SIE_PSALDO` = `#PSALDO`-raderna i SIE-filen (källrapporterat per-månads YTD-saldo) — bäst när det finns. `SIE_VER` = YTD-saldon syntetiserade av `load_sie.py` från verifikaten (`#VER`/`#TRANS`) för de ~35 SE-bolag som saknar `#PSALDO`; ger exakt månadsfördelning. `SIE` (#RES-baserad) är därmed effektivt deprekerad — kvar bara som sista fallback om verifikat-syntesen inte kunnat köras. När både finns: `SIE_PSALDO` > `SIE_VER` > `SIE`.
+`SIE_PSALDO` = `#PSALDO`-raderna i SIE-filen (källrapporterad **månadsrörelse**, `period_type='monthly'` — kumuleras jan→period för YTD; en enskild period är EN månad, inte YTD) — bäst när det finns. `SIE_VER` = YTD-saldon syntetiserade av `load_sie.py` från verifikaten (`#VER`/`#TRANS`) för de ~35 SE-bolag som saknar `#PSALDO`; ger exakt månadsfördelning. `SIE` (#RES-baserad) är därmed effektivt deprekerad — kvar bara som sista fallback om verifikat-syntesen inte kunnat köras. När både finns: `SIE_PSALDO` > `SIE_VER` > `SIE`.
 
 Färdigt mönster: `report_pnl.sql` — `best_source`-CTE väljer basen, och
 `raw_balances` OR-villkoret summerar `MAN`/`IMP_ADJ` ovanpå.
@@ -450,8 +451,9 @@ WHERE c.company_id IN (SELECT company_id FROM sie_b)
 ```
 
 För dessa bolag är amount_diff i täckningsmatrisen *förväntat brus*, inte
-fel. Bolag med `#PSALDO` (14 av 49 SE) har exakt YTD per månadsskifte och
-ska matcha Mercur-backupen inom 1 %-tröskeln.
+fel. Bolag med `#PSALDO` (14 av 49 SE) har exakt månadsrörelse; **kumulerad**
+jan→period matchar Mercur-backupen inom 1 %-tröskeln. (En enskild `SIE_PSALDO`-
+rad är EN månad, inte YTD — summera aldrig en period rakt av som YTD.)
 
 **Egentliga ETL-buggar separeras genom storleken på diff:** timing-brus är
 typiskt 1–30 % per konto med konsistent riktning (fact > facit eftersom
@@ -585,30 +587,50 @@ direkt query mot warehouse (OBS: mönstret nedan visar bara **bas-källan** —
 för verkligt utfall summera `MAN`-A + `IMP_ADJ`-A additivt ovanpå, se Mental
 model 2):
 
+> ⚠️ **Måste spänna jan→period, inte en enda period.** Eftersom SE-basen
+> `SIE_PSALDO` är `monthly` ger ett `WHERE period = ?` bara EN månads rörelse
+> (~1/N av YTD). Filtrera `period BETWEEN year_start AND period` och normalisera
+> per `period_type` (monthly kumuleras, ytd tas vid valda perioden). `year_start`
+> = `YYYY01`, aldrig = vald period.
+
 ```sql
-WITH best AS (
-  SELECT company_id, period,
+WITH params AS (SELECT 11::int AS company_id, '202604'::text AS period,
+                       '202601'::text AS year_start),   -- year_start = YYYY01
+best AS (  -- bas-källa per (bolag, period); SIE_PSALDO före SIE_VER före SIE
+  SELECT fb.company_id, fb.period,
     CASE
-      WHEN MAX(CASE WHEN source_kind='SIE'        THEN 1 ELSE 0 END)=1 THEN 'SIE'
-      WHEN MAX(CASE WHEN source_kind='SIE_PSALDO' THEN 1 ELSE 0 END)=1 THEN 'SIE_PSALDO'
-      WHEN MAX(CASE WHEN source_kind='SAFT'       THEN 1 ELSE 0 END)=1 THEN 'SAFT'
-      WHEN MAX(CASE WHEN source_kind='IMP'        THEN 1 ELSE 0 END)=1 THEN 'IMP'
-      WHEN MAX(CASE WHEN source_kind='IMP_ADJ'    THEN 1 ELSE 0 END)=1 THEN 'IMP_ADJ'
+      WHEN bool_or(fb.source_kind='SIE_PSALDO') THEN 'SIE_PSALDO'
+      WHEN bool_or(fb.source_kind='SIE_VER')    THEN 'SIE_VER'
+      WHEN bool_or(fb.source_kind='SIE')        THEN 'SIE'
+      WHEN bool_or(fb.source_kind='SAFT')       THEN 'SAFT'
+      WHEN bool_or(fb.source_kind='IMP')        THEN 'IMP'
     END AS source_kind
-  FROM fact_balances
-  WHERE company_id = ? AND period = ? AND scenario = 'A'
-  GROUP BY company_id, period
+  FROM fact_balances fb CROSS JOIN params p
+  WHERE fb.company_id = p.company_id AND fb.scenario = 'A'
+    AND fb.period BETWEEN p.year_start AND p.period
+  GROUP BY fb.company_id, fb.period
+),
+sel AS (  -- bas-källan ELLER additiva lager (MAN/IMP_ADJ summeras ovanpå)
+  SELECT fb.account_code, fb.account_name, fb.period_type, fb.period,
+         fb.amount * CASE WHEN fb.account_code LIKE 'P_%' THEN -1 ELSE 1 END AS amount
+  FROM fact_balances fb
+  JOIN best b ON b.company_id = fb.company_id AND b.period = fb.period
+   AND (fb.source_kind = b.source_kind OR fb.source_kind IN ('MAN','IMP_ADJ'))
+  WHERE fb.scenario = 'A'
 )
-SELECT fb.account_code, fb.account_name,
-       fb.amount * CASE WHEN fb.account_code LIKE 'P_%' THEN -1 ELSE 1 END AS amount
-FROM fact_balances fb
-JOIN best USING (company_id, period, source_kind)
-WHERE fb.scenario = 'A'
-ORDER BY fb.account_code;
+SELECT account_code, MAX(account_name) AS account_name,
+       -- YTD: kumulera monthly jan→period + ta ytd vid valda perioden
+       COALESCE(SUM(amount) FILTER (WHERE period_type='monthly'), 0)
+     + COALESCE(SUM(amount) FILTER (WHERE period_type='ytd'
+                AND period = (SELECT period FROM params)), 0) AS amount_ytd
+FROM sel
+GROUP BY account_code
+ORDER BY account_code;
 ```
 
-För SE/NO: amount = YTD direkt. För FI/DK/DE: amount = bara den månadens
-bevegelse — för YTD jan..period måste du `SUM` över alla månader.
+Per-bolags YTD-omsättning med drift-flagga: se
+`webapp/backend/sql/detect_revenue_ytd.sql` (samma normalisering, larmar vid
+>3 % kumulerad-PSALDO-vs-`#RES`-avvikelse).
 
 ### Valuta till SEK
 
@@ -637,6 +659,10 @@ GROUP BY 1, 2 ORDER BY 1, 2;
 
 ❌ `SELECT SUM(amount) FROM fact_balances WHERE period = ?`
    — blandar YTD/monthly + dubblar källor.
+
+❌ `SUM(amount) WHERE source_kind='SIE_PSALDO' AND period = ?` som "YTD".
+   `SIE_PSALDO` är **månadsrörelse** — en period = EN månad (~1/N av YTD).
+   Kumulera jan→period. (Detta gav "1469.6 MSEK / 119 MSEK saknad omsättning".)
 
 ❌ Jämför `amount` mellan SE och DK utan period_type-normalisering.
 
